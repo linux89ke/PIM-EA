@@ -1,28 +1,11 @@
 streamlit==1.37.0
-
-pandas==2.2.2
+pandas==2.2.3
 numpy==1.26.4
-
-openpyxl==3.11.0
+openpyxl==3.1.5
 Pillow==10.1.0
 requests==2.31.0
 xlsxwriter==3.1.9
-scikit-learn==1.4.2
-
+plotly==5.22.0
 beautifulsoup4==4.12.3
 lxml==5.2.2
-
-plotly==5.22.0
-imagehash==4.3.1
-
-opencv-python-headless==4.9.0.80
 orjson==3.9.10
-polars==0.20.31
-
-# Lightweight NLP for category matching
-sentence-transformers==2.7.0
-
-st-styled==0.1.3
-
-# Performance monitoring
-psutil==5.9.6
