@@ -7,5 +7,5 @@ requests==2.31.0
 xlsxwriter==3.1.9
 plotly==5.22.0
 beautifulsoup4==4.12.3
-lxml==5.2.2
+lxml>=6.0.0
 orjson==3.9.10
