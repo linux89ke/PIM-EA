@@ -1,0 +1,29 @@
+[client]
+showErrorDetails = false
+showWarnings = false
+
+[logger]
+level = "error"
+
+[browser]
+serverAddress = "localhost"
+gatherUsageStats = false
+
+[server]
+headless = true
+port = 8501
+maxUploadSize = 200
+enableXsrfProtection = true
+enableCORS = false
+
+# Critical performance settings for Cloud
+runOnSave = false
+baseUrlPath = ""
+fileWatcherType = "auto"
+
+[theme]
+primaryColor = "#F68B1E"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F5F5"
+textColor = "#313133"
+font = "sans serif"
