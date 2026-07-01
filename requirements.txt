@@ -10,3 +10,4 @@ beautifulsoup4==4.12.3
 lxml>=6.0.0
 orjson==3.9.10
 polars
+st-styled
