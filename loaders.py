@@ -2,6 +2,7 @@
 loaders.py - All file loading functions for support/config data
 """
 
+import ast
 import json
 import logging
 import os
@@ -49,8 +50,25 @@ def load_excel_file(filename: str, column: Optional[str] = None):
     try:
         if not os.path.exists(filename):
             return [] if column else pd.DataFrame()
-        df = pd.read_excel(filename, engine="openpyxl", dtype=str)
-        df.columns = df.columns.str.strip()
+            
+        from data_utils import PARQUET_CACHE_DIR
+        pq_name = os.path.basename(filename) + ".parquet"
+        pq_path = os.path.join(PARQUET_CACHE_DIR, pq_name)
+        
+        if os.path.exists(pq_path) and os.path.getmtime(pq_path) > os.path.getmtime(filename):
+            try:
+                df = pd.read_parquet(pq_path)
+            except Exception:
+                df = pd.read_excel(filename, engine="openpyxl", dtype=str)
+                df.columns = df.columns.astype(str).str.strip()
+                os.makedirs(PARQUET_CACHE_DIR, exist_ok=True)
+                df.to_parquet(pq_path)
+        else:
+            df = pd.read_excel(filename, engine="openpyxl", dtype=str)
+            df.columns = df.columns.astype(str).str.strip()
+            os.makedirs(PARQUET_CACHE_DIR, exist_ok=True)
+            df.to_parquet(pq_path)
+            
         if column and column in df.columns:
             return df[column].apply(clean_category_code).tolist()
         return df
@@ -63,6 +81,18 @@ def safe_excel_read(filename: str, sheet_name, usecols=None) -> pd.DataFrame:
     if not os.path.exists(filename):
         return pd.DataFrame()
     try:
+        from data_utils import PARQUET_CACHE_DIR
+        usecols_str = str(usecols).replace(' ', '').replace('[', '').replace(']', '').replace(',', '_') if usecols else 'all'
+        pq_name = f"{os.path.basename(filename)}_{sheet_name}_{usecols_str}.parquet"
+        pq_name = pq_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+        pq_path = os.path.join(PARQUET_CACHE_DIR, pq_name)
+        
+        if os.path.exists(pq_path) and os.path.getmtime(pq_path) > os.path.getmtime(filename):
+            try:
+                return pd.read_parquet(pq_path)
+            except Exception:
+                pass
+                
         df = pd.read_excel(
             filename,
             sheet_name=sheet_name,
@@ -70,7 +100,16 @@ def safe_excel_read(filename: str, sheet_name, usecols=None) -> pd.DataFrame:
             engine="openpyxl",
             dtype=str,
         )
-        return df.dropna(how="all")
+        df = df.dropna(how="all")
+        
+        try:
+            os.makedirs(PARQUET_CACHE_DIR, exist_ok=True)
+            df.columns = df.columns.astype(str)
+            df.to_parquet(pq_path)
+        except Exception as cache_e:
+            logger.warning(f"Failed to cache {pq_path}: {cache_e}")
+            
+        return df
     except Exception as e:
         logger.error(f"safe_excel_read: tab='{sheet_name}' file={filename}: {e}")
         return pd.DataFrame()
@@ -157,13 +196,12 @@ def load_restricted_brands_from_local() -> Dict[str, List[Dict]]:
             vars_s = _split_set(df.get("variations", pd.Series([""] * len(df), index=df.index)), ",")
 
             # Parse "Expanded Variations" — stored as Python list strings e.g. "['axiz-y', ...]"
-            import ast as _ast
             def _parse_expanded(val):
                 s = str(val).strip()
                 if not s or s.lower() == "nan":
                     return set()
                 try:
-                    parsed = _ast.literal_eval(s)
+                    parsed = ast.literal_eval(s)
                     if isinstance(parsed, list):
                         return {str(v).strip().lower() for v in parsed if str(v).strip()}
                 except Exception:
@@ -620,7 +658,11 @@ def load_flags_mapping(filename="reason.xlsx") -> Dict[str, dict]:
         ),
         "Counterfeit Sneakers": (
             "1000023 - Confirmation of counterfeit product by Jumia technical team (Not Authorized)",
-            "Sneaker confirmed counterfeit.",
+            "Confirmed counterfeit sneaker.",
+        ),
+        "NSFW images": (
+            "1000040 - Image corrupt",
+            "Image is NSFW (Not Safe For Work) - likelihood that an image contains explicit or unsafe content.",
         ),
         "Suspected counterfeit Jerseys": (
             "1000023 - Confirmation of counterfeit product by Jumia technical team (Not Authorized)",
@@ -837,16 +879,37 @@ def load_flags_mapping(filename="reason.xlsx") -> Dict[str, dict]:
                     )
                 }
                 if custom_mapping:
-                    ng_keys = {
-                        k: v
-                        for k, v in default_mapping.items()
-                        if k.startswith("NG - ")
-                    }
-                    return {**custom_mapping, **ng_keys}
+                    return {**default_mapping, **custom_mapping}
     except Exception as e:
         logger.warning(f"load_flags_mapping({filename}): {e}")
 
     return default_mapping
+
+
+@st.cache_data(ttl=3600)
+def load_fda_category_codes_from_local() -> Dict[str, List[str]]:
+    filename = "QC Check Validaton  (2).xlsx"
+    fda_codes = {}
+    if not os.path.exists(filename):
+        return fda_codes
+    try:
+        xl = pd.ExcelFile(filename)
+        for sheet in xl.sheet_names:
+            if "Mandatory Attributes -" in sheet:
+                country_code = sheet.split("-")[-1].strip().upper()
+                df = xl.parse(sheet)
+                if "Category Path + ID" in df.columns and "FDA Documents" in df.columns:
+                    mandatory_df = df[df["FDA Documents"].astype(str).str.strip().str.lower() == "mandatory"]
+                    if "ID" in mandatory_df.columns:
+                        codes = mandatory_df["ID"].astype(str).str.strip().str.split('.').str[0].tolist()
+                    else:
+                        codes = mandatory_df["Category Path + ID"].astype(str).str.extract(r'^(\d+)')[0].tolist()
+                    
+                    codes = [c for c in codes if str(c) not in ("nan", "None", "")]
+                    fda_codes[country_code] = codes
+    except Exception as e:
+        logger.error(f"Error loading FDA codes from {filename}: {e}")
+    return fda_codes
 
 
 @st.cache_data(ttl=3600)
@@ -858,6 +921,7 @@ def load_all_support_files() -> Dict:
         return load_txt_file(f) if os.path.exists(f) else []
 
     support = {
+        "fda_category_codes": load_fda_category_codes_from_local(),
         "blacklisted_words": safe_txt("blacklisted.txt"),
         "book_category_codes": safe_txt("Books_cat.txt"),
         "books_data": load_books_data_from_local(),
@@ -907,12 +971,14 @@ def load_all_support_files() -> Dict:
                 _valid = _valid[_valid.str.strip().ne("")]
                 _cat_names = _valid.tolist()
                 if _code_col:
-                    for _, _row in _cm_df[[_path_col, _code_col]].dropna().iterrows():
-                        _p = str(_row[_path_col]).strip()
-                        _c = str(_row[_code_col]).strip().split(".")[0]
-                        if _p and _c:
-                            _cat_path_to_code[_p.lower()] = _c
-                            _code_to_path[_c] = _p
+                    _sub = _cm_df[[_path_col, _code_col]].dropna()
+                    _sub = _sub.copy()
+                    _sub[_code_col] = _sub[_code_col].astype(str).str.strip().str.split('.').str[0]
+                    _sub[_path_col] = _sub[_path_col].astype(str).str.strip()
+                    _valid_mask = _sub[_path_col].ne('') & _sub[_code_col].ne('')
+                    _sub = _sub[_valid_mask]
+                    _cat_path_to_code = dict(zip(_sub[_path_col].str.lower(), _sub[_code_col]))
+                    _code_to_path     = dict(zip(_sub[_code_col], _sub[_path_col]))
         else:
             logger.warning(f"[CategoryMap] {_cm_path} not found.")
     except Exception as _ce:

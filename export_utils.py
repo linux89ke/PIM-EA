@@ -60,7 +60,7 @@ def to_excel_base(df: pd.DataFrame, sheet: str, cols: list, writer, format_rules
 
     # Force SKU/ParentSKU columns to string so xlsxwriter doesn't coerce
     # zero-padded values like '000669' → 669
-    _sku_cols = [c for c in df_to_write.columns if c.upper() in ('PARENTSKU', 'SELLER_SKU', 'SELLERSKU', 'PRODUCT_SET_ID', 'PRODUCT_SET_SID', 'PRODUCTSETSID', 'SID')]
+    _sku_cols = [c for c in df_to_write.columns if c.upper().replace(' ', '').replace('_', '') in ('PARENTSKU', 'SELLERSKU', 'PRODUCTSETID', 'PRODUCTSETSID', 'SID')]
     for c in _sku_cols:
         df_to_write[c] = df_to_write[c].astype(str).where(df_to_write[c].notna(), other='')
 

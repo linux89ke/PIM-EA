@@ -28,116 +28,17 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-try:
-    from sentence_transformers import SentenceTransformer, util
-except (ImportError, OSError) as e:
-    logger.warning(f"SentenceTransformers failed to load ({e}). Advanced AI features disabled.")
-    SentenceTransformer = None
-    util = None
+# SentenceTransformers / CLIP removed — Visual Brand Guard disabled
 
-# ── Visual Brand Guard ──────────────────────────────────────────────────────
+# ── Visual Brand Guard (disabled — CLIP/SentenceTransformers removed) ─────
 class VisualBrandGuard:
-    def __init__(self, reference_dir="restricted_brand_references"):
-        self.reference_dir = reference_dir
-        self.model = None
-        self.index = {} # {brand: [embeddings]}
+    """No-op stub. CLIP model dependency has been removed."""
+    def __init__(self, *args, **kwargs):
         self.is_ready = False
 
-    def _ensure_model(self):
-        if self.model is None:
-            if SentenceTransformer is None:
-                logger.error("SentenceTransformer is not available. Visual Brand Guard cannot load.")
-                return
-            logger.info("Loading CLIP model for Visual Brand Guard...")
-            self.model = SentenceTransformer('clip-ViT-B-32')
-            logger.info("CLIP model loaded.")
+    def build_index(self): pass
 
-    def build_index(self):
-        if not os.path.exists(self.reference_dir):
-            logger.warning(f"Reference dir {self.reference_dir} not found. Visual Brand Guard disabled.")
-            return
-
-        self._ensure_model()
-        new_index = {}
-        
-        # Load approved sellers list from Restricted_Brands.xlsx
-        approved_map = {}
-        try:
-            if os.path.exists("Restricted_Brands.xlsx"):
-                xl = pd.ExcelFile("Restricted_Brands.xlsx")
-                for sheet in xl.sheet_names:
-                    df = xl.parse(sheet)
-                    df.columns = [str(c).strip().lower() for c in df.columns]
-                    if 'brand' in df.columns and 'approved sellers' in df.columns:
-                        for _, row in df.iterrows():
-                            b = str(row.get('brand', '')).strip().lower()
-                            s_raw = str(row.get('approved sellers', '')).strip().lower()
-                            if b and b != 'nan':
-                                sellers = set([s.strip() for s in s_raw.split(',') if s.strip() and s.strip() != 'nan'])
-                                approved_map.setdefault(b, set()).update(sellers)
-        except Exception as e:
-            logger.error(f"Failed to load approved sellers: {e}")
-
-        for brand in os.listdir(self.reference_dir):
-            brand_path = os.path.join(self.reference_dir, brand)
-            if not os.path.isdir(brand_path): continue
-            
-            logger.info(f"Indexing restricted brand: {brand}")
-            embeddings = []
-            for img_name in os.listdir(brand_path):
-                if not img_name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.webm')): continue
-                try:
-                    img_path = os.path.join(brand_path, img_name)
-                    img = Image.open(img_path)
-                    if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
-                        bg = Image.new("RGB", img.size, (255, 255, 255))
-                        bg.paste(img, mask=img.convert('RGBA').split()[3])
-                        img = bg
-                    else:
-                        img = img.convert("RGB")
-                    emb = self.model.encode(img)
-                    embeddings.append(emb)
-                except Exception as e:
-                    logger.error(f"Failed to index {img_name}: {e}")
-            
-            if embeddings:
-                new_index[brand] = {
-                    'embeddings': embeddings,
-                    'approved_sellers': approved_map.get(brand.lower(), set())
-                }
-        
-        self.index = new_index
-        self.is_ready = bool(self.index)
-        logger.info(f"Visual Brand Guard index built for {len(self.index)} brands.")
-
-    def check_image(self, img_bytes: bytes, seller_name: str, threshold=0.9) -> Optional[str]:
-        if not self.is_ready: return None
-        try:
-            self._ensure_model()
-            img = Image.open(BytesIO(img_bytes)).convert("RGB")
-            query_emb = self.model.encode(img)
-            
-            best_brand = None
-            max_sim = 0
-            
-            seller_lower = str(seller_name).strip().lower()
-            
-            for brand, data in self.index.items():
-                # If seller is already approved for this brand, skip visual check to save time
-                if seller_lower in data['approved_sellers']:
-                    continue
-                    
-                ref_embs = data['embeddings']
-                similarities = util.cos_sim(query_emb, ref_embs)[0]
-                brand_max = similarities.max().item()
-                if brand_max > max_sim:
-                    max_sim = brand_max
-                    best_brand = brand
-            
-            if max_sim >= threshold:
-                return best_brand
-        except Exception as e:
-            logger.error(f"Visual check failed: {e}")
+    def check_image(self, *args, **kwargs):
         return None
 
 brand_guard = VisualBrandGuard()

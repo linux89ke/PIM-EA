@@ -11,7 +11,6 @@ import os
 import pickle
 import re
 import shutil
-import threading
 import time
 import traceback
 import zipfile
@@ -124,6 +123,7 @@ from ui_components import (
     render_exports_section,
     render_flag_expander,
     render_image_grid,
+    render_manual_review_buttons,
     render_rejection_donut,
     render_summary_header,
 )
@@ -414,12 +414,6 @@ except ImportError:
     pass
 
 try:
-    from qc_analysis_embed import render_qc_analysis_tab
-    _QCA_AVAILABLE = True
-except ImportError:
-    _QCA_AVAILABLE = False
-
-try:
     import _preqc_registry as _reg
 except ImportError:
     _reg = None
@@ -512,11 +506,8 @@ def prune_cache_dir(directory: str, max_files: int = 500, max_age_days: int = 7)
         logger.warning(f"Cache pruning failed for {directory}: {e}")
 
 
-# Background-throttled cache pruning — runs at most once every 10 minutes
-if "last_prune_time" not in st.session_state or (time.time() - st.session_state.last_prune_time) > 600:
-    threading.Thread(target=prune_cache_dir, args=(FLAG_CACHE_DIR,), daemon=True).start()
-    threading.Thread(target=prune_cache_dir, args=(PARQUET_CACHE_DIR,), daemon=True).start()
-    st.session_state.last_prune_time = time.time()
+prune_cache_dir(FLAG_CACHE_DIR)
+prune_cache_dir(PARQUET_CACHE_DIR)
 
 
 
@@ -1079,7 +1070,7 @@ def check_prohibited_products(
         set(rule["keyword"] for rule in prohibited_rules), key=len, reverse=True
     )
     combined_pattern = re.compile(
-        r"(?<!\w)(" + "|".join(re.escape(k) for k in all_kws) + r")(?!\w)",
+        r"(?<!\w)(?:" + "|".join(re.escape(k) for k in all_kws) + r")(?!\w)",
         re.IGNORECASE,
     )
     match_mask = data["_name_lower"].str.contains(combined_pattern, na=False)
@@ -1485,28 +1476,22 @@ def check_suspected_fake_perfume(
 ) -> pd.DataFrame:
     """
     Flags products where:
-      1. The product is in a perfume category (Perfume_cat.txt → perfume_category_codes)
-      2. The BRAND field is a known fake/evasion label (e.g. Generic, Designer,
-         Smart Collection, Fragrance World …) — from perfume_catalog['fake_brands']
-      3. The product NAME contains a known legitimate perfume brand name, alias,
+      1. The BRAND field is a known fake/generic brand (e.g. Generic, Designer,
+         Smart Collection, Fragrance World, Testa, Tester …) — from perfume_catalog['fake_brands']
+      2. The product NAME contains a known legitimate perfume brand name, alias,
          or model name — from perfume_catalog['legit_brand_terms'] + ['model_terms']
+      3. The product is in a perfume category (perfume_category_codes)
 
     Example trigger:
-        CATEGORY = Perfumes & Fragrances
-        BRAND    = "Designer"
-        NAME     = "Designer Creed EAU DE PARFUM AVENTUS PERFUME"
-        → flagged: "creed" (legit brand) + "aventus" (Creed model) found in name
+        BRAND = "Designer"
+        NAME  = "Designer Creed EAU DE PARFUM AVENTUS PERFUME"
+        → flagged because "creed" (legit brand) and "aventus" (Creed model) found in name
+
+    Same reason code as Counterfeit Sneakers: 1000023
     """
     if not {"CATEGORY_CODE", "NAME", "BRAND"}.issubset(data.columns):
         return pd.DataFrame(columns=data.columns)
     if not perfume_catalog:
-        return pd.DataFrame(columns=data.columns)
-
-    # Category codes are required — without them we'd scan every product on the
-    # platform and generate massive false positives (e.g. "Nivea Gold" matching
-    # "gold" as a perfume model term).  Add category codes to Perfume_cat.txt.
-    cat_codes = set(clean_category_code(c) for c in perfume_category_codes)
-    if not cat_codes:
         return pd.DataFrame(columns=data.columns)
 
     fake_brands = perfume_catalog.get("fake_brands", set())
@@ -1517,14 +1502,7 @@ def check_suspected_fake_perfume(
     if not fake_brands or not (legit_brand_terms or model_terms):
         return pd.DataFrame(columns=data.columns)
 
-    # Filter model_terms to only specific/long-enough strings to avoid false positives.
-    # Short common words (e.g. 'men', 'blue', 'gold', 'navy', 'sport') appear in
-    # perfume catalog as fragments of multi-word model names but will match unrelated
-    # products (chinos, watches, stickers…).  Brand-level terms are proper nouns and
-    # are always kept; model terms require ≥ 6 chars to be considered specific enough.
-    _MIN_MODEL_TERM_LEN = 6
-    filtered_model_terms = {t for t in model_terms if len(t) >= _MIN_MODEL_TERM_LEN}
-    all_terms = legit_brand_terms | filtered_model_terms
+    all_terms = legit_brand_terms | model_terms
     term_pattern = re.compile(
         r"\b("
         + "|".join(re.escape(t) for t in sorted(all_terms, key=len, reverse=True))
@@ -1532,34 +1510,32 @@ def check_suspected_fake_perfume(
         re.IGNORECASE,
     )
 
+    cat_codes = set(clean_category_code(c) for c in perfume_category_codes)
     d = data[data["_cat_clean"].isin(cat_codes)].copy()
     if d.empty:
         return pd.DataFrame(columns=data.columns)
 
-    # Only look at products whose BRAND is a known evasion label
     d = d[d["_brand_lower"].isin(fake_brands)].copy()
     if d.empty:
         return pd.DataFrame(columns=data.columns)
 
-    def _find_all_matches(name_lower):
-        """Return all matching terms found in the product name."""
-        return [m.group(0).lower() for m in term_pattern.finditer(str(name_lower))]
+    def _find_match(name_lower):
+        m = term_pattern.search(str(name_lower))
+        return m.group(0).lower() if m else None
 
-    d["_pfume_matches"] = d["_name_lower"].apply(_find_all_matches)
-    flagged = d[d["_pfume_matches"].map(len) > 0].copy()
+    d["_pfume_match"] = d["_name_lower"].apply(_find_match)
+    flagged = d[d["_pfume_match"].notna()].copy()
 
     if not flagged.empty:
+
         def build_comment(row):
-            terms = row["_pfume_matches"]
-            # Prefer the longest term (most specific) for the comment
-            best = max(terms, key=len)
-            brand = term_to_brand.get(best, best.title())
-            all_found = ", ".join(f"'{t}'" for t in sorted(set(terms), key=len, reverse=True)[:3])
-            return f"Suspected fake {brand} perfume — terms found in name: {all_found}"
+            term = row["_pfume_match"]
+            brand = term_to_brand.get(term, term.title())
+            return f"Suspected fake {brand} perfume — '{term}' in name"
 
         flagged["Comment_Detail"] = flagged.apply(build_comment, axis=1)
 
-    return flagged.drop(columns=["_pfume_matches"]).drop_duplicates(
+    return flagged.drop(columns=["_pfume_match"]).drop_duplicates(
         subset=["PRODUCT_SET_SID"]
     )
 
@@ -1983,7 +1959,7 @@ def check_incomplete_smartphone_name(
     ].copy()
     if target.empty:
         return pd.DataFrame(columns=data.columns)
-    pat = re.compile(r"\b\d+\s*(gb|tb)\b", re.IGNORECASE)
+    pat = re.compile(r"\b\d+\s*(?:gb|tb)\b", re.IGNORECASE)
     flagged = target[~target["_name_lower"].str.contains(pat, na=False)].copy()
     if not flagged.empty:
         flagged["Comment_Detail"] = "Name missing Storage/Memory spec (e.g., 64GB)"
@@ -3236,6 +3212,9 @@ _FLAG_SVGS = {
   <path fill="#c1272d" d="M512 0H0v512h512z"/>
   <path fill="none" stroke="#006233" stroke-width="12.5" d="m256 191.4-38 116.8 99.4-72.2H194.6l99.3 72.2z"/>
 </svg>""",
+    "Egypt": "<svg></svg>",
+    "Ivory Coast": "<svg></svg>",
+    "Senegal": "<svg></svg>",
 }
 
 
@@ -3251,6 +3230,9 @@ _FILE_MAP = {
     "Nigeria": "ng",
     "Ghana": "gh",
     "Morocco": "ma",
+    "Egypt": "EG",
+    "Ivory Coast": "IC",
+    "Senegal": "SN",
 }
 _flag_b64 = {}
 for _cname, _code in _FILE_MAP.items():
@@ -3267,7 +3249,7 @@ for _cname, _code in _FILE_MAP.items():
     else:
         _flag_b64[_cname] = _svg_to_b64(_FLAG_SVGS[_cname])
 
-_countries = ["Kenya", "Uganda", "Nigeria", "Ghana", "Morocco"]
+_countries = ["Kenya", "Uganda", "Nigeria", "Ghana", "Morocco", "Egypt", "Ivory Coast", "Senegal"]
 _O = JUMIA_COLORS["primary_orange"]
 
 _flag_buttons_html = "".join(
@@ -3630,7 +3612,8 @@ if st.session_state.get("last_processed_files") != process_signature:
                                         else pd.read_excel(BytesIO(qc_data), dtype=str)
                                     )
                                     _build_zip_sid_index(st.session_state.zip_qc_results)
-                                    raw_data = st.session_state.zip_qc_results.copy()
+                                    # QC results are metadata only — do NOT add to all_dfs
+                                    raw_data = pd.DataFrame()
                                 st.session_state.zip_image_index = _index_zip_images(zf)
                                 st.session_state.zip_image_source_bytes = uf["bytes"]
 
@@ -3643,7 +3626,8 @@ if st.session_state.get("last_processed_files") != process_signature:
                                 else pd.read_excel(_buf, engine="openpyxl", dtype=str)
                             )
                             _build_zip_sid_index(st.session_state.zip_qc_results)
-                            raw_data = st.session_state.zip_qc_results.copy()
+                            # QC results are metadata only — do NOT add to all_dfs
+                            raw_data = pd.DataFrame()
 
                         elif uf["name"].lower().endswith(".xlsx"):
                             raw_data = pd.read_excel(_buf, engine="openpyxl", dtype=str)
@@ -3657,7 +3641,13 @@ if st.session_state.get("last_processed_files") != process_signature:
                     st.session_state.no_computation_zip = has_zip_source
 
                     if not all_dfs:
-                        raise ValueError("No data could be read from the uploaded file(s).")
+                        # Fallback: if only a ZIP/QC file was uploaded with no separate product file,
+                        # use the QC results themselves as product data (original behaviour)
+                        _qr = st.session_state.get("zip_qc_results")
+                        if _qr is not None and not _qr.empty:
+                            all_dfs.append(_qr.copy())
+                        else:
+                            raise ValueError("No data could be read from the uploaded file(s).")
 
                     # ── 3. Detect file mode (pre_qc vs post_qc) ───────────────────
                     _file_mode = "pre_qc"
@@ -3819,10 +3809,10 @@ if st.session_state.get("last_processed_files") != process_signature:
                             for _r_dict in results_parts:
                                 for _flag, _df_r in _r_dict.items():
                                     if _flag not in combined_results:
-                                        combined_results[_flag] = _df_r
+                                        combined_results[_flag] = _df_r.copy()
                                     else:
                                         combined_results[_flag] = pd.concat(
-                                            [combined_results[_flag], _df_r], ignore_index=True
+                                            [combined_results[_flag], _df_r.copy()], ignore_index=True
                                         )
                         else:
                             final_report_subset = pd.DataFrame(
@@ -3920,11 +3910,59 @@ if st.session_state.get("last_processed_files") != process_signature:
                                     else _default_cmt
                                 )
                                 
-                                # Extra specificity for known columns
-                                if _flag == "Wrong Category" and "Category_Check_Rejection_Reason" in qc_zip.columns:
+                                # Extra specificity — split into sub-validation flags
+                                if _flag in ("Wrong Category", "Category Check") and "Category_Check_Rejection_Reason" in qc_zip.columns:
                                     _cr = str(_r["Category_Check_Rejection_Reason"]).strip()
                                     if _cr and _cr.lower() not in ("nan", "rejected"):
                                         _final_cmt = _cr
+                                        _crl = _cr.lower()
+                                        if "prohib" in _crl: _flag_pf = "Prohibited Category (Prefetched)"
+                                        elif "pet product" in _crl: _flag_pf = "Pet Product - Wrong Cat (Prefetched)"
+                                        elif "baby/toddler" in _crl: _flag_pf = "Baby Product - Wrong Cat (Prefetched)"
+                                        elif "sexual" in _crl: _flag_pf = "Sexual Wellness (Prefetched)"
+                                        elif "inactive" in _crl: _flag_pf = "Inactive Category (Prefetched)"
+                                        elif "connection error" in _crl or "timed out" in _crl: _flag_pf = "AI Error (Prefetched)"
+                                        elif "ai suggests" in _crl: _flag_pf = "AI Suggests Different (Prefetched)"
+
+                                if _flag in ("Brand Image Check", "Restricted brands", "Product Name Brand Name"):
+                                    _br = ""
+                                    if _flag == "Product Name Brand Name" and "Product name_Brand name_rejection reason" in qc_zip.columns:
+                                        _br = str(_r["Product name_Brand name_rejection reason"]).strip()
+                                    elif _flag in ("Brand Image Check", "Restricted brands") and "Brand_Image_Check_Reason" in qc_zip.columns:
+                                        _br = str(_r["Brand_Image_Check_Reason"]).strip()
+                                        
+                                    if _br and _br.lower() not in ("nan", "rejected"):
+                                        _final_cmt = _br
+                                        _brl = _br.lower()
+                                        if "generic" in _brl: _flag_pf = "Generic Brand (Prefetched)"
+                                        elif "repeated" in _brl: _flag_pf = "Brand in Name (Prefetched)"
+                                        elif "inspired" in _brl or "alternative" in _brl: _flag_pf = "Inspired Brand (Prefetched)"
+                                        elif "high-end" in _brl: _flag_pf = "High-End Mismatch (Prefetched)"
+                                        elif "connection error" in _brl or "timed out" in _brl: _flag_pf = "AI Error (Prefetched)"
+
+                                if _flag == "Title Language Check" and "Title_Language_Check_Reason" in qc_zip.columns:
+                                    _tr = str(_r["Title_Language_Check_Reason"]).strip()
+                                    if _tr and _tr.lower() not in ("nan", "rejected"):
+                                        _final_cmt = _tr
+                                        _trl = _tr.lower()
+                                        if "weight/volume" in _trl: _flag_pf = "Missing Weight/Vol (Prefetched)"
+                                        elif "english" in _trl: _flag_pf = "Not in English (Prefetched)"
+                                        elif "connection error" in _trl or "timed out" in _trl: _flag_pf = "AI Error (Prefetched)"
+                                
+                                if _flag in ("Image Quality Check", "Poor images"):
+                                    _ir = ""
+                                    if "Image_Quality_Check_Reason" in qc_zip.columns:
+                                        _ir = str(_r["Image_Quality_Check_Reason"]).strip()
+                                    if _ir and _ir.lower() not in ("nan", "rejected"):
+                                        _final_cmt = _ir
+                                        _irl = _ir.lower()
+                                        if "stretched" in _irl: _flag_pf = "Image Stretched (Prefetched)"
+                                        elif "blurry" in _irl or "poor" in _irl: _flag_pf = "Image Blurry/Poor (Prefetched)"
+                                        elif "mismatch" in _irl: _flag_pf = "Image Mismatch (Prefetched)"
+                                        elif "infring" in _irl or "watermark" in _irl: _flag_pf = "Image Infringing (Prefetched)"
+                                        elif "too many" in _irl: _flag_pf = "Image Too Many Things (Prefetched)"
+                                        elif "connection error" in _irl or "timed out" in _irl: _flag_pf = "AI Error (Prefetched)"
+
 
                                 _fidx = _fr_sid_to_idx.get(_sid)
                                 if _fidx is not None:
@@ -3950,7 +3988,8 @@ if st.session_state.get("last_processed_files") != process_signature:
                                             ):
                                                 _row_data[_zcol] = _r[_zcol]
                                         _row_data["Comment_Detail"] = _comment
-                                        _zip_result_rows.setdefault(_flag, []).append(_row_data)
+                                        # Use specific sub-flag as key so each gets its own dataframe
+                                        _zip_result_rows.setdefault(_flag_pf, []).append(_row_data)
 
                                 # Manual review override
                                 if str(_r.get("Manual_Review", "")).lower() in ("true", "1", "yes"):
@@ -4178,13 +4217,34 @@ def handle_jtbridge():
                     st.session_state.do_scroll_top = False
                     st.rerun(scope="fragment")
 
+            elif _msg.get("action") == "prev_page":
+                current_page = st.session_state.get("grid_page", 0)
+                if current_page > 0:
+                    new_page = current_page - 1
+                    st.session_state.grid_page = new_page
+                    st.session_state["grid_pagination_top"] = new_page + 1
+                    st.session_state["grid_pagination_bot"] = new_page + 1
+                    st.session_state["_last_seen_grid_page"] = new_page
+                st.session_state.main_bridge_counter += 1
+                st.session_state.do_scroll_top = True
+                st.rerun()
+
+            elif _msg.get("action") == "next_page":
+                new_page = st.session_state.get("grid_page", 0) + 1
+                st.session_state.grid_page = new_page
+                st.session_state["grid_pagination_top"] = new_page + 1
+                st.session_state["grid_pagination_bot"] = new_page + 1
+                st.session_state["_last_seen_grid_page"] = new_page
+                st.session_state.main_bridge_counter += 1
+                st.session_state.do_scroll_top = True
+                st.rerun()
+
         except Exception as _e:
             logger.error(f"Bridge parse error: {_e}")
 
 
 # Call the fragment immediately
 handle_jtbridge()
-
 
 # ==========================================
 # RESULTS SECTION
@@ -4568,6 +4628,7 @@ def render_main_results():
     # ==========================================
     # CALL EXTERNAL RENDERERS
     # ==========================================
+    render_manual_review_buttons(support_files)
     render_image_grid(support_files)
     render_exports_section(support_files, country_validator)
 

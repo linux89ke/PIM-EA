@@ -2,6 +2,7 @@
 data_utils.py - Data loading, cleaning, transformation and validation helpers
 """
 
+import json
 import re
 import hashlib
 import logging
@@ -12,6 +13,18 @@ from typing import Dict, List, Set, Tuple, Optional
 from dataclasses import dataclass
 
 from constants import NEW_FILE_MAPPING, COLOR_VARIANT_TO_BASE, MULTI_COUNTRY_VALUES, PARQUET_CACHE_DIR
+
+# ---------------------------------------------------------------------------
+# Load mojibake substitution map once at import time
+# ---------------------------------------------------------------------------
+_MOJIBAKE_MAP: Dict[str, str] = {}
+try:
+    _mj_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mojibake_map.json")
+    if os.path.exists(_mj_path):
+        with open(_mj_path, "r", encoding="utf-8") as _f:
+            _MOJIBAKE_MAP = json.load(_f)
+except Exception:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +44,32 @@ def load_df_parquet(filename):
         except Exception as e:
             logger.warning(f"Failed to load parquet {filename}: {e}")
     return None
+
+def list_cached_sessions():
+    sessions = []
+    if not os.path.exists(PARQUET_CACHE_DIR):
+        return sessions
+    for f in os.listdir(PARQUET_CACHE_DIR):
+        if f.endswith("_report.parquet"):
+            sig_hash = f.replace("_report.parquet", "")
+            path = os.path.join(PARQUET_CACHE_DIR, f)
+            mtime = os.path.getmtime(path)
+            try:
+                # Just get shape without full load if possible, or load it
+                df = load_df_parquet(f)
+                if df is not None:
+                    total = len(df)
+                    rej = len(df[df["Status"] == "Rejected"])
+                    sessions.append({
+                        "sig_hash": sig_hash,
+                        "mtime": mtime,
+                        "total": total,
+                        "rejected": rej
+                    })
+            except:
+                pass
+    sessions.sort(key=lambda x: x["mtime"], reverse=True)
+    return sessions
 
 
 # -------------------------------------------------
@@ -67,11 +106,17 @@ def create_match_key(row: pd.Series) -> str:
     return f"{brand}|{name}|{color}"
 
 
+# Pre-compiled noise pattern shared by normalize_text and _normalize_series
+_NOISE_PATTERN = re.compile(
+    r'\b(new|sale|original|genuine|authentic|official|premium|quality|best|hot|2024|2025)\b',
+    re.IGNORECASE,
+)
+
+
 def _normalize_series(s: pd.Series) -> pd.Series:
-    _noise = r'\b(new|sale|original|genuine|authentic|official|premium|quality|best|hot|2024|2025)\b'
     return (
         s.astype(str).str.lower().str.strip()
-        .str.replace(_noise, '', regex=True)
+        .str.replace(_NOISE_PATTERN, '', regex=True)
         .str.replace(r'[^\w\s]', '', regex=True)
         .str.replace(r'\s+', '', regex=True)
     )
@@ -95,7 +140,6 @@ def df_hash(df: pd.DataFrame) -> str:
             result = "empty"
         else:
             # Use pandas built-in hashing for fast, accurate full-content hashing
-            import hashlib
             result = hashlib.md5(pd.util.hash_pandas_object(df, index=False).values.tobytes()).hexdigest()
     except Exception as e:
         logger.warning(f"df_hash primary failed, using fallback: {e}")
@@ -131,13 +175,23 @@ def extract_colors(text: str, explicit_color: Optional[str] = None) -> Set[str]:
     return colors
 
 
+# Pre-compiled patterns for remove_attributes — eliminates 12 separate re.sub calls per invocation
+_ATTR_NOISE_RE = re.compile(
+    r'\b(new|original|genuine|authentic|official|premium|quality|best|hot|sale|promo|deal)\b',
+    re.IGNORECASE,
+)
+_SIZE_RE = re.compile(r'\b(?:xxs|xs|small|medium|large|xl|xxl|xxxl)\b', re.IGNORECASE)
+_SPEC_RE = re.compile(
+    r'\b\d+\s*(?:gb|tb|inch|inches|"|ram|memory|ddr|pack|piece|pcs)\b', re.IGNORECASE
+)
+
+
 def remove_attributes(text: str) -> str:
     base = str(text).lower() if text else ""
     base = _COLOR_PATTERN.sub('', base)
-    base = re.sub(r'\b(?:xxs|xs|small|medium|large|xl|xxl|xxxl)\b', '', base)
-    base = re.sub(r'\b\d+\s*(?:gb|tb|inch|inches|"|ram|memory|ddr|pack|piece|pcs)\b', '', base)
-    for word in ['new', 'original', 'genuine', 'authentic', 'official', 'premium', 'quality', 'best', 'hot', 'sale', 'promo', 'deal']:
-        base = re.sub(r'\b' + word + r'\b', '', base)
+    base = _SIZE_RE.sub('', base)
+    base = _SPEC_RE.sub('', base)
+    base = _ATTR_NOISE_RE.sub('', base)
     return re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', base)).strip()
 
 
@@ -176,23 +230,61 @@ def extract_product_attributes(name: str, explicit_color: Optional[str] = None, 
 def _detect_and_read_csv(buf) -> pd.DataFrame:
     _ENCODINGS = ['utf-8-sig', 'utf-8', 'cp1252', 'iso-8859-1']
     raw_bytes = buf.read()
+    
+    # 1. Fast detection using a small chunk
+    best_enc = 'utf-8'
+    best_sep = ','
+    found = False
+    
     for enc in _ENCODINGS:
         for sep in [',', ';', '\t']:
             try:
-                df = pd.read_csv(BytesIO(raw_bytes), sep=sep, encoding=enc, dtype=str)
-                if len(df.columns) > 1:
-                    return df
+                df_chunk = pd.read_csv(BytesIO(raw_bytes), sep=sep, encoding=enc, dtype=str, nrows=10)
+                if len(df_chunk.columns) > 1:
+                    best_enc = enc
+                    best_sep = sep
+                    found = True
+                    break
             except Exception:
                 continue
+        if found:
+            break
+            
+    # 2. Read the full file exactly once with detected parameters
+    if found:
+        return pd.read_csv(BytesIO(raw_bytes), sep=best_sep, encoding=best_enc, dtype=str)
+    
+    # 3. Fallback
     return pd.read_csv(BytesIO(raw_bytes), sep=None, engine='python', encoding='utf-8', dtype=str)
 
 
-def _repair_mojibake(df: pd.DataFrame) -> pd.DataFrame:
-    _ILLEGAL_XML = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
+_ILLEGAL_XML_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
 
-    def _fix(val):
+
+def _repair_mojibake(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Fix mojibake (double-encoded UTF-8) and known substitution sequences.
+
+    Strategy (per column, vectorized):
+      1. Apply _MOJIBAKE_MAP literal substitutions first — handles known
+         sequences like 'â€"' -> '-' and 'â€™' -> "'" without any encoding
+         round-trips.
+      2. Attempt a vectorized latin-1 -> utf-8 heuristic decode using
+         errors='ignore' so characters outside latin-1 (en-dashes U+2013,
+         em-dashes U+2014, smart quotes U+2018/9, etc.) are silently
+         preserved rather than converted to '?' (the previous bug with
+         errors='replace').
+      3. Strip illegal XML control characters.
+      4. Per-row fallback for any column where vectorization fails.
+    """
+
+    def _fix_row(val: str) -> str:
         if not isinstance(val, str):
             return val
+        # Step 1: literal map
+        for bad, good in _MOJIBAKE_MAP.items():
+            val = val.replace(bad, good)
+        # Step 2: encoding heuristic
         for enc in ('cp1252', 'latin-1'):
             try:
                 fixed = val.encode(enc).decode('utf-8')
@@ -201,26 +293,14 @@ def _repair_mojibake(df: pd.DataFrame) -> pd.DataFrame:
                     break
             except (UnicodeDecodeError, UnicodeEncodeError):
                 continue
-        return _ILLEGAL_XML.sub('', val)
+        # Step 3: strip illegal XML control chars
+        return _ILLEGAL_XML_RE.sub('', val)
 
     for col in df.select_dtypes(include='object').columns:
-        try:
-            # Vectorized path: encode as latin-1 bytes then decode as utf-8
-            repaired = (
-                df[col].astype(str)
-                .str.encode('latin-1', errors='replace')
-                .str.decode('utf-8', errors='replace')
-            )
-            # Only accept the vectorized result where it actually changed something
-            # and didn't introduce replacement chars where original had none
-            mask = repaired != df[col].astype(str)
-            no_replacement = ~repaired.str.contains('\ufffd', na=False)
-            df[col] = df[col].astype(str).where(~(mask & no_replacement), repaired)
-            # Strip illegal XML control chars vectorized
-            df[col] = df[col].str.replace(_ILLEGAL_XML.pattern, '', regex=True)
-        except Exception:
-            # Fallback to row-by-row for any column that fails vectorization
-            df[col] = df[col].apply(_fix)
+        # We apply the _fix_row function to each column. 
+        # This safely attempts encoding fixes using strict errors (in _fix_row), 
+        # preventing data corruption like dropping valid en-dashes.
+        df[col] = df[col].astype(str).apply(_fix_row)
     return df
 
 
@@ -249,29 +329,37 @@ def standardize_input_data(df: pd.DataFrame) -> pd.DataFrame:
     if 'MAIN_IMAGE' not in df.columns:
         df['MAIN_IMAGE'] = ''
 
-    # Restore leading zeros in PARENTSKU from PRODUCT_SET_SID if they are equivalent integers
+    # Restore leading zeros in PARENTSKU from PRODUCT_SET_SID when they represent
+    # the same integer but SID has more leading zeros (e.g. '7' -> '00007').
+    # Fully vectorized — eliminates the df.apply(axis=1) row loop.
     if 'PARENTSKU' in df.columns and 'PRODUCT_SET_SID' in df.columns:
-        df['PARENTSKU'] = df['PARENTSKU'].fillna('').astype(str)
-        df['PRODUCT_SET_SID'] = df['PRODUCT_SET_SID'].fillna('').astype(str)
+        psku = df['PARENTSKU'].fillna('').astype(str).str.strip()
+        sid  = df['PRODUCT_SET_SID'].fillna('').astype(str).str.strip()
 
-        def _restore_leading_zeros(row):
-            psku = str(row['PARENTSKU']).strip()
-            sid = str(row['PRODUCT_SET_SID']).strip()
-            if not psku or not sid or psku.lower() in ('nan', '') or sid.lower() in ('nan', ''):
-                return row['PARENTSKU']
-            p_digits_match = re.match(r"^(\d+)", psku)
-            s_digits_match = re.match(r"^(\d+)", sid)
-            if p_digits_match and s_digits_match:
-                p_digits = p_digits_match.group(1)
-                s_digits = s_digits_match.group(1)
-                try:
-                    if int(p_digits) == int(s_digits) and len(s_digits) > len(p_digits):
-                        return psku.replace(p_digits, s_digits, 1)
-                except ValueError:
-                    pass
-            return row['PARENTSKU']
+        # Treat explicit 'nan' strings as empty
+        psku = psku.where(~psku.str.lower().isin({'nan', ''}), '')
+        sid  = sid.where(~sid.str.lower().isin({'nan', ''}), '')
 
-        df['PARENTSKU'] = df.apply(_restore_leading_zeros, axis=1)
+        # Extract leading digit group and suffix from each column
+        p_extract = psku.str.extract(r'^(\d+)(.*)', expand=True)
+        p_digits = p_extract[0]
+        p_suffix = p_extract[1].fillna('')
+        
+        s_digits = sid.str.extract(r'^(\d+)', expand=False)
+
+        # Eligible rows: both have leading digits, SID is longer (more zeros),
+        # and they represent the same integer (lstrip '0' to compare numerically)
+        both_have = p_digits.notna() & s_digits.notna() & psku.ne('') & sid.ne('')
+        sid_longer = s_digits.str.len() > p_digits.str.len()
+        same_int   = (
+            p_digits.str.lstrip('0').fillna('') ==
+            s_digits.str.lstrip('0').fillna('')
+        )
+        mask = both_have & sid_longer & same_int
+
+        df['PARENTSKU'] = psku  # normalise to stripped string
+        if mask.any():
+            df.loc[mask, 'PARENTSKU'] = s_digits[mask] + p_suffix[mask]
 
     if 'MAIN_IMAGE' not in df.columns:
         df['MAIN_IMAGE'] = ''
@@ -298,7 +386,7 @@ def filter_by_country(df: pd.DataFrame, country_validator) -> Tuple[pd.DataFrame
         filtered = df[df['ACTIVE_STATUS_COUNTRY'] == country_validator.code].copy()
         filtered['_IS_MULTI_COUNTRY'] = False
     # Detect all countries present in the file
-    prefix_map = {"KE": "Kenya", "UG": "Uganda", "NG": "Nigeria", "GH": "Ghana", "MA": "Morocco"}
+    prefix_map = {"KE": "Kenya", "UG": "Uganda", "NG": "Nigeria", "GH": "Ghana", "MA": "Morocco", "EG": "Egypt", "SN": "Senegal", "CI": "Ivory Coast"}
 
     detected_codes = set()
     if 'ACTIVE_STATUS_COUNTRY' in df.columns:
@@ -314,7 +402,7 @@ def filter_by_country(df: pd.DataFrame, country_validator) -> Tuple[pd.DataFrame
                 if vals.str.startswith(prefix).any():
                     detected_codes.add(prefix)
     
-    emoji_map = {"KE": "Kenya", "UG": "Uganda", "NG": "Nigeria", "GH": "Ghana", "MA": "Morocco"}
+    emoji_map = {"KE": "Kenya", "UG": "Uganda", "NG": "Nigeria", "GH": "Ghana", "MA": "Morocco", "EG": "Egypt", "SN": "Senegal", "CI": "Ivory Coast"}
     detected_names = sorted(list(set(emoji_map.get(c, str(c)) for c in detected_codes if str(c).strip() and str(c).strip().lower() != 'nan')))
     
     return filtered, detected_names
@@ -328,9 +416,10 @@ def propagate_metadata(df: pd.DataFrame) -> pd.DataFrame:
     for col in meta_cols:
         if col not in df.columns:
             df[col] = pd.NA
-    grouped = df.groupby('PRODUCT_SET_SID')
-    for col in meta_cols:
-        df[col] = grouped[col].transform(lambda x: x.ffill().bfill())
+            
+    # Vectorized group forward/backward fill (orders of magnitude faster than lambda)
+    df[meta_cols] = df.groupby('PRODUCT_SET_SID')[meta_cols].ffill()
+    df[meta_cols] = df.groupby('PRODUCT_SET_SID')[meta_cols].bfill()
     return df
 
 
@@ -377,6 +466,8 @@ def format_local_price(usd_price, country: str) -> str:
 # -------------------------------------------------
 # ZIP IMAGE LAZY LOADING (CACHED BASE64)
 # -------------------------------------------------
+_ZIP_FILE_CACHE = None
+_ZIP_FILE_BYTES_ID = None
 
 def _basename_lower(value) -> str:
     name = str(value).strip().replace("\\", "/").split("/")[-1].lower()
@@ -398,16 +489,41 @@ def _load_zip_image_by_key(key: str) -> Optional[str]:
     if not member or not source_bytes:
         return None
     try:
-        with zipfile.ZipFile(BytesIO(source_bytes)) as zf:
-            img_bytes = zf.read(member)
-            encoded = base64.b64encode(img_bytes).decode('utf-8')
+        global _ZIP_FILE_CACHE, _ZIP_FILE_BYTES_ID
+        if _ZIP_FILE_CACHE is None or _ZIP_FILE_BYTES_ID != id(source_bytes):
+            _ZIP_FILE_CACHE = zipfile.ZipFile(BytesIO(source_bytes))
+            _ZIP_FILE_BYTES_ID = id(source_bytes)
+        img_bytes = _ZIP_FILE_CACHE.read(member)
+
+        # 🚀 Optimize Image Size to Prevent Bloat
+        try:
+            from PIL import Image
+            import io
+            with Image.open(BytesIO(img_bytes)) as img:
+                # Convert to RGB if necessary (e.g., RGBA or P)
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                img.thumbnail((600, 600), Image.Resampling.LANCZOS)
+                
+                # Save to a new buffer
+                out_buffer = io.BytesIO()
+                img.save(out_buffer, format="JPEG", quality=85)
+                img_bytes = out_buffer.getvalue()
+                mime = "image/jpeg"
+        except ImportError:
+            # Fallback if Pillow is not installed, use original mime
             mime = "image/jpeg"
             if key.endswith(".png"): mime = "image/png"
             elif key.endswith(".webp"): mime = "image/webp"
             elif key.endswith(".gif"): mime = "image/gif"
-            data_uri = f"data:{mime};base64,{encoded}"
-            store[key] = data_uri
-            return data_uri
+        except Exception as e:
+            logger.warning(f"Failed to resize image {member}: {e}")
+            mime = "image/jpeg"
+
+        encoded = base64.b64encode(img_bytes).decode('utf-8')
+        data_uri = f"data:{mime};base64,{encoded}"
+        store[key] = data_uri
+        return data_uri
     except Exception as e:
         logger.warning(f"Failed lazy-loading ZIP image {member}: {e}")
         return None
