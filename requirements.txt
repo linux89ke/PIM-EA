@@ -1,6 +1,6 @@
 streamlit>=1.45
 pandas>=2.2.3
-numpy==1.26.4
+numpy>=1.26
 openpyxl==3.1.5
 Pillow
 requests==2.31.0
@@ -8,7 +8,6 @@ xlsxwriter==3.1.9
 plotly==5.22.0
 beautifulsoup4==4.12.3
 lxml>=6.0.0
-orjson==3.9.10
 polars
 st-styled
 orjson>=3.10.0
