@@ -31,11 +31,14 @@ FULL_DATA_COLS = [
 GRID_COLS = ['PRODUCT_SET_SID', 'NAME', 'BRAND', 'CATEGORY', 'SELLER_NAME', 'MAIN_IMAGE', 'GLOBAL_SALE_PRICE', 'GLOBAL_PRICE', 'COLOR']
 
 COUNTRY_CURRENCY = {
-    "Kenya":   {"code": "KES", "symbol": "KSh", "pair": "USD/KES"},
-    "Uganda":  {"code": "UGX", "symbol": "USh", "pair": "USD/UGX"},
-    "Nigeria": {"code": "NGN", "symbol": "₦",   "pair": "USD/NGN"},
-    "Ghana":   {"code": "GHS", "symbol": "GH₵", "pair": "USD/GHS"},
-    "Morocco": {"code": "MAD", "symbol": "MAD", "pair": "USD/MAD"},
+    "Kenya":       {"code": "KES", "symbol": "KSh", "pair": "USD/KES"},
+    "Uganda":      {"code": "UGX", "symbol": "USh", "pair": "USD/UGX"},
+    "Nigeria":     {"code": "NGN", "symbol": "₦",   "pair": "USD/NGN"},
+    "Ghana":       {"code": "GHS", "symbol": "GH₵", "pair": "USD/GHS"},
+    "Morocco":     {"code": "MAD", "symbol": "MAD", "pair": "USD/MAD"},
+    "Egypt":       {"code": "EGP", "symbol": "EGP", "pair": "USD/EGP"},
+    "Senegal":     {"code": "XOF", "symbol": "XOF", "pair": "USD/XOF"},
+    "Ivory Coast": {"code": "XOF", "symbol": "XOF", "pair": "USD/XOF"},
 }
 
 NEW_FILE_MAPPING = {
@@ -102,9 +105,12 @@ COUNTRY_VALIDATOR_CONFIG = {
         "code": "UG",
         "skip_validations": ["Counterfeit Sneakers", "Product Warranty"],
     },
-    "Nigeria": {"code": "NG", "skip_validations": []},
-    "Ghana": {"code": "GH", "skip_validations": []},
-    "Morocco": {"code": "MA", "skip_validations": ["Generic BRAND Issues"]},
+    "Nigeria":     {"code": "NG", "skip_validations": []},
+    "Ghana":       {"code": "GH", "skip_validations": []},
+    "Morocco":     {"code": "MA", "skip_validations": ["Generic BRAND Issues"]},
+    "Egypt":       {"code": "EG", "skip_validations": []},
+    "Senegal":     {"code": "SN", "skip_validations": []},
+    "Ivory Coast": {"code": "CI", "skip_validations": []},
 }
 
 
@@ -137,6 +143,8 @@ REASON_MAP = {
     "REJECT_FDA":            "FDA",
     "REJECT_TITLE_LANG":     "Title Language Check",
     "REJECT_FAKE_PERFUME":   "Suspected Fake Perfume",
+    "REJECT_UNNECESSARY":    "Unnecessary words in NAME",
+    "REJECT_IMG_NSFW":       "NSFW images",
     "OTHER_CUSTOM":          "Other Reason (Custom)"
 }
 
