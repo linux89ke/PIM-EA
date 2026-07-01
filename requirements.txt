@@ -11,3 +11,4 @@ lxml>=6.0.0
 orjson==3.9.10
 polars
 st-styled
+orjson>=3.10.0
