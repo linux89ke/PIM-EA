@@ -1,10 +1,10 @@
 """
 Bulk Image Downloader (Streamlit App)
 --------------------------------------
-- Upload an XLSX file with columns: SKU, URL
+- Upload an XLSX file with a SKU column and URL1, URL2, URL3, ... columns
 - Downloads every image URL
-- Renames each file as SKU_1, SKU_2, ... (increments per SKU if there are
-  multiple rows / multiple images for the same SKU)
+- Renames each file using SKU + the URL column's position, e.g. the image
+  in URL3 for SKU ABC123 becomes ABC123_3
 - Optional: convert transparent PNGs to JPEG with a white background
 - Download everything as a single ZIP, or download files one by one
 
@@ -115,8 +115,9 @@ def build_zip(results: list[dict]) -> bytes:
 # --------------------------------------------------------------------------
 st.title("🖼️ Bulk Image Downloader")
 st.caption(
-    "Upload an XLSX with **SKU** and **URL** columns. Each image is renamed to "
-    "`SKU_1` (the SKU with `_1` appended)."
+    "Upload an XLSX with a **SKU** column and one or more **URL1, URL2, URL3, ...** "
+    "columns. Each image is renamed using the SKU plus the URL column's position "
+    "— e.g. the image in `URL3` for SKU `ABC123` becomes `ABC123_3`."
 )
 
 with st.sidebar:
@@ -130,7 +131,12 @@ with st.sidebar:
     st.divider()
     st.markdown(
         "**XLSX format expected:**\n\n"
-        "| SKU | URL |\n|---|---|\n| ABC123 | https://.../img1.png |\n| ABC123 | https://.../img2.png |\n| XYZ999 | https://.../img3.jpg |"
+        "| SKU | URL1 | URL2 | URL3 |\n|---|---|---|---|\n"
+        "| ABC123 | https://.../img1.png | https://.../img2.png | |\n"
+        "| XYZ999 | https://.../img3.jpg | | |\n\n"
+        "`URL1` also matches a plain `URL` column. Blank cells are skipped. "
+        "The number in the column name (1, 2, 3, ...) becomes the filename suffix, "
+        "e.g. `URL2` → `SKU_2`."
     )
 
 uploaded_file = st.file_uploader("Upload XLSX file", type=["xlsx"])
@@ -142,27 +148,58 @@ if uploaded_file is not None:
         st.error(f"Could not read the Excel file: {e}")
         st.stop()
 
-    # normalize column names (case-insensitive match)
-    col_map = {c.lower().strip(): c for c in df.columns}
-    if "sku" not in col_map or "url" not in col_map:
+    # normalize column names (case-insensitive)
+    df.columns = [str(c).strip() for c in df.columns]
+    col_map = {c.lower(): c for c in df.columns}
+
+    if "sku" not in col_map:
+        st.error(f"The file must contain a 'SKU' column. Found: {list(df.columns)}")
+        st.stop()
+
+    sku_col = col_map["sku"]
+
+    # find URL columns: URL, URL1, URL2, URL3, ... (case-insensitive)
+    import re
+
+    url_cols = []
+    for c in df.columns:
+        m = re.fullmatch(r"url\s*(\d*)", c.strip(), flags=re.IGNORECASE)
+        if m:
+            num = int(m.group(1)) if m.group(1) else 1
+            url_cols.append((num, c))
+    url_cols.sort(key=lambda x: x[0])
+
+    if not url_cols:
         st.error(
-            f"The file must contain 'SKU' and 'URL' columns. Found: {list(df.columns)}"
+            f"The file must contain at least one URL column (e.g. 'URL', 'URL1', 'URL2', ...). "
+            f"Found: {list(df.columns)}"
         )
         st.stop()
 
-    df = df.rename(columns={col_map["sku"]: "SKU", col_map["url"]: "URL"})
-    df = df[["SKU", "URL"]].dropna(subset=["URL"])
-    df["SKU"] = df["SKU"].astype(str).str.strip()
-    df["URL"] = df["URL"].astype(str).str.strip()
+    rows = []
+    for _, row in df.iterrows():
+        sku = str(row[sku_col]).strip()
+        if not sku or sku.lower() == "nan":
+            continue
+        for num, col in url_cols:
+            url = row.get(col)
+            if pd.isna(url):
+                continue
+            url = str(url).strip()
+            if not url or url.lower() == "nan":
+                continue
+            rows.append({"SKU": sku, "URL": url, "target_name": f"{sku}_{num}"})
 
-    # always append _1 to the SKU, no incrementing
-    df["target_name"] = df["SKU"] + "_1"
+    df = pd.DataFrame(rows)
+
+    if df.empty:
+        st.error("No valid SKU/URL pairs were found in the file.")
+        st.stop()
 
     dupes = df["target_name"][df["target_name"].duplicated(keep=False)].unique()
     if len(dupes) > 0:
         st.warning(
-            f"{len(dupes)} SKU(s) appear more than once, so their files will share the "
-            "same name (e.g. duplicates will overwrite each other in the ZIP): "
+            f"{len(dupes)} filename(s) collide (same SKU + column position): "
             + ", ".join(dupes[:10])
             + (" ..." if len(dupes) > 10 else "")
         )
