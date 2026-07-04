@@ -26,7 +26,6 @@ import polars as pl
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
-import st_yled
 import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
@@ -117,6 +116,7 @@ from pricing_rules import (
     check_wrong_price,
 )
 from translations import LANGUAGES, get_translation
+import streamlit.components.v1 as components
 from ui_components import (
     apply_status_change,
     flag_pill_header,
@@ -130,49 +130,71 @@ from ui_components import (
 
 # ──────────────────────────────────────────────────────────────────────────────
 # GLOBAL STYLES & BRANDING (Javascript Injector for targeted styling)
+# components.html() is the correct way to execute JS in Streamlit.
+# st.markdown scripts are inert - React's dangerouslySetInnerHTML does not run them.
 # ──────────────────────────────────────────────────────────────────────────────
-st.markdown(
+components.html(
     """
-    <div class="dashboard-marker" style="display:none;"></div>
     <script>
-    function colorExpander() {
-        const markers = document.querySelectorAll('.dashboard-marker');
-        markers.forEach(marker => {
-            // Streamlit wraps each element in an element-container div.
-            // The marker and the expander are siblings at that level.
-            let container = marker.closest('[data-testid="element-container"]');
-            if (!container) return;
-            let next = container.nextElementSibling;
-            // Skip any non-expander siblings (e.g. empty containers)
-            while (next && !next.querySelector('[data-testid="stExpander"]')) {
-                next = next.nextElementSibling;
+    (function() {
+        function colorExpander() {
+            try {
+                var doc = window.parent.document;
+                var expanders = doc.querySelectorAll('[data-testid="stExpander"]');
+                expanders.forEach(function(expander) {
+                    var summary = expander.querySelector('summary');
+                    if (!summary) return;
+                    var label = summary.textContent || '';
+                    var isZip = label.indexOf('Prefetched') !== -1 || label.indexOf('ZIP') !== -1;
+                    if (isZip) {
+                        if (summary.getAttribute('data-zip-styled') === '1') return;
+                        summary.style.setProperty('background-color', 'rgb(244, 210, 159)', 'important');
+                        summary.style.setProperty('color', 'rgb(49, 51, 63)', 'important');
+                        summary.style.setProperty('border-radius', '8px', 'important');
+                        summary.style.setProperty('margin-bottom', '4px', 'important');
+                        var p = summary.querySelector('p');
+                        if (p) {
+                            p.style.setProperty('color', 'rgb(49, 51, 63)', 'important');
+                            p.style.setProperty('font-weight', '600', 'important');
+                        }
+                        summary.setAttribute('data-zip-styled', '1');
+                    } else {
+                        summary.style.removeProperty('background-color');
+                        summary.style.removeProperty('color');
+                        summary.style.removeProperty('border-radius');
+                        summary.style.removeProperty('margin-bottom');
+                        var p2 = summary.querySelector('p');
+                        if (p2) {
+                            p2.style.removeProperty('color');
+                            p2.style.removeProperty('font-weight');
+                            p2.style.removeProperty('font-size');
+                        }
+                        var svg = summary.querySelector('svg');
+                        if (svg) {
+                            svg.style.removeProperty('fill');
+                        }
+                        summary.removeAttribute('data-zip-styled');
+                        summary.removeAttribute('data-std-styled');
+                    }
+                });
+            } catch(e) {
+                console.error('colorExpander error:', e);
             }
-            if (!next) return;
-            let expander = next.querySelector('[data-testid="stExpander"]');
-            if (!expander) return;
-            let summary = expander.querySelector('summary');
-            if (summary && summary.style.backgroundColor !== 'rgb(246, 139, 30)') {
-                summary.style.setProperty('background-color', '#f68b1e', 'important');
-                summary.style.setProperty('color', 'white', 'important');
-                summary.style.setProperty('border-radius', '8px', 'important');
-                summary.style.setProperty('margin-bottom', '4px', 'important');
-                let p = summary.querySelector('p');
-                if (p) {
-                    p.style.setProperty('color', 'white', 'important');
-                    p.style.setProperty('font-weight', '800', 'important');
-                    p.style.setProperty('font-size', '1.05rem', 'important');
-                }
-                let svg = summary.querySelector('svg');
-                if (svg) svg.style.setProperty('fill', 'white', 'important');
-            }
-        });
-    }
-    setTimeout(colorExpander, 300);
-    setTimeout(colorExpander, 800);
-    setInterval(colorExpander, 2000);
+        }
+        // Run immediately and on a timer
+        setTimeout(colorExpander, 100);
+        setTimeout(colorExpander, 500);
+        setInterval(colorExpander, 1500);
+        // Also watch for DOM changes so we catch expanders added after file upload
+        try {
+            var obs = new MutationObserver(function() { colorExpander(); });
+            obs.observe(window.parent.document.body, { childList: true, subtree: true });
+        } catch(e) {}
+    })();
     </script>
-""",
-    unsafe_allow_html=True,
+    """,
+    height=0,
+    scrolling=False,
 )
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -218,7 +240,7 @@ PREFETCH_REASON_COLUMNS = {
     "image_quality_check": ["Image_Quality_Check_Reason"],
     "brand_image_check": ["Brand_Image_Check_Reason"],
 }
-PROCESSING_CACHE_VERSION = "prefetch_context_v3"
+PROCESSING_CACHE_VERSION = "prefetch_context_v4"
 PREFETCH_VALIDATOR_SKIP_MAP = {
     "category_check": ["Wrong Category", "Category Check"],
     "warranty_check": ["Product Warranty", "Warranty Check"],
@@ -418,13 +440,7 @@ try:
 except ImportError:
     _reg = None
 
-try:
-    from jumia_scraper import COUNTRY_BASE_URLS as _SCRAPER_URLS
-    from jumia_scraper import enrich_post_qc_df
-
-    _SCRAPER_AVAILABLE = True
-except ImportError:
-    _SCRAPER_AVAILABLE = False
+# -- Scraper Disabled ----------------------------------------------------------`r`n_SCRAPER_AVAILABLE = False
 
 # ── Category Matcher Engine ───────────────────────────────────────────────────
 try:
@@ -1070,7 +1086,7 @@ def check_prohibited_products(
         set(rule["keyword"] for rule in prohibited_rules), key=len, reverse=True
     )
     combined_pattern = re.compile(
-        r"(?<!\w)(?:" + "|".join(re.escape(k) for k in all_kws) + r")(?!\w)",
+        r"(?<!\w)(" + "|".join(re.escape(k) for k in all_kws) + r")(?!\w)",
         re.IGNORECASE,
     )
     match_mask = data["_name_lower"].str.contains(combined_pattern, na=False)
@@ -1211,6 +1227,39 @@ def check_refurb_seller_approval(
             return f"Unapproved {ptype} refurb seller — keyword '{kw_found}' in name (cat: {row['_cat_clean']})"
 
         flagged["Comment_Detail"] = flagged.apply(build_comment, axis=1)
+    return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
+
+
+def check_fda(data: pd.DataFrame, country_code: str) -> pd.DataFrame:
+    from targeted_audit_filters import load_qc_excel
+    rules = load_qc_excel(country_code)
+    if not rules:
+        return pd.DataFrame(columns=data.columns)
+
+    d = data.copy()
+    if "FDA" not in d.columns:
+        d["FDA"] = ""
+    d["FDA"] = d["FDA"].astype(str).str.strip().fillna("")
+
+    mandatory_cats = {
+        cat for cat, rule in rules.items()
+        if str(rule.get("FDA Documents", "")).strip().lower() == "mandatory"
+    }
+
+    if not mandatory_cats:
+        return pd.DataFrame(columns=d.columns)
+
+    flagged = d[
+        d["_cat_clean"].isin(mandatory_cats) |
+        d["CATEGORY_CODE"].astype(str).str.strip().isin(mandatory_cats)
+    ].copy()
+    if flagged.empty:
+        return pd.DataFrame(columns=d.columns)
+
+    is_missing = flagged["FDA"].isin(["", "nan", "none", "nat", "n/a"]) | flagged["FDA"].isna()
+    flagged = flagged[is_missing].copy()
+    if not flagged.empty:
+        flagged["Comment_Detail"] = "Mandatory FDA registration number is missing."
     return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
 
 
@@ -1959,7 +2008,7 @@ def check_incomplete_smartphone_name(
     ].copy()
     if target.empty:
         return pd.DataFrame(columns=data.columns)
-    pat = re.compile(r"\b\d+\s*(?:gb|tb)\b", re.IGNORECASE)
+    pat = re.compile(r"\b\d+\s*(gb|tb)\b", re.IGNORECASE)
     flagged = target[~target["_name_lower"].str.contains(pat, na=False)].copy()
     if not flagged.empty:
         flagged["Comment_Detail"] = "Name missing Storage/Memory spec (e.g., 64GB)"
@@ -2264,6 +2313,7 @@ if _reg is not None:
             "check_weight_volume_in_name": check_weight_volume_in_name,
             "check_incomplete_smartphone_name": check_incomplete_smartphone_name,
             "check_duplicate_products": check_duplicate_products,
+            "check_fda": check_fda,
         }
     )
 
@@ -2334,6 +2384,11 @@ def validate_products(
                     "warranty_category_codes", []
                 )
             },
+        ),
+        (
+            "FDA",
+            check_fda,
+            {"country_code": country_validator.code},
         ),
         (
             "Seller Approve to sell books",
@@ -2987,7 +3042,6 @@ try:
 except:
     pass
 
-st_yled.init()
 
 
 def _t(key):
@@ -3212,9 +3266,6 @@ _FLAG_SVGS = {
   <path fill="#c1272d" d="M512 0H0v512h512z"/>
   <path fill="none" stroke="#006233" stroke-width="12.5" d="m256 191.4-38 116.8 99.4-72.2H194.6l99.3 72.2z"/>
 </svg>""",
-    "Egypt": "<svg></svg>",
-    "Ivory Coast": "<svg></svg>",
-    "Senegal": "<svg></svg>",
 }
 
 
@@ -3230,9 +3281,9 @@ _FILE_MAP = {
     "Nigeria": "ng",
     "Ghana": "gh",
     "Morocco": "ma",
-    "Egypt": "EG",
-    "Ivory Coast": "IC",
-    "Senegal": "SN",
+    "Egypt": "eg",
+    "Senegal": "sn",
+    "Ivory Coast": "ic",
 }
 _flag_b64 = {}
 for _cname, _code in _FILE_MAP.items():
@@ -3243,13 +3294,13 @@ for _cname, _code in _FILE_MAP.items():
             if content:
                 _flag_b64[_cname] = _svg_to_b64(content)
             else:
-                _flag_b64[_cname] = _svg_to_b64(_FLAG_SVGS[_cname])
+                _flag_b64[_cname] = _svg_to_b64(_FLAG_SVGS.get(_cname, ""))
         except Exception:
-            _flag_b64[_cname] = _svg_to_b64(_FLAG_SVGS[_cname])
+            _flag_b64[_cname] = _svg_to_b64(_FLAG_SVGS.get(_cname, ""))
     else:
-        _flag_b64[_cname] = _svg_to_b64(_FLAG_SVGS[_cname])
+        _flag_b64[_cname] = _svg_to_b64(_FLAG_SVGS.get(_cname, ""))
 
-_countries = ["Kenya", "Uganda", "Nigeria", "Ghana", "Morocco", "Egypt", "Ivory Coast", "Senegal"]
+_countries = ["Kenya", "Uganda", "Nigeria", "Ghana", "Morocco", "Egypt", "Senegal", "Ivory Coast"]
 _O = JUMIA_COLORS["primary_orange"]
 
 _flag_buttons_html = "".join(
@@ -3362,7 +3413,7 @@ if country_choice and country_choice != current_country:
     st.session_state.exports_cache = {}
     st.session_state.display_df_cache = {}
 
-    st.session_state.ui_lang = "fr" if country_choice == "Morocco" else "en"
+    st.session_state.ui_lang = "fr" if country_choice in ["Morocco", "Senegal", "Ivory Coast"] else "en"
     st.session_state.country_bridge_counter += 1
     st.toast(f"Switching to {country_choice}…", icon=":material/public:")
     st.rerun()
@@ -3430,21 +3481,31 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    st.session_state.cached_uploaded_files = [
-        {"name": uf.name, "bytes": uf.read()} for uf in uploaded_files
-    ]
-elif uploaded_files is not None and len(uploaded_files) == 0:
-    st.session_state.cached_uploaded_files = []
-    st.session_state.final_report = pd.DataFrame()
-    st.session_state.all_data_map = pd.DataFrame()
-    st.session_state.all_data_rows = pd.DataFrame()
-    st.session_state.file_mode = None
-    st.session_state.exports_cache = {}
-    st.session_state.display_df_cache = {}
-    st.session_state.zip_image_store = {}
-    st.session_state.zip_image_index = {}
-    st.session_state.zip_image_source_bytes = None
-    st.session_state.last_processed_files = "empty"
+    # User just uploaded new files - update the cache
+    _new_cache = []
+    for uf in uploaded_files:
+        uf.seek(0)
+        _new_cache.append({"name": uf.name, "bytes": uf.read()})
+    st.session_state.cached_uploaded_files = _new_cache
+    st.session_state._uploader_had_files = True
+elif uploaded_files is not None and len(uploaded_files) == 0 and st.session_state.get("_uploader_had_files", False):
+    # User actively removed files from the uploader (had files, now empty)
+    # Only clear if this is genuinely the user removing files, not just a rerun
+    # We check uploader_key to detect actual clear-button presses vs language reruns
+    _prev_uploader_key = st.session_state.get("_last_uploader_key", -1)
+    _curr_uploader_key = st.session_state.uploader_key
+    if _prev_uploader_key == _curr_uploader_key:
+        # Same uploader widget - user removed files manually
+        st.session_state.cached_uploaded_files = []
+        st.session_state.final_report = pd.DataFrame()
+        st.session_state.all_data_map = pd.DataFrame()
+        st.session_state.all_data_rows = pd.DataFrame()
+        st.session_state.file_mode = None
+        st.session_state.exports_cache = {}
+        st.session_state.display_df_cache = {}
+        st.session_state.zip_image_store = {}
+        st.session_state._uploader_had_files = False
+st.session_state._last_uploader_key = st.session_state.uploader_key
 
 _large_file_threshold = 5_000
 _large_file_skip_validations = [
@@ -3612,8 +3673,7 @@ if st.session_state.get("last_processed_files") != process_signature:
                                         else pd.read_excel(BytesIO(qc_data), dtype=str)
                                     )
                                     _build_zip_sid_index(st.session_state.zip_qc_results)
-                                    # QC results are metadata only — do NOT add to all_dfs
-                                    raw_data = pd.DataFrame()
+                                    raw_data = st.session_state.zip_qc_results.copy()
                                 st.session_state.zip_image_index = _index_zip_images(zf)
                                 st.session_state.zip_image_source_bytes = uf["bytes"]
 
@@ -3626,8 +3686,7 @@ if st.session_state.get("last_processed_files") != process_signature:
                                 else pd.read_excel(_buf, engine="openpyxl", dtype=str)
                             )
                             _build_zip_sid_index(st.session_state.zip_qc_results)
-                            # QC results are metadata only — do NOT add to all_dfs
-                            raw_data = pd.DataFrame()
+                            raw_data = st.session_state.zip_qc_results.copy()
 
                         elif uf["name"].lower().endswith(".xlsx"):
                             raw_data = pd.read_excel(_buf, engine="openpyxl", dtype=str)
@@ -3641,13 +3700,7 @@ if st.session_state.get("last_processed_files") != process_signature:
                     st.session_state.no_computation_zip = has_zip_source
 
                     if not all_dfs:
-                        # Fallback: if only a ZIP/QC file was uploaded with no separate product file,
-                        # use the QC results themselves as product data (original behaviour)
-                        _qr = st.session_state.get("zip_qc_results")
-                        if _qr is not None and not _qr.empty:
-                            all_dfs.append(_qr.copy())
-                        else:
-                            raise ValueError("No data could be read from the uploaded file(s).")
+                        raise ValueError("No data could be read from the uploaded file(s).")
 
                     # ── 3. Detect file mode (pre_qc vs post_qc) ───────────────────
                     _file_mode = "pre_qc"
@@ -3809,10 +3862,10 @@ if st.session_state.get("last_processed_files") != process_signature:
                             for _r_dict in results_parts:
                                 for _flag, _df_r in _r_dict.items():
                                     if _flag not in combined_results:
-                                        combined_results[_flag] = _df_r.copy()
+                                        combined_results[_flag] = _df_r
                                     else:
                                         combined_results[_flag] = pd.concat(
-                                            [combined_results[_flag], _df_r.copy()], ignore_index=True
+                                            [combined_results[_flag], _df_r], ignore_index=True
                                         )
                         else:
                             final_report_subset = pd.DataFrame(
@@ -3829,6 +3882,11 @@ if st.session_state.get("last_processed_files") != process_signature:
                         final_report["Is_Zip"] = False
                         final_report["Is_Manual"] = False
                         final_report["PRODUCT_SET_SID"] = final_report["ProductSetSid"]
+
+                        # Mark ALL zip-sourced products so they get the blue border in the iframe
+                        if zip_sids:
+                            _zip_mask = final_report["ProductSetSid"].astype(str).str.strip().isin(zip_sids)
+                            final_report.loc[_zip_mask, "Is_Zip"] = True
 
                         # ── 9. Apply ZIP prefetch rejections FIRST (Priority 1) ───
                         if has_zip_source and not qc_zip.empty and _sid_col_qc:
@@ -3910,59 +3968,11 @@ if st.session_state.get("last_processed_files") != process_signature:
                                     else _default_cmt
                                 )
                                 
-                                # Extra specificity — split into sub-validation flags
-                                if _flag in ("Wrong Category", "Category Check") and "Category_Check_Rejection_Reason" in qc_zip.columns:
+                                # Extra specificity for known columns
+                                if _flag == "Wrong Category" and "Category_Check_Rejection_Reason" in qc_zip.columns:
                                     _cr = str(_r["Category_Check_Rejection_Reason"]).strip()
                                     if _cr and _cr.lower() not in ("nan", "rejected"):
                                         _final_cmt = _cr
-                                        _crl = _cr.lower()
-                                        if "prohib" in _crl: _flag_pf = "Prohibited Category (Prefetched)"
-                                        elif "pet product" in _crl: _flag_pf = "Pet Product - Wrong Cat (Prefetched)"
-                                        elif "baby/toddler" in _crl: _flag_pf = "Baby Product - Wrong Cat (Prefetched)"
-                                        elif "sexual" in _crl: _flag_pf = "Sexual Wellness (Prefetched)"
-                                        elif "inactive" in _crl: _flag_pf = "Inactive Category (Prefetched)"
-                                        elif "connection error" in _crl or "timed out" in _crl: _flag_pf = "AI Error (Prefetched)"
-                                        elif "ai suggests" in _crl: _flag_pf = "AI Suggests Different (Prefetched)"
-
-                                if _flag in ("Brand Image Check", "Restricted brands", "Product Name Brand Name"):
-                                    _br = ""
-                                    if _flag == "Product Name Brand Name" and "Product name_Brand name_rejection reason" in qc_zip.columns:
-                                        _br = str(_r["Product name_Brand name_rejection reason"]).strip()
-                                    elif _flag in ("Brand Image Check", "Restricted brands") and "Brand_Image_Check_Reason" in qc_zip.columns:
-                                        _br = str(_r["Brand_Image_Check_Reason"]).strip()
-                                        
-                                    if _br and _br.lower() not in ("nan", "rejected"):
-                                        _final_cmt = _br
-                                        _brl = _br.lower()
-                                        if "generic" in _brl: _flag_pf = "Generic Brand (Prefetched)"
-                                        elif "repeated" in _brl: _flag_pf = "Brand in Name (Prefetched)"
-                                        elif "inspired" in _brl or "alternative" in _brl: _flag_pf = "Inspired Brand (Prefetched)"
-                                        elif "high-end" in _brl: _flag_pf = "High-End Mismatch (Prefetched)"
-                                        elif "connection error" in _brl or "timed out" in _brl: _flag_pf = "AI Error (Prefetched)"
-
-                                if _flag == "Title Language Check" and "Title_Language_Check_Reason" in qc_zip.columns:
-                                    _tr = str(_r["Title_Language_Check_Reason"]).strip()
-                                    if _tr and _tr.lower() not in ("nan", "rejected"):
-                                        _final_cmt = _tr
-                                        _trl = _tr.lower()
-                                        if "weight/volume" in _trl: _flag_pf = "Missing Weight/Vol (Prefetched)"
-                                        elif "english" in _trl: _flag_pf = "Not in English (Prefetched)"
-                                        elif "connection error" in _trl or "timed out" in _trl: _flag_pf = "AI Error (Prefetched)"
-                                
-                                if _flag in ("Image Quality Check", "Poor images"):
-                                    _ir = ""
-                                    if "Image_Quality_Check_Reason" in qc_zip.columns:
-                                        _ir = str(_r["Image_Quality_Check_Reason"]).strip()
-                                    if _ir and _ir.lower() not in ("nan", "rejected"):
-                                        _final_cmt = _ir
-                                        _irl = _ir.lower()
-                                        if "stretched" in _irl: _flag_pf = "Image Stretched (Prefetched)"
-                                        elif "blurry" in _irl or "poor" in _irl: _flag_pf = "Image Blurry/Poor (Prefetched)"
-                                        elif "mismatch" in _irl: _flag_pf = "Image Mismatch (Prefetched)"
-                                        elif "infring" in _irl or "watermark" in _irl: _flag_pf = "Image Infringing (Prefetched)"
-                                        elif "too many" in _irl: _flag_pf = "Image Too Many Things (Prefetched)"
-                                        elif "connection error" in _irl or "timed out" in _irl: _flag_pf = "AI Error (Prefetched)"
-
 
                                 _fidx = _fr_sid_to_idx.get(_sid)
                                 if _fidx is not None:
@@ -3988,8 +3998,7 @@ if st.session_state.get("last_processed_files") != process_signature:
                                             ):
                                                 _row_data[_zcol] = _r[_zcol]
                                         _row_data["Comment_Detail"] = _comment
-                                        # Use specific sub-flag as key so each gets its own dataframe
-                                        _zip_result_rows.setdefault(_flag_pf, []).append(_row_data)
+                                        _zip_result_rows.setdefault(_flag, []).append(_row_data)
 
                                 # Manual review override
                                 if str(_r.get("Manual_Review", "")).lower() in ("true", "1", "yes"):
@@ -4217,37 +4226,12 @@ def handle_jtbridge():
                     st.session_state.do_scroll_top = False
                     st.rerun(scope="fragment")
 
-            elif _msg.get("action") == "prev_page":
-                current_page = st.session_state.get("grid_page", 0)
-                if current_page > 0:
-                    new_page = current_page - 1
-                    st.session_state.grid_page = new_page
-                    st.session_state["grid_pagination_top"] = new_page + 1
-                    st.session_state["grid_pagination_bot"] = new_page + 1
-                    st.session_state["_last_seen_grid_page"] = new_page
-                st.session_state.main_bridge_counter += 1
-                st.session_state.do_scroll_top = True
-                st.rerun()
-
-            elif _msg.get("action") == "next_page":
-                new_page = st.session_state.get("grid_page", 0) + 1
-                st.session_state.grid_page = new_page
-                st.session_state["grid_pagination_top"] = new_page + 1
-                st.session_state["grid_pagination_bot"] = new_page + 1
-                st.session_state["_last_seen_grid_page"] = new_page
-                st.session_state.main_bridge_counter += 1
-                st.session_state.do_scroll_top = True
-                st.rerun()
-
         except Exception as _e:
             logger.error(f"Bridge parse error: {_e}")
 
 
 # Call the fragment immediately
-handle_jtbridge()
-
-# ==========================================
-# RESULTS SECTION
+# Fragment defined above`r`n`r`n# ==========================================`r`n# RESULTS SECTION
 # ==========================================
 @st.cache_data(show_spinner=False)
 def get_enriched_results(fr_df, data_df):
@@ -4634,3 +4618,37 @@ def render_main_results():
 
 
 render_main_results()
+
+# ==========================================
+# GLOBAL BRIDGES AND SHORTCUTS
+# ==========================================
+# --- Language Bridge (Global) ---
+st.markdown('''
+<style>
+div[data-testid="stTextInput"]:has(input[placeholder="LANG_BRIDGE_DO_NOT_USE"]) {
+    display: none !important;
+}
+</style>
+''', unsafe_allow_html=True)
+
+_lang_bridge_val = st.text_input(
+    "lang_bridge",
+    value="",
+    placeholder="LANG_BRIDGE_DO_NOT_USE",
+    key=f"lang_bridge_{st.session_state.get('lang_bridge_counter', 0)}",
+    label_visibility="collapsed",
+)
+
+if _lang_bridge_val:
+    try:
+        _msg = json.loads(_lang_bridge_val)
+        if _msg.get("action") == "change_lang":
+            new_lang = _msg.get("payload")
+            if new_lang and new_lang in LANGUAGES.values():
+                st.session_state.ui_lang = new_lang
+                st.session_state.lang_bridge_counter = st.session_state.get("lang_bridge_counter", 0) + 1
+                st.rerun()
+    except Exception as e:
+        logger.error(f"Lang bridge error: {e}")
+
+handle_jtbridge()

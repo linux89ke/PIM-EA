@@ -158,6 +158,9 @@ def flag_pill_header(flag_name: str, count: int, is_zip: bool = False) -> str:
     }
     bg, fg = color_map.get(flag_name, ("#f3f4f6", "#374151"))
     
+    if is_zip:
+        bg, fg = ("#f8fafc", "#334155")
+    
     zip_badge = (
         ' <span style="background:linear-gradient(135deg, #3b82f6, #1d4ed8);color:white;border-radius:6px;padding:2px 8px;font-size:10px;font-weight:900;box-shadow:0 2px 4px rgba(0,0,0,0.1);margin-left:8px;">ZIP</span>'
         if is_zip
@@ -683,10 +686,8 @@ def render_flag_expander(
             how="left",
         )
         _extra_cols_cleaned = [c for c in _extra_cols if c in df_display.columns]
-        # Always carry image columns through so the preview toggle works for non-ZIP products too
-        for _ic in ("image1", "IMAGE1_ZIP", "MAIN_IMAGE", "MAIN_IMAGE_URL", "IMAGE_URL", "IMAGE_URL_1"):
-            if _ic in df_display.columns and _ic not in _extra_cols_cleaned:
-                _extra_cols_cleaned.append(_ic)
+        if "IMAGE1_ZIP" in df_display.columns:
+            _extra_cols_cleaned.append("IMAGE1_ZIP")
 
         df_display = df_display[list(dict.fromkeys(_extra_cols_cleaned + ["Is_Zip"]))]
 
@@ -800,30 +801,25 @@ def render_flag_expander(
     # We no longer add 'Image Preview' to df_view to avoid sending megabytes of Base64
     # data to the browser via st.dataframe(). We will fetch images on-the-fly for the grid.
     def get_img(row):
-        # Try all known image column names directly from the row
-        _img_candidates = ["image1", "IMAGE1_ZIP", "MAIN_IMAGE", "MAIN_IMAGE_URL", "IMAGE_URL", "IMAGE_URL_1"]
-        img_val = ""
-        for _cand in _img_candidates:
-            _v = row.get(_cand, "")
-            if _v and not pd.isna(_v) and str(_v).strip() and str(_v).lower() not in ("nan", "none", ""):
-                img_val = str(_v).strip()
-                break
-
-        if not img_val:
+        if not img_col or img_col not in row:
             return None
-
+        sid = row.get("PRODUCT_SET_SID")
         name = row.get("NAME", "")
         brand = row.get("BRAND", "")
-
-        # 1. Try ZIP store (works for uploaded ZIP images or filename keys)
+        img_val = row.get(img_col, "")
+        if pd.isna(img_val):
+            img_val = ""
         zip_img = _get_image_from_zip(name, brand, img_val)
         if zip_img:
             return zip_img
-
-        # 2. If img_val itself is a URL, return it (upgrade http→https)
-        if img_val.startswith("http"):
-            return img_val.replace("http://", "https://", 1)
-
+        if (
+            "IMAGE1_ZIP" in row
+            and pd.notna(row["IMAGE1_ZIP"])
+            and str(row["IMAGE1_ZIP"]).startswith("http")
+        ):
+            return str(row["IMAGE1_ZIP"])
+        if str(img_val).startswith("http"):
+            return str(img_val).replace("http://", "https://", 1)
         return None
     if "GLOBAL_PRICE" in df_view.columns and "GLOBAL_SALE_PRICE" in df_view.columns:
 
@@ -1026,7 +1022,7 @@ def render_flag_expander(
                         st.markdown(f'<div class="grid-price-badge">{local_price}</div>', unsafe_allow_html=True)
 
                     # Image (Streamlit handles ZIP extraction here)
-                    st.image(img_url, use_container_width=True)
+                    st.image(img_url, use_column_width=True)
 
                     # Details
                     st.markdown(
@@ -1284,8 +1280,6 @@ def build_fast_grid_html(
     show_images=True,
     seller_trust=None,
     support_files=None,
-    curr_page=0,
-    total_pages=1,
 ):
     if seller_trust is None: seller_trust = {}
     if support_files is None: support_files = {}
@@ -1368,18 +1362,6 @@ def build_fast_grid_html(
     }
     labels_json = _js_json(labels_dict)
 
-    prev_btn_html = (
-        f'<button class="batch-btn" style="background:#4b5563; padding: 6px 14px; font-size: 14px; margin-left: auto;" onclick="document.getElementById(\'loading-text\').innerText=\'Loading Page...\'; document.getElementById(\'global-loading\').style.display=\'flex\'; sendMsg(\'prev_page\', \'\')">⬅ Prev</button>'
-        if curr_page > 0 else
-        f'<button class="batch-btn" style="background:#9ca3af; cursor:not-allowed; padding: 6px 14px; font-size: 14px; margin-left: auto;" disabled>⬅ Prev</button>'
-    )
-    next_btn_html = (
-        f'<button class="batch-btn" style="background:#4b5563; padding: 6px 14px; font-size: 14px;" onclick="document.getElementById(\'loading-text\').innerText=\'Loading Page...\'; document.getElementById(\'global-loading\').style.display=\'flex\'; sendMsg(\'next_page\', \'\')">Next ➡</button>'
-        if curr_page < total_pages - 1 else
-        f'<button class="batch-btn" style="background:#9ca3af; cursor:not-allowed; padding: 6px 14px; font-size: 14px;" disabled>Next ➡</button>'
-    )
-    page_indicator = f'<div style="font-weight:700; font-size:13px; color:var(--text); white-space:nowrap; margin: 0 8px;">Page {curr_page + 1} of {total_pages}</div>'
-
     _PLACEHOLDER_SVG = (
         "data:image/svg+xml;utf8,"
         "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='180' viewBox='0 0 300 180'>"
@@ -1392,14 +1374,13 @@ def build_fast_grid_html(
         "</svg>"
     )
 
-    _zip_img_cache = st.session_state.setdefault("_zip_img_cache_global", {})
+    _zip_img_cache: dict = {}
 
     # Build ZIP SID lookup — primary source is _zip_sid_index (all SIDs in the uploaded ZIP CSV)
     # final_report["Is_Zip"] is only populated AFTER rejection processing, so we can't rely on it alone
     _zip_index_ss = st.session_state.get("_zip_sid_index")
     _zip_sid_set = set()
     if _zip_index_ss is not None and not _zip_index_ss.empty:
-        # The index of _zip_sid_index IS the set of all ZIP SIDs
         _zip_sid_set = set(_zip_index_ss.index.astype(str).tolist())
     if not _zip_sid_set:
         # Fallback: use Is_Zip flag from final_report (set during rejection processing)
@@ -1492,19 +1473,6 @@ def build_fast_grid_html(
         if ai_caption.lower() in ("nan", "none", ""):
             ai_caption = ""
 
-        # Brand name reason
-        brand_name_reason = str(row.get(
-            "Product name_Brand name_rejection reason",
-            row.get("Product Name_Brand Name_Rejection_Reason", "")
-        )).strip()
-        if brand_name_reason.lower() in ("nan", "none", ""):
-            brand_name_reason = ""
-
-        # Title language reason
-        title_lang_reason = str(row.get("Title_Language_Check_Reason", "")).strip()
-        if title_lang_reason.lower() in ("nan", "none", ""):
-            title_lang_reason = ""
-
         cards_data.append(
             {
                 "sid": sid,
@@ -1546,8 +1514,6 @@ def build_fast_grid_html(
                 "cat_reason": cat_reason,
                 "suggested_cat": suggested_cat,
                 "ai_caption": ai_caption,
-                "brand_name_reason": brand_name_reason,
-                "title_lang_reason": title_lang_reason,
                 "is_zip": sid in _zip_sid_set,
             }
         )
@@ -1581,7 +1547,7 @@ def build_fast_grid_html(
     --accent: {O};
   }}
   *{{box-sizing:border-box;margin:0;padding:0;font-family:sans-serif;}}
-  body{{background:var(--bg);color:var(--text);padding:8px;overflow-x:hidden;width:100%;transition:background .2s, color .2s;}}
+  body{{background:var(--bg);color:var(--text);padding:8px 8px 80px 8px;overflow-x:hidden;width:100%;transition:background .2s, color .2s;}}
 
   .ctrl-bar{{position:-webkit-sticky;position:sticky;top:0;z-index:99999;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;background:var(--card);backdrop-filter:blur(8px);border-bottom:2px solid var(--accent);border-radius:4px;margin-bottom:12px;box-shadow:0 4px 16px rgba(0,0,0,0.15);}}
   
@@ -1608,7 +1574,7 @@ def build_fast_grid_html(
   }}
   #dark-toggle:hover {{ background: #f3f4f6; }}
 
-  .bottom-bar {{position: relative; border-bottom: none; border-top: 2px solid {O}; margin-top: 16px; margin-bottom: 0; z-index: 10; box-shadow: 0 -4px 16px rgba(0,0,0,0.05);}}
+  .bottom-bar {{position: fixed; bottom: 0; left: 0; width: 100%; top: auto; border-bottom: none; border-top: 1px solid rgba(246, 139, 30, 0.2); margin: 0; z-index: 10000; box-shadow: 0 -4px 16px rgba(0,0,0,0.1); background: var(--card); padding: 12px 16px;}}
 
   .sel-count{{font-weight:700;color:{O};font-size:13px;min-width:80px;}}
   .reason-sel{{flex:1;min-width:160px;padding:6px 10px;border:1px solid #ccc;border-radius:4px;font-size:12px;background:#fff;cursor:pointer;}}
@@ -1626,8 +1592,8 @@ def build_fast_grid_html(
   .card.selected{{border-color:{O};box-shadow:0 0 0 5px rgba(255,136,0,.35);background:rgba(255,136,0,.04);}}
   .card.staged-rej{{border-color:{R};box-shadow:0 0 0 4px rgba(231,60,23,.3);background:rgba(231,60,23,.04);}}
   .card.committed-rej{{border-color:#bbb;opacity:.6;}}
-  .card.zip-card{{border-left:4px solid #3b82f6;box-shadow:-4px 0 16px rgba(59,130,246,0.30);}}
-  .card.zip-card.selected{{border-left:4px solid #3b82f6;box-shadow:-4px 0 16px rgba(59,130,246,0.30),0 0 0 5px rgba(255,136,0,.35);}}
+  .card.zip-card{{border-left:4px solid #3b82f6;box-shadow:-4px 0 8px rgba(59,130,246,0.20);}}
+  .card.zip-card.selected{{border-left:4px solid #3b82f6;box-shadow:-4px 0 8px rgba(59,130,246,0.20),0 0 0 5px rgba(255,136,0,.35);}}
   .ai-color-pill{{display:inline-block;background:#dbeafe;color:#1e40af;font-size:10px;font-weight:700;padding:2px 7px;border-radius:99px;border:1px solid #93c5fd;margin-top:3px;}}
   .ai-brand-pill{{display:inline-block;background:#fef9c3;color:#854d0e;font-size:10px;font-weight:700;padding:2px 7px;border-radius:99px;border:1px solid #fde68a;margin-top:3px;}}
 
@@ -1643,26 +1609,6 @@ def build_fast_grid_html(
   .warn-wrap{{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:4px;z-index:10;pointer-events:none;}}
   .warn-badge{{background:linear-gradient(90deg,#FFC107,#FF9800);color:#313133;font-size:9px;font-weight:800;padding:3px 8px;border-radius:9999px;box-shadow:0 2px 6px rgba(255,152,0,.3);animation:pulse 2s infinite;}}
   @keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:0.85}}}}
-  @keyframes pulse-red{{0%,100%{{opacity:1;box-shadow:0 0 0 0 rgba(220,38,38,.6)}}50%{{opacity:.85;box-shadow:0 0 0 6px rgba(220,38,38,0)}}}}
-
-  /* Sub-validation badge types */
-  .svb{{font-size:9px;font-weight:800;padding:2px 7px;border-radius:9999px;display:inline-block;margin-top:2px;pointer-events:none;}}
-  .svb-prohibited{{background:#dc2626;color:#fff;}}
-  .svb-pet{{background:#dc2626;color:#fff;}}
-  .svb-baby{{background:#dc2626;color:#fff;}}
-  .svb-sexual{{background:#9f1239;color:#fff;}}
-  .svb-inactive{{background:#ea580c;color:#fff;}}
-  .svb-ai-diff{{background:#7c3aed;color:#fff;}}
-  .svb-brand-repeat{{background:#4f46e5;color:#fff;}}
-  .svb-generic-brand{{background:#b45309;color:#fff;}}
-  .svb-inspired{{background:#0369a1;color:#fff;}}
-  .svb-highend{{background:#dc2626;color:#fff;}}
-  .svb-missing-weight{{background:#a16207;color:#fff;}}
-  .svb-not-english{{background:#0369a1;color:#fff;}}
-  .svb-ai-error{{background:#dc2626;color:#fff;animation:pulse-red 1.5s infinite;font-size:9px;}}
-
-  /* AI error pill shown inside card meta for approved items */
-  .ai-error-pill{{background:#fee2e2;border:1px solid #fca5a5;color:#dc2626;font-size:9px;font-weight:800;padding:3px 8px;border-radius:6px;margin-top:3px;animation:pulse-red 1.5s infinite;cursor:help;}}
   .price-badge{{position:absolute;top:8px;left:8px;background:rgba(246,139,30,0.95);color:#fff;font-size:10px;font-weight:800;padding:3px 8px;border-radius:9999px;z-index:10;pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.2);}}
 
   .meta{{font-size:11px;margin-top:8px;line-height:1.4;flex-grow:1;display:flex;flex-direction:column;}}
@@ -1755,59 +1701,7 @@ def build_fast_grid_html(
     top: 0;
     z-index: 100;
   }}
-  .bottom-bar {{
-    top: auto;
-    bottom: 0;
-    border-bottom: none;
-    border-top: 1px solid rgba(246, 139, 30, 0.2);
-  }}
 
-  /* 🚀 Floating Bulk Action Bar */
-  #floating-action-bar {{
-    position: fixed;
-    bottom: 5px;
-    left: 50%;
-    transform: translateX(-50%) translateY(100px);
-    background: rgba(16, 20, 26, 0.95);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    padding: 16px 48px;
-    border-radius: 80px;
-    display: flex;
-    align-items: center;
-    gap: 32px;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-    border: 1px solid rgba(255,255,255,0.15);
-    z-index: 99999;
-    transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-    opacity: 0;
-    pointer-events: none;
-  }}
-  #floating-action-bar.visible {{
-    transform: translateX(-50%) translateY(0);
-    opacity: 1;
-    pointer-events: auto;
-  }}
-  #floating-action-bar.collapsed {{
-    padding: 10px 20px;
-    gap: 12px;
-  }}
-  #floating-action-bar.collapsed .fab-actions {{ display: none; }}
-  #floating-action-bar.collapsed .fab-count {{ border-right: none; padding-right: 0; font-size:14px; }}
-  .fab-toggle {{
-    background: none; border: none; color: rgba(255,255,255,0.6); cursor: pointer;
-    font-size: 18px; line-height: 1; padding: 0 0 0 8px; flex-shrink: 0;
-  }}
-  .fab-toggle:hover {{ color: #fff; }}
-  .fab-count {{
-    color: {O}; font-weight: 800; font-size: 18px;
-    border-right: 1px solid rgba(255,255,255,0.2); padding-right: 25px;
-    background: none; border-top: none; border-bottom: none; border-left: none;
-    cursor: pointer; font-family: inherit; letter-spacing: 0.02em;
-    transition: color 0.15s, text-shadow 0.15s;
-  }}
-  .fab-count:hover {{ color: #fff; text-shadow: 0 0 12px {O}; }}
-  .fab-count:active {{ opacity: 0.75; }}
 
   /* 🚀 Skeleton Shimmer */
   @keyframes shimmer {{
@@ -1910,6 +1804,15 @@ def build_fast_grid_html(
   .custom-panel-confirm:hover {{ opacity: 0.88; }}
   .custom-panel-cancel {{ background: #e0e0e0; color: #333; }}
   .custom-panel-cancel:hover {{ background: #ccc; }}
+  
+  /* Ensure WebKit browsers show a clear cancel 'x' button in the iframe's search bar */
+  input[type="search"]::-webkit-search-cancel-button {{
+    -webkit-appearance: searchfield-cancel-button;
+    cursor: pointer;
+    width: 16px;
+    height: 16px;
+    margin-left: 8px;
+  }}
 </style>
 </head>
 <body>
@@ -1923,17 +1826,17 @@ def build_fast_grid_html(
   </div>
 </div>
 
-<div id="global-loading" style="display:none;position:fixed;inset:0;background:rgba(255,255,255,0.8);z-index:9999999;align-items:center;justify-content:center;flex-direction:column;">
+<div id="lang-loading" style="display:none;position:fixed;inset:0;background:rgba(255,255,255,0.8);z-index:9999999;align-items:center;justify-content:center;flex-direction:column;">
   <div style="width:40px;height:40px;border:4px solid #f3f3f3;border-top:4px solid {O};border-radius:50%;animation:spin 1s linear infinite;"></div>
   <style>@keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}</style>
-  <div id="loading-text" style="margin-top:16px;font-weight:700;color:#333;font-size:16px;">Loading...</div>
+  <div style="margin-top:16px;font-weight:700;color:#333;font-size:16px;">Updating Language...</div>
 </div>
 
 <div class="ctrl-bar">
   <input id="grid-search" type="search" placeholder="{labels_dict['search_grid']}">
   <div id="grid-count" style="font-size:11px; color:var(--text); opacity:0.7; margin-right:10px;">{len(page_data)} {labels_dict['products_label']}</div>
   <button id="dark-toggle" onclick="toggleDark()">{labels_dict['dark_mode']}</button>
-  <select id="iframe-lang-sel" class="reason-sel" style="max-width:60px;" onchange="document.getElementById('loading-text').innerText='Updating Language...'; document.getElementById('global-loading').style.display='flex'; sendMsg('change_lang', this.value)" title="Change Language">
+  <select id="iframe-lang-sel" class="reason-sel" style="max-width:60px;" onchange="document.getElementById('lang-loading').style.display='flex'; sendMsg('change_lang', this.value)" title="Change Language">
     <option value="en" {"selected" if lang=="en" else ""}>EN</option>
     <option value="fr" {"selected" if lang=="fr" else ""}>FR</option>
     <option value="ar" {"selected" if lang=="ar" else ""}>AR</option>
@@ -1953,11 +1856,6 @@ def build_fast_grid_html(
     <option value="REJECT_WRONG_BRAND">{labels_dict['wrong_brand']}</option>
     <option value="REJECT_PROHIBITED">{labels_dict['prohibited']}</option>
     <option value="REJECT_COLOR">{labels_dict['missing_color']}</option>
-    <option value="REJECT_FDA">FDA</option>
-    <option value="REJECT_FAKE_PERFUME">Suspected Fake Perfume</option>
-    <option value="REJECT_UNNECESSARY">Unnecessary words in NAME</option>
-    <option value="REJECT_IMG_NSFW">NSFW images</option>
-    <option value="REJECT_DUPLICATE">Duplicate</option>
     <option value="OTHER_CUSTOM">{labels_dict['other_custom']}</option>
   </select>
   <button class="batch-btn" onclick="doBatchReject('top')">{labels_dict["batch_reject"]}</button>
@@ -1965,9 +1863,6 @@ def build_fast_grid_html(
   <button class="desel-btn" onclick="window.doSelectAll()">{labels_dict["select_all"]}</button>
   <button class="desel-btn" onclick="doDeselAll()">{labels_dict["deselect_all"]}</button>
   <button class="batch-btn top-btn" onclick="window.scrollTo(0, document.body.scrollHeight)">{_t("go_bottom")}</button>
-  {prev_btn_html}
-  {page_indicator}
-  {next_btn_html}
   <select class="reason-sel sort-sel" id="sort-sel-top" onchange="applySort(this.value)" style="max-width:170px;" title="{labels_dict['sort_by_issue']}">
     <option value="">{labels_dict['sort_by_issue']}</option>
     <option value="most_flagged">{labels_dict['most_flagged']}</option>
@@ -2066,11 +1961,6 @@ def build_fast_grid_html(
     <option value="REJECT_WRONG_BRAND">{labels_dict["wrong_brand"]}</option>
     <option value="REJECT_PROHIBITED">{labels_dict["prohibited"]}</option>
     <option value="REJECT_COLOR">{labels_dict["missing_color"]}</option>
-    <option value="REJECT_FDA">FDA</option>
-    <option value="REJECT_FAKE_PERFUME">Suspected Fake Perfume</option>
-    <option value="REJECT_UNNECESSARY">Unnecessary words in NAME</option>
-    <option value="REJECT_IMG_NSFW">NSFW images</option>
-    <option value="REJECT_DUPLICATE">Duplicate</option>
     <option value="OTHER_CUSTOM">Other Reason (Custom)</option>
   </select>
   <button class="batch-btn" onclick="doBatchReject('bottom')">{labels_dict["batch_reject"]}</button>
@@ -2078,9 +1968,6 @@ def build_fast_grid_html(
   <button class="desel-btn" onclick="window.doSelectAll()">{labels_dict["select_all"]}</button>
   <button class="desel-btn" onclick="doDeselAll()">{labels_dict["deselect_all"]}</button>
   <button class="desel-btn top-btn" onclick="window.scrollTo(0, 0)">{labels_dict["undo"]}</button>
-  {prev_btn_html.replace('margin-left: auto;', 'margin-left: 20px;')}
-  {page_indicator}
-  {next_btn_html}
 </div>
 
 <div id="zoom-tooltip">
@@ -2088,17 +1975,7 @@ def build_fast_grid_html(
   <button class="tooltip-close" onclick="closeZoom()" title="Close">×</button>
 </div>
 
-<div id="floating-action-bar" style="transition: transform 0.3s ease;">
-  <button class="fab-count" id="fab-count-txt" onclick="doBatchReject('bottom')" title="Batch reject selected items">0 {labels_dict["items_pending"].upper()} — BATCH</button>
-  <button class="fab-toggle" onclick="(function(){{var f=document.getElementById('floating-action-bar'); if(f.style.transform === 'translateY(150%)') {{ f.style.transform = 'translateY(0)'; f.style.opacity = '1'; }} else {{ f.classList.toggle('collapsed'); }}}})()" title="Minimize / restore">&#8211;</button>
-  <button class="fab-hide" onclick="(function(){{var f=document.getElementById('floating-action-bar'); f.style.transform = 'translateY(150%)'; f.style.opacity = '0';}})()" title="Hide completely" style="background: none; border: none; color: #fff; cursor: pointer; padding: 0 8px; font-weight: bold;">✕</button>
-  <div class="fab-actions" style="display:flex;align-items:center;gap:32px;">
-    <button class="batch-btn" onclick="window.batchApprove()" style="border-radius:24px; padding:10px 24px; background:#16a34a; font-size:15px; font-weight:600;">Approve All</button>
-    <button class="batch-btn" onclick="doBatchReject('bottom')" style="border-radius:24px; padding:10px 24px; font-size:15px; font-weight:600;">Reject All</button>
-    <button class="desel-btn" onclick="doBatchUndo()" style="border-radius:24px; padding:10px 24px; color:#fff; background:#4b4b4b; border:1px solid #777; font-size:15px; font-weight:600;">{labels_dict["undo"]}</button>
-    <button class="desel-btn" onclick="doDeselAll()" style="border-radius:24px; padding:10px 24px; color:#fff; background:#e73c17; border:1px solid #e73c17; font-size:15px; font-weight:600;">{labels_dict["clear_sel"]}</button>
-  </div>
-</div>
+
 
 <div id="prefetch-status"></div>
 
@@ -2357,51 +2234,25 @@ function buildCardActionsHtml(safeSid, warnings, cardData) {{
   var FLAG_MAP = {{
     'Wrong Category':         ['REJECT_WRONG_CAT',     LABELS.wrong_cat],
     'Category Check':         ['REJECT_WRONG_CAT',     LABELS.wrong_cat],
-    'Missing COLOR':          ['REJECT_COLOR',         LABELS.missing_color],
-    'Color Check':            ['REJECT_COLOR',         LABELS.missing_color],
-    'Restricted Brand':       ['REJECT_BRAND',         LABELS.restr_brand],
-    'Restricted brands':      ['REJECT_BRAND',         LABELS.restr_brand],
-    'Prohibited':             ['REJECT_PROHIBITED',    LABELS.prohibited],
-    'Prohibited products':    ['REJECT_PROHIBITED',    LABELS.prohibited],
-    'Wrong Brand':            ['REJECT_WRONG_BRAND',   LABELS.wrong_brand],
-    'Suspected Fake product': ['REJECT_FAKE',          LABELS.fake_prod],
-    'Poor images':            ['REJECT_POOR_IMAGE',    LABELS.poor_img],
-    'Image Quality Check':    ['REJECT_POOR_IMAGE',    LABELS.poor_img],
-    'Brand Image Check':      ['REJECT_POOR_IMAGE',    LABELS.poor_img],
-    'Product Warranty':       ['REJECT_WARRANTY',      'Product Warranty'],
-    'Warranty Check':         ['REJECT_WARRANTY',      'Product Warranty'],
-    'FDA':                    ['REJECT_FDA',           'FDA'],
-    'Wrong Variation':        ['REJECT_VARIATION',     'Wrong Variation'],
-    'Variation Check':        ['REJECT_VARIATION',     'Wrong Variation'],
+    'Missing COLOR':          ['REJECT_COLOR',          LABELS.missing_color],
+    'Color Check':            ['REJECT_COLOR',          LABELS.missing_color],
+    'Restricted Brand':       ['REJECT_BRAND',          LABELS.restr_brand],
+    'Restricted brands':      ['REJECT_BRAND',          LABELS.restr_brand],
+    'Prohibited':             ['REJECT_PROHIBITED',     LABELS.prohibited],
+    'Prohibited products':    ['REJECT_PROHIBITED',     LABELS.prohibited],
+    'Wrong Brand':            ['REJECT_WRONG_BRAND',    LABELS.wrong_brand],
+    'Suspected Fake product': ['REJECT_FAKE',           LABELS.fake_prod],
+    'Poor images':            ['REJECT_POOR_IMAGE',     LABELS.poor_img],
+    'Image Quality Check':    ['REJECT_POOR_IMAGE',     LABELS.poor_img],
+    'Brand Image Check':      ['REJECT_POOR_IMAGE',     LABELS.poor_img],
+    'Product Warranty':       ['REJECT_WARRANTY',       'Product Warranty'],
+    'Warranty Check':         ['REJECT_WARRANTY',       'Product Warranty'],
+    'FDA':                    ['REJECT_FDA',            'FDA'],
+    'Wrong Variation':        ['REJECT_VARIATION',      'Wrong Variation'],
+    'Variation Check':        ['REJECT_VARIATION',      'Wrong Variation'],
     'BRAND name repeated in NAME': ['REJECT_BRAND_IN_NAME', 'Brand in Name'],
     'Product Name Brand Name':     ['REJECT_BRAND_IN_NAME', 'Brand in Name'],
     'Title Language Check':   ['REJECT_TITLE_LANG',    'Title Language'],
-    'Suspected Fake Perfume': ['REJECT_FAKE_PERFUME',   'Suspected Fake Perfume'],
-    'Unnecessary words in NAME': ['REJECT_UNNECESSARY', 'Unnecessary words in NAME'],
-    'Duplicate':              ['REJECT_DUPLICATE',      'Duplicate'],
-    
-    // Sub-validation flags
-    'Prohibited Category (Prefetched)': ['REJECT_PROHIBITED', LABELS.prohibited],
-    'Pet Product - Wrong Cat (Prefetched)': ['REJECT_WRONG_CAT', LABELS.wrong_cat],
-    'Baby Product - Wrong Cat (Prefetched)': ['REJECT_WRONG_CAT', LABELS.wrong_cat],
-    'Sexual Wellness (Prefetched)': ['REJECT_WRONG_CAT', LABELS.wrong_cat],
-    'Inactive Category (Prefetched)': ['REJECT_WRONG_CAT', LABELS.wrong_cat],
-    'AI Suggests Different (Prefetched)': ['REJECT_WRONG_CAT', LABELS.wrong_cat],
-    'AI Error (Prefetched)': ['REJECT_WRONG_CAT', LABELS.wrong_cat],
-    
-    'Generic Brand (Prefetched)': ['REJECT_POOR_IMAGE', LABELS.poor_img],
-    'Brand in Name (Prefetched)': ['REJECT_BRAND_IN_NAME', 'Brand in Name'],
-    'Inspired Brand (Prefetched)': ['REJECT_POOR_IMAGE', LABELS.poor_img],
-    'High-End Mismatch (Prefetched)': ['REJECT_POOR_IMAGE', LABELS.poor_img],
-    
-    'Missing Weight/Vol (Prefetched)': ['REJECT_TITLE_LANG', 'Title Language'],
-    'Not in English (Prefetched)': ['REJECT_TITLE_LANG', 'Title Language'],
-    
-    'Image Stretched (Prefetched)': ['REJECT_IMG_STRETCHED', LABELS.img_stretched],
-    'Image Blurry/Poor (Prefetched)': ['REJECT_IMG_BLURRY', LABELS.img_blurry],
-    'Image Mismatch (Prefetched)': ['REJECT_IMG_MISMATCH', LABELS.img_mismatch],
-    'Image Infringing (Prefetched)': ['REJECT_IMG_INFRINGING', LABELS.img_infringing],
-    'Image Too Many Things (Prefetched)': ['REJECT_IMG_TOO_MANY', LABELS.img_too_many],
   }};
   var defaultCode  = 'REJECT_POOR_IMAGE';
   var defaultLabel = LABELS.poor_img;
@@ -2422,11 +2273,6 @@ function buildCardActionsHtml(safeSid, warnings, cardData) {{
     ['REJECT_PROHIBITED',    escapeHtml(LABELS.prohibited)],
     ['REJECT_COLOR',         escapeHtml(LABELS.missing_color)],
     ['REJECT_WRONG_BRAND',   escapeHtml(LABELS.wrong_brand)],
-    ['REJECT_FDA',           'FDA'],
-    ['REJECT_FAKE_PERFUME',  'Suspected Fake Perfume'],
-    ['REJECT_UNNECESSARY',   'Unnecessary words in NAME'],
-    ['REJECT_IMG_NSFW',      'NSFW images'],
-    ['REJECT_DUPLICATE',     'Duplicate'],
     ['OTHER_CUSTOM',         'Other Reason (Custom)'],
   ];
   var optionsHtml = opts.map(function(o) {{
@@ -2495,46 +2341,6 @@ window.rejectAllFromSeller = function(seller) {{
   updateSelCount();
 }};
 
-function getSubValidationBadges(card) {{
-  var badges = [];
-  var cr = (card.cat_reason || "").toLowerCase();
-  var br = (card.brand_name_reason || "").toLowerCase();
-  var tl = (card.title_lang_reason || "").toLowerCase();
-  var wrn = (card.warnings || []);
-
-  // 1. Category checks
-  if (cr.includes("prohibited")) badges.push('<span class="svb svb-prohibited">🚫 Prohibited</span>');
-  else if (cr.includes("pet product") || cr.includes("pet")) badges.push('<span class="svb svb-pet">🐾 Pet Wrong Cat</span>');
-  else if (cr.includes("baby/toddler") || cr.includes("baby")) badges.push('<span class="svb svb-baby">🍼 Baby Wrong Cat</span>');
-  else if (cr.includes("sexual") || cr.includes("intimate")) badges.push('<span class="svb svb-sexual">🔞 Sexual Wellness</span>');
-  else if (cr.includes("inactive")) badges.push('<span class="svb svb-inactive">⚠️ Inactive Category</span>');
-  else if (cr.includes("ai suggests a different") || cr.includes("suggests a different")) badges.push('<span class="svb svb-ai-diff">🤖 AI Suggests Different</span>');
-  
-  if (cr.includes("ai error") || cr.includes("connection error") || cr.includes("timed out") || cr.includes("timeout") ||
-      br.includes("connection error") || br.includes("timed out") || br.includes("timeout") ||
-      tl.includes("connection error") || tl.includes("timed out") || tl.includes("timeout")) {{
-       badges.push('<span class="svb svb-ai-error" style="background:#ef4444;color:#fff;">🚨 AI Error</span>');
-  }}
-
-  // 2. Brand checks
-  if (br.includes("repeated") || br.includes("not repeated")) badges.push('<span class="svb svb-brand-repeat">🔁 Brand in Name</span>');
-  if (br.includes("generic brand") || br.includes("fashion")) badges.push('<span class="svb svb-generic-brand">👕 Generic Brand (Fashion)</span>');
-  if (br.includes("inspired") || br.includes("alternative perfume")) badges.push('<span class="svb svb-inspired">✨ Inspired Brand</span>');
-  if (br.includes("high-end brand") || br.includes("high end")) badges.push('<span class="svb svb-highend">💎 High-End Mismatch</span>');
-
-  // 3. Title language
-  if (tl.includes("missing weight") || tl.includes("must include quantity")) badges.push('<span class="svb svb-missing-weight">⚖️ Missing Weight/Vol</span>');
-  if (tl.includes("not in english")) badges.push('<span class="svb svb-not-english">🌐 Not in English</span>');
-
-  // 4. Standard Rejection Flags (Legacy/Non-Zip)
-  if (wrn.includes("FDA")) badges.push('<span class="svb" style="background:#0284c7;color:#fff;">📄 FDA Missing</span>');
-  if (wrn.includes("Generic branded products with genuine brands")) badges.push('<span class="svb" style="background:#d97706;color:#fff;">👕 Generic w/ Genuine</span>');
-  if (wrn.includes("Suspected Fake Perfume")) badges.push('<span class="svb" style="background:#be123c;color:#fff;">👃 Fake Perfume</span>');
-  if (wrn.includes("Unnecessary words in NAME")) badges.push('<span class="svb" style="background:#4b5563;color:#fff;">✂️ Unnecessary Words</span>');
-
-  return badges.join(' ');
-}}
-
 function renderCard(card) {{
   var sid = card.sid;
   var safeSid = sid.replace(/'/g, "\\\\'");
@@ -2542,14 +2348,7 @@ function renderCard(card) {{
   var isStaged = sid in staged;
   var isSelected = sid in selected;
   var isPoorImgRej = isCommitted && POOR_IMG_SIDS.has(sid);
-  var commStr = String(COMMITTED[sid] || '');
-  var isBrandImgRej = isCommitted && (
-      commStr.includes('Brand Image Check') ||
-      commStr.includes('Generic Brand') ||
-      commStr.includes('Brand in Name') ||
-      commStr.includes('Inspired Brand') ||
-      commStr.includes('High-End Mismatch')
-  );
+  var isBrandImgRej = isCommitted && (String(COMMITTED[sid]).includes('Brand Image Check'));
   var cls = 'card'
     + (isCommitted ? ' committed-rej' + (isPoorImgRej ? ' poor-img-rej' : '') + (isBrandImgRej ? ' brand-image-rej' : '') : isStaged ? ' staged-rej' : '')
     + (isSelected ? ' selected' : '')
@@ -2572,7 +2371,7 @@ function renderCard(card) {{
   var suggestedCatHtml = card.suggested_cat ? `<div class="co" style="color:#0369a1;" title="AI suggests: ${{escapeHtml(card.suggested_cat)}}">→ ${{escapeHtml(card.suggested_cat.length > 50 ? card.suggested_cat.slice(0,50)+'…' : card.suggested_cat)}}</div>` : '';
   var aiBrandHtml = (card.brand_detected && card.brand_detected.toLowerCase() !== card.brand.toLowerCase()) ? `<div class="ai-brand-pill" title="AI detected brand: ${{escapeHtml(card.brand_detected)}}">🏷 AI Brand: ${{escapeHtml(card.brand_detected)}}</div>` : '';
   var brandDetectedHtml = (isBrandImgRej && card.brand_detected) ? `<div class="co" style="background:#E8F5E9;color:#2E7D32;border:1px solid #C8E6C9;" title="Brand Detected: ${{escapeHtml(card.brand_detected)}}">Detected Brand: ${{escapeHtml(card.brand_detected)}}</div>` : '';
-  var zipBadgeHtml = card.is_zip ? `<span style="background:#3b82f6;color:#fff;font-size:10px;font-weight:900;padding:2px 6px;border-radius:4px;margin-left:6px;display:inline-block;">ZIP</span>` : '';
+  var zipBadgeHtml = card.is_zip ? `<span style="background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:#fff;font-size:10px;font-weight:900;padding:2px 8px;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.15);margin-left:8px;display:inline-block;">ZIP</span>` : '';
 
   var zoomHtml = `<button class="zoom-btn" onclick="event.stopPropagation();showZoom('${{safeSid}}', event)" title="Preview">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -2631,8 +2430,6 @@ function renderCard(card) {{
     }}
 
   var dataAttrs = 'data-sid="' + escapeHtml(String(card.data_sid||'')) + '" data-name="' + escapeHtml(String(card.data_name||'')) + '" data-brand="' + escapeHtml(String(card.data_brand||'')) + '" data-cat="' + escapeHtml(String(card.data_cat||'')) + '"';
-  var subValHtml = getSubValidationBadges(card);
-  
   return `<div class="${{cls}}" id="card-${{escapeHtml(sid)}}" ${{dataAttrs}} tabindex="0" onclick="window.toggleSelect('${{safeSid}}',event)">
     <div class="card-img-wrap">
       ${{trustBadge}}
@@ -2661,7 +2458,6 @@ function renderCard(card) {{
       ${{catReasonHtml}}
       ${{suggestedCatHtml}}
       ${{brandDetectedHtml}}
-      ${{subValHtml ? '<div style="margin-top:4px;">' + subValHtml + '</div>' : ''}}
     </div>
     ${{actHtml}}
   </div>`;
@@ -2710,14 +2506,6 @@ function updateSelCount() {{
   var pendingCount = (Object.keys(selected).length + Object.keys(staged).length);
   var pendingText = pendingCount + ' ' + LABELS.items_pending;
   document.querySelectorAll('.sel-count-text').forEach(el => el.textContent = pendingText);
-
-  var fab = document.getElementById('floating-action-bar');
-  if (fab) {{
-    if (pendingCount > 0) fab.classList.add('visible');
-    else fab.classList.remove('visible');
-    var fabTxt = document.getElementById('fab-count-txt');
-    if (fabTxt) fabTxt.textContent = pendingCount + ' ' + LABELS.items_pending.toUpperCase() + ' — BATCH';
-  }}
   updateParentPagination();
 }}
 
@@ -2823,7 +2611,7 @@ window.stageReject = function(sid, r) {{
 
   // 🧠 Smart Feature: Linguistic Similarity Pre-flagging for Wrong Category
   if (r === 'REJECT_WRONG_CAT' && currentCard) {{
-      var nameTokens = currentCard.name.toLowerCase().split(/[^\\w]+/).filter(w => w.length > 4);
+      var nameTokens = currentCard.name.toLowerCase().split(/[^\w]+/).filter(w => w.length > 4);
       if (nameTokens.length > 0) {{
           CARDS.forEach(c => {{
               if (c.sid !== sid && !(c.sid in staged)) {{
@@ -3177,17 +2965,6 @@ try {{
 )
 def visual_review_modal(support_files):
 
-    # Utility to handle synchronized page changes for multiple pagination widgets
-    def _sync_page(new_page_1indexed):
-        new_page = new_page_1indexed - 1
-        if new_page != st.session_state.get("grid_page", 0):
-            st.session_state.grid_page = new_page
-            st.session_state["grid_pagination_top"] = new_page + 1
-            st.session_state["grid_pagination_bot"] = new_page + 1
-            st.session_state["_last_seen_grid_page"] = new_page
-            st.session_state.do_scroll_top = True
-            st.rerun()
-
     scroll_top_flag = st.session_state.get("do_scroll_top", False)
     st.session_state.do_scroll_top = False
 
@@ -3223,17 +3000,29 @@ def visual_review_modal(support_files):
         [1.5, 1.5, 1.5, 0.8], gap="large", vertical_alignment="bottom"
     )
     with c1:
-        search_n = st.text_input(
-            "Search by Name", placeholder="Product name…", icon=":material/search:",
-            key="grid_search_n",
-        )
+        c1a, c1b = st.columns([6, 1], vertical_alignment="bottom", gap="small")
+        with c1a:
+            search_n = st.text_input(
+                "Search by Name", placeholder="Product name…", icon=":material/search:",
+                key="grid_search_n",
+            )
+        with c1b:
+            if search_n and st.button("✖", key="clr_n", help="Clear name search"):
+                st.session_state.grid_search_n = ""
+                st.rerun()
     with c2:
-        search_sc = st.text_input(
-            "Search by Seller/Category",
-            placeholder="Seller or Category…",
-            icon=":material/store:",
-            key="grid_search_sc",
-        )
+        c2a, c2b = st.columns([6, 1], vertical_alignment="bottom", gap="small")
+        with c2a:
+            search_sc = st.text_input(
+                "Search by Seller/Category",
+                placeholder="Seller or Category…",
+                icon=":material/store:",
+                key="grid_search_sc",
+            )
+        with c2b:
+            if search_sc and st.button("✖", key="clr_sc", help="Clear seller search"):
+                st.session_state.grid_search_sc = ""
+                st.rerun()
     with c3:
         st.session_state.grid_items_per_page = st.select_slider(
             "Items per page",
@@ -3245,33 +3034,16 @@ def visual_review_modal(support_files):
             st.session_state.show_review_modal = False
             st.rerun()
 
-    # ── Save/restore grid page per search context ─────────────────────────────
-    # When the user types a search term, save the current page for the old context
-    # and restore the saved page for the new context (default 0).
-    # This means clearing the search always returns to the exact page they were on.
-    if "_grid_page_contexts" not in st.session_state:
-        st.session_state._grid_page_contexts = {}
-
-    current_grid_page = st.session_state.get("grid_page", 0)
-    _curr_ctx = (search_n or "", search_sc or "")
-    _prev_ctx = st.session_state.get("_grid_last_ctx", ("", ""))
-
-    if _curr_ctx != _prev_ctx:
-        st.session_state._grid_page_contexts[_prev_ctx] = current_grid_page
-        new_page_idx = st.session_state._grid_page_contexts.get(_curr_ctx, 0)
-        st.session_state.grid_page = new_page_idx
-        st.session_state["_grid_last_ctx"] = _curr_ctx
-        current_grid_page = new_page_idx
-    # ──────────────────────────────────────────────────────────────────────────
-
     if "MAIN_IMAGE" not in data.columns:
         data["MAIN_IMAGE"] = ""
 
-    # Cache `review_data` based on dataset version so expensive pd.merge() isn't re-run every page turn
-    _review_cache_key = f"_grid_review_data_v{st.session_state.get('data_version', 0)}"
-    _cached_review = st.session_state.get(_review_cache_key)
-    _cache_valid = _cached_review is not None and not _cached_review.empty
-
+    _cached_review = st.session_state.get("_grid_review_data_cache")
+    _cache_valid = (
+        _cached_review is not None
+        and not committed_rej_sids
+        and not poor_img_rej_sids
+        and len(_cached_review) > 0
+    )
     if _cache_valid:
         review_data = _cached_review.copy()
     else:
@@ -3297,7 +3069,20 @@ def visual_review_modal(support_files):
                     _code_to_path.get(str(c).strip(), str(c)) if pd.notna(c) else ""
                 )
             )
-        st.session_state[_review_cache_key] = review_data.copy()
+
+    # ── Save/restore grid page per search context ─────────────────────────────
+    # When the user types a search term, save the current page for the old context
+    # and restore the saved page for the new context (default 0).
+    # This means clearing the search always returns to the exact page they were on.
+    if "_grid_page_contexts" not in st.session_state:
+        st.session_state._grid_page_contexts = {}
+    _curr_ctx = (search_n or "", search_sc or "")
+    _prev_ctx = st.session_state.get("_grid_last_ctx", ("", ""))
+    if _curr_ctx != _prev_ctx:
+        st.session_state._grid_page_contexts[_prev_ctx] = st.session_state.get("grid_page", 0)
+        st.session_state.grid_page = st.session_state._grid_page_contexts.get(_curr_ctx, 0)
+        st.session_state["_grid_last_ctx"] = _curr_ctx
+    # ──────────────────────────────────────────────────────────────────────────
 
     if search_n:
         review_data = review_data[
@@ -3326,53 +3111,33 @@ def visual_review_modal(support_files):
 
     ipp = st.session_state.get("grid_items_per_page", 50)
     total_pages = max(1, (len(review_data) + ipp - 1) // ipp)
-    
-    if current_grid_page >= total_pages:
-        current_grid_page = 0
+    if st.session_state.get("grid_page", 0) >= total_pages:
         st.session_state.grid_page = 0
-
-    # Ensure widget keys exactly match our single source of truth BEFORE rendering
-    # This correctly catches programmatic/JS-bridge page changes that bypassed the widgets
-    if st.session_state.get("_last_seen_grid_page") != current_grid_page:
-        st.session_state["grid_pagination_top"] = current_grid_page + 1
-        st.session_state["grid_pagination_bot"] = current_grid_page + 1
-        st.session_state["_last_seen_grid_page"] = current_grid_page
 
     st.markdown(f"<div style='margin-bottom:-10px;color:#6b7280;font-size:12px;'>Total items: {len(review_data)}</div>", unsafe_allow_html=True)
     
-    # ── st.pagination (Streamlit 1.58+) ──
-    _has_pagination = hasattr(st, "pagination")
-    
-    if _has_pagination:
-        st.markdown(
-            """
-            <style>
-            /* Make the active pagination button orange */
-            [data-testid="stPagination"] button[aria-current="page"] {
-                background-color: #f97316 !important;
-                color: white !important;
-                border-color: #f97316 !important;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-        _, pg_col, _ = st.columns([1, 2, 1])
-        with pg_col:
-            new_page = st.pagination(num_pages=total_pages, default=st.session_state.get("grid_page", 0) + 1, key="grid_pagination_top")
-            _sync_page(new_page)
-    else:
-        # Fallback for older Streamlit
-        pg_cols = st.columns([1, 2, 1], vertical_alignment="center", gap="small")
-        with pg_cols[0]:
-            if st.button("Prev Page", key="prev_top", icon=":material/arrow_back:", disabled=st.session_state.get("grid_page", 0) == 0):
-                _sync_page(max(1, st.session_state.get("grid_page", 0)))
-        with pg_cols[1]:
-            new_page = st.number_input(f"Jump to Page (Total: {total_pages})", min_value=1, max_value=max(1, total_pages), value=st.session_state.grid_page + 1, key="jump_top")
-            _sync_page(new_page)
-        with pg_cols[2]:
-            if st.button("Next Page", key="next_top", icon=":material/arrow_forward:", disabled=st.session_state.grid_page >= total_pages - 1):
-                _sync_page(min(total_pages, st.session_state.get("grid_page", 0) + 2))
+    # ── Custom Pagination (Cleaner layout with type-in support) ──
+    pg_cols = st.columns([1, 2, 1], vertical_alignment="bottom", gap="small")
+    with pg_cols[0]:
+        if st.button("⬅ Prev", key="prev_top", use_container_width=True, disabled=st.session_state.get("grid_page", 0) == 0):
+            st.session_state.grid_page = max(0, st.session_state.get("grid_page", 0) - 1)
+            st.session_state.do_scroll_top = True
+            st.rerun()
+    with pg_cols[1]:
+        # Cleaner single-line number input aligned at the bottom
+        new_page = st.number_input(f"Page (of {total_pages})", min_value=1, max_value=max(1, total_pages), value=st.session_state.grid_page + 1, key="jump_top")
+        if new_page - 1 != st.session_state.grid_page:
+            st.session_state.grid_page = new_page - 1
+            st.session_state.do_scroll_top = True
+            st.rerun()
+    with pg_cols[2]:
+        if st.button("Next ➡", key="next_top", use_container_width=True, disabled=st.session_state.grid_page >= total_pages - 1):
+            st.session_state.grid_page += 1
+            st.session_state.do_scroll_top = True
+            st.rerun()
+            
+    # Add a progress bar for pagination
+    st.progress(min(1.0, (st.session_state.grid_page + 1) / total_pages))
 
     with st.spinner("Loading new page..."):
         page_start = st.session_state.grid_page * ipp
@@ -3424,31 +3189,17 @@ def visual_review_modal(support_files):
                         if _zflag not in _warns:
                             _warns.append(_zflag)
 
-                # 🚨 Detect AI errors on APPROVED items (category reason contains connection/timeout error)
-                _cat_reason_raw = str(_zrow.get("Category_Check_Rejection_Reason", "")).lower()
-                _is_approved_in_fr = not _row_fr.empty and str(_row_fr.iloc[0].get("FLAG", "")).strip() == "Approved"
-                if _is_approved_in_fr and any(
-                    kw in _cat_reason_raw for kw in ("ai error", "connection error", "timed out", "timeout")
-                ):
-                    if "AI Error (Approved)" not in _warns:
-                        _warns.append("AI Error (Approved)")
-
             if _warns:
                 page_warnings[_sid] = list(dict.fromkeys(_warns)) # Remove duplicates
 
-        # 🧠 Calculate Seller Trust Scoring (Cached on data_version)
-        _trust_cache_key = f"seller_trust_v{st.session_state.get('data_version', 0)}"
-        if _trust_cache_key in st.session_state:
-            seller_trust = st.session_state[_trust_cache_key]
-        else:
-            seller_trust = {}
-            if not fr.empty and "SELLER_NAME" in fr.columns:
-                _stats = fr.groupby("SELLER_NAME")["Status"].value_counts(normalize=True).unstack().fillna(0)
-                if "Rejected" in _stats.columns:
-                    seller_trust = (_stats["Rejected"] * 100).round(1).to_dict()
-            st.session_state[_trust_cache_key] = seller_trust
+        # 🧠 Calculate Seller Trust Scoring
+        seller_trust = {}
+        if not fr.empty and "SELLER_NAME" in fr.columns:
+            _stats = fr.groupby("SELLER_NAME")["Status"].value_counts(normalize=True).unstack().fillna(0)
+            if "Rejected" in _stats.columns:
+                seller_trust = (_stats["Rejected"] * 100).round(1).to_dict()
 
-        _prefetch_cache_key = f"prefetch_{st.session_state.grid_page}_v{st.session_state.get('data_version', 0)}_{len(review_data)}"
+        _prefetch_cache_key = f"prefetch_{st.session_state.grid_page}_{len(review_data)}"
         if _prefetch_cache_key not in st.session_state:
             prefetch_urls = []
             _already_warm = set(st.session_state.get("_grid_warm_urls", []))
@@ -3532,8 +3283,6 @@ def visual_review_modal(support_files):
             show_images=st.session_state.get("show_images", True),
             seller_trust=seller_trust,
             support_files=support_files,
-            curr_page=st.session_state.get("grid_page", 0),
-            total_pages=total_pages,
         )
 
     placeholder.empty()
@@ -3544,27 +3293,23 @@ def visual_review_modal(support_files):
 
 
 
-    if _has_pagination:
-        pg_cols_bot = st.columns([1, 2, 1], vertical_alignment="center", gap="small")
-        with pg_cols_bot[1]:
-            new_page_bot = st.pagination(num_pages=total_pages, default=st.session_state.get("grid_page", 0) + 1, key="grid_pagination_bot")
-            _sync_page(new_page_bot)
-        with pg_cols_bot[2]:
-            if st.button("Close Review", key="close_bot", width='stretch', type="secondary"):
-                st.session_state.show_review_modal = False
-                st.rerun()
-    else:
-        # Fallback for older Streamlit
-        pg_cols_bot = st.columns([1, 2, 1, 1], vertical_alignment="center", gap="small")
-        with pg_cols_bot[0]:
-            if st.button("Prev Page", key="prev_bot", icon=":material/arrow_back:", disabled=st.session_state.get("grid_page", 0) == 0):
-                _sync_page(max(1, st.session_state.get("grid_page", 0)))
-        with pg_cols_bot[1]:
-            new_page_bot = st.number_input(f"Jump to Page (Total: {total_pages})", min_value=1, max_value=max(1, total_pages), value=st.session_state.grid_page + 1, key="jump_bot")
-            _sync_page(new_page_bot)
-        with pg_cols_bot[2]:
-            if st.button("Next Page", key="next_bot", icon=":material/arrow_forward:", disabled=st.session_state.grid_page >= total_pages - 1):
-                _sync_page(min(total_pages, st.session_state.get("grid_page", 0) + 2))
+    pg_cols_bot = st.columns([1, 2, 1, 1], vertical_alignment="bottom", gap="small")
+    with pg_cols_bot[0]:
+        if st.button("⬅ Prev", key="prev_bot", use_container_width=True, disabled=st.session_state.get("grid_page", 0) == 0):
+            st.session_state.grid_page = max(0, st.session_state.get("grid_page", 0) - 1)
+            st.session_state.do_scroll_top = True
+            st.rerun()
+    with pg_cols_bot[1]:
+        new_page_bot = st.number_input(f"Page (of {total_pages})", min_value=1, max_value=max(1, total_pages), value=st.session_state.grid_page + 1, key="jump_bot")
+        if new_page_bot - 1 != st.session_state.grid_page:
+            st.session_state.grid_page = new_page_bot - 1
+            st.session_state.do_scroll_top = True
+            st.rerun()
+    with pg_cols_bot[2]:
+        if st.button("Next ➡", key="next_bot", use_container_width=True, disabled=st.session_state.grid_page >= total_pages - 1):
+            st.session_state.grid_page += 1
+            st.session_state.do_scroll_top = True
+            st.rerun()
         with pg_cols_bot[3]:
             if st.button("Close Review", key="close_bot_fallback", width='stretch', type="secondary"):
                 st.session_state.show_review_modal = False

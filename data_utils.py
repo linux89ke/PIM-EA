@@ -494,33 +494,11 @@ def _load_zip_image_by_key(key: str) -> Optional[str]:
             _ZIP_FILE_CACHE = zipfile.ZipFile(BytesIO(source_bytes))
             _ZIP_FILE_BYTES_ID = id(source_bytes)
         img_bytes = _ZIP_FILE_CACHE.read(member)
-
-        # 🚀 Optimize Image Size to Prevent Bloat
-        try:
-            from PIL import Image
-            import io
-            with Image.open(BytesIO(img_bytes)) as img:
-                # Convert to RGB if necessary (e.g., RGBA or P)
-                if img.mode in ("RGBA", "P"):
-                    img = img.convert("RGB")
-                img.thumbnail((600, 600), Image.Resampling.LANCZOS)
-                
-                # Save to a new buffer
-                out_buffer = io.BytesIO()
-                img.save(out_buffer, format="JPEG", quality=85)
-                img_bytes = out_buffer.getvalue()
-                mime = "image/jpeg"
-        except ImportError:
-            # Fallback if Pillow is not installed, use original mime
-            mime = "image/jpeg"
-            if key.endswith(".png"): mime = "image/png"
-            elif key.endswith(".webp"): mime = "image/webp"
-            elif key.endswith(".gif"): mime = "image/gif"
-        except Exception as e:
-            logger.warning(f"Failed to resize image {member}: {e}")
-            mime = "image/jpeg"
-
         encoded = base64.b64encode(img_bytes).decode('utf-8')
+        mime = "image/jpeg"
+        if key.endswith(".png"): mime = "image/png"
+        elif key.endswith(".webp"): mime = "image/webp"
+        elif key.endswith(".gif"): mime = "image/gif"
         data_uri = f"data:{mime};base64,{encoded}"
         store[key] = data_uri
         return data_uri

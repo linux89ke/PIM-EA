@@ -368,8 +368,6 @@ class CategoryMatcherEngine:
         if df is None or df.empty or len(df['category'].unique()) < 2:
             return
         try:
-            if len(df) > 50000:
-                df = df.sample(n=50000, random_state=42)
             df['clean_name'] = df['name'].apply(clean_text)
             self.correction_vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=5000)
             X = self.correction_vectorizer.fit_transform(df['clean_name'])

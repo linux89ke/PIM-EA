@@ -143,8 +143,6 @@ REASON_MAP = {
     "REJECT_FDA":            "FDA",
     "REJECT_TITLE_LANG":     "Title Language Check",
     "REJECT_FAKE_PERFUME":   "Suspected Fake Perfume",
-    "REJECT_UNNECESSARY":    "Unnecessary words in NAME",
-    "REJECT_IMG_NSFW":       "NSFW images",
     "OTHER_CUSTOM":          "Other Reason (Custom)"
 }
 

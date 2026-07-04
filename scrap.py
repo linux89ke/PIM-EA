@@ -248,7 +248,7 @@ with tab1:
                 if api_url:
                     st.info(f"✅ API captured: `{api_url}`")
                 df = pd.DataFrame(results)
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(df, width='stretch')
                 st.download_button("⬇️ CSV", df.to_csv(index=False), f"{q}.csv")
             else:
                 st.warning("No results. Try increasing wait time.")

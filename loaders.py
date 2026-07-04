@@ -658,11 +658,7 @@ def load_flags_mapping(filename="reason.xlsx") -> Dict[str, dict]:
         ),
         "Counterfeit Sneakers": (
             "1000023 - Confirmation of counterfeit product by Jumia technical team (Not Authorized)",
-            "Confirmed counterfeit sneaker.",
-        ),
-        "NSFW images": (
-            "1000040 - Image corrupt",
-            "Image is NSFW (Not Safe For Work) - likelihood that an image contains explicit or unsafe content.",
+            "Sneaker confirmed counterfeit.",
         ),
         "Suspected counterfeit Jerseys": (
             "1000023 - Confirmation of counterfeit product by Jumia technical team (Not Authorized)",
@@ -805,6 +801,17 @@ def load_flags_mapping(filename="reason.xlsx") -> Dict[str, dict]:
         for k, v in raw_default.items()
     }
 
+    # Override FDA with proper French translation (for Senegal / Ivory Coast)
+    default_mapping["FDA"] = {
+        "reason": "1000007 - Other Reason",
+        "en": "Kindly Provide Product's Health/Food Regulation Registration Number.",
+        "fr": (
+            "Veuillez fournir le numéro d'enregistrement réglementaire "
+            "sanitaire/alimentaire du produit (numéro FDA ou équivalent)."
+        ),
+        "ar": "يرجى تقديم رقم تسجيل المنتج الصحي/الغذائي (رقم FDA أو ما يعادله).",
+    }
+
     # Pricing flags
     pricing_reason_code = "1000031 - Kindly Review & Update This Product's Price or Confirm The Price Is Correct By Raising A Claim"
     pricing_en = (
@@ -879,37 +886,16 @@ def load_flags_mapping(filename="reason.xlsx") -> Dict[str, dict]:
                     )
                 }
                 if custom_mapping:
-                    return {**default_mapping, **custom_mapping}
+                    ng_keys = {
+                        k: v
+                        for k, v in default_mapping.items()
+                        if k.startswith("NG - ")
+                    }
+                    return {**custom_mapping, **ng_keys}
     except Exception as e:
         logger.warning(f"load_flags_mapping({filename}): {e}")
 
     return default_mapping
-
-
-@st.cache_data(ttl=3600)
-def load_fda_category_codes_from_local() -> Dict[str, List[str]]:
-    filename = "QC Check Validaton  (2).xlsx"
-    fda_codes = {}
-    if not os.path.exists(filename):
-        return fda_codes
-    try:
-        xl = pd.ExcelFile(filename)
-        for sheet in xl.sheet_names:
-            if "Mandatory Attributes -" in sheet:
-                country_code = sheet.split("-")[-1].strip().upper()
-                df = xl.parse(sheet)
-                if "Category Path + ID" in df.columns and "FDA Documents" in df.columns:
-                    mandatory_df = df[df["FDA Documents"].astype(str).str.strip().str.lower() == "mandatory"]
-                    if "ID" in mandatory_df.columns:
-                        codes = mandatory_df["ID"].astype(str).str.strip().str.split('.').str[0].tolist()
-                    else:
-                        codes = mandatory_df["Category Path + ID"].astype(str).str.extract(r'^(\d+)')[0].tolist()
-                    
-                    codes = [c for c in codes if str(c) not in ("nan", "None", "")]
-                    fda_codes[country_code] = codes
-    except Exception as e:
-        logger.error(f"Error loading FDA codes from {filename}: {e}")
-    return fda_codes
 
 
 @st.cache_data(ttl=3600)
@@ -921,7 +907,6 @@ def load_all_support_files() -> Dict:
         return load_txt_file(f) if os.path.exists(f) else []
 
     support = {
-        "fda_category_codes": load_fda_category_codes_from_local(),
         "blacklisted_words": safe_txt("blacklisted.txt"),
         "book_category_codes": safe_txt("Books_cat.txt"),
         "books_data": load_books_data_from_local(),
