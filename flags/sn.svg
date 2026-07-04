@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Senegal: vertical green-yellow-red with central green star -->
+  <rect width="170.666" height="512" fill="#00853F" />
+  <rect x="170.666" width="170.667" height="512" fill="#FDEF42" />
+  <rect x="341.333" width="170.667" height="512" fill="#ED2939" />
+  <polygon points="256,196 273,244 327,244 286,275 302,323 256,295 210,323 226,275 185,244 239,244" fill="#00853F" />
+</svg>
