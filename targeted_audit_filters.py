@@ -66,11 +66,19 @@ def load_qc_excel(country_code: str):
     """Returns a dict mapping Category ID to its rules for the given country."""
     if not country_code:
         country_code = "UG"
+    cc = country_code.upper().strip()
+    if cc in ("SN", "CI"):
+        cc = "FRENCH"
     try:
-        xl = pd.ExcelFile("QC Check Validaton  (2).xlsx")
-        sheet_name = f"Mandatory Attributes - {country_code.upper()}"
-        if sheet_name in xl.sheet_names:
-            df = xl.parse(sheet_name)
+        xl = pd.ExcelFile("QC Check Validaton  (3).xlsx")
+        target_name = f"Mandatory Attributes - {cc}"
+        found_sheet = None
+        for name in xl.sheet_names:
+            if name.strip().replace("  ", " ") == target_name:
+                found_sheet = name
+                break
+        if found_sheet:
+            df = xl.parse(found_sheet)
             if "ID" in df.columns:
                 df["ID"] = df["ID"].astype(str).str.strip()
                 df = df[df["ID"].notna() & (df["ID"] != "") & (df["ID"] != "nan")]
