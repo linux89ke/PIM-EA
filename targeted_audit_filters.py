@@ -1,33 +1,89 @@
 import re
+import difflib
 import pandas as pd
-import requests
 import streamlit as st
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
-import itertools
-import threading
 
-# ── API key pool — requests are round-robined across all keys ─────────────────
-_API_KEYS = [
-    "jvk_pQ7d0kw8FKwDnlwUzPaV7-IGo6IbT0dAp-vea4hPK2ckB4jPJnHIGctBrwUfIkt5",
-    "jvk_WY4AOoCeG6BnanyCxBR1EYYeJVZyfYukBKwU3lDaNzTmtusSAi0RUneDpxN4YgLS",
-    "jvk_ZL4c-ikTJn05XG-qGg6qV5MA2ubvgTSyORR5tYa6dNulZr6HfaEGuY7Yxk8JadED",
-    "jvk_df0hse4uAHNeL-sJA5PEshtpvuv8zqFtKeS79TUidptIpgPJmRCIe5dUeZjusUFS",
+# ── Check taxonomy ────────────────────────────────────────────────────────────
+# Every flag the pipeline can raise is bucketed into exactly one of these so the
+# UI can show one expandable section per check. "unclassified" is the catch-all
+# for any flag string that doesn't match a known pattern — it must never be
+# silently dropped.
+CHECK_ORDER = [
+    "category", "prohibited", "color", "warranty", "variation", "fda",
+    "title_language", "name_brand", "image_quality", "brand_image",
 ]
-_key_cycle = itertools.cycle(_API_KEYS)
-_key_lock  = threading.Lock()
 
-def _next_key() -> str:
-    """Thread-safe round-robin key selector."""
-    with _key_lock:
-        return next(_key_cycle)
+CHECK_LABELS = {
+    "category": "Category Match",
+    "prohibited": "Prohibited / Restricted Product",
+    "color": "Color",
+    "warranty": "Warranty",
+    "variation": "Variation",
+    "fda": "FDA / Regulatory Documents",
+    "title_language": "Title Language / Weight",
+    "name_brand": "Product Name ↔ Brand Name",
+    "image_quality": "Image Quality",
+    "brand_image": "Brand Detected On Image",
+}
 
-# Keep the old name as an alias so any existing call-sites still work
-GATEWAY_API_KEY = _API_KEYS[0]
+# Checks that fundamentally require looking at the actual image. With no AI/
+# vision call available, we don't guess — these always land in "Needs Manual
+# Review" so nothing gets silently rubber-stamped.
+_VISUAL_ONLY_CHECKS = {"image_quality", "brand_image"}
 
-_AI_CACHE_KEY = "_audit_ai_cache"   # session-state key: {(sid, flag) -> True/False}
-_MAX_WORKERS  = 20                  # more threads since we have 4 keys to spread load
+# Minimum text-similarity ratio (difflib) between the current category and the
+# AI-suggested category for us to consider the original category "close enough"
+# to be acceptable. Pure string comparison — no model call.
+_CATEGORY_SIMILARITY_THRESHOLD = 0.55
 
+# Well-known premium/luxury brands that are common counterfeit-listing targets.
+# Kept small and explicit on purpose — this is a deterministic keyword list,
+# not an attempt to cover every brand in existence.
+_PREMIUM_BRANDS = {
+    "apple", "samsung", "nike", "adidas", "gucci", "rolex", "sony", "lg", "dell",
+    "hp", "chanel", "louis vuitton", "prada", "puma", "canon", "nikon", "dyson",
+    "bose", "beats", "iphone", "playstation", "xbox",
+}
+
+# Adult/prohibited trigger keywords paired with "safe context" words that, when
+# present in the same title, indicate the trigger word is being used in a
+# harmless, non-adult sense (e.g. "concrete vibrator", "facial massager").
+_PROHIBITED_KEYWORDS = {
+    "vibrator": ["concrete", "massage", "massager", "facial", "muscle", "body", "phone", "handheld", "percussion"],
+    "dildo": [],  # no known harmless usage — always a true match
+    "sex toy": [],
+    "adult toy": [],
+    "vibrating": ["massage", "massager", "facial", "muscle", "phone", "motor"],
+}
+
+
+def _classify_flag(flag: str) -> Optional[str]:
+    """Map a raw FLAG string to one of CHECK_ORDER, or None if it doesn't
+    match a known validation from the file (such rows are skipped, not shown
+    under a catch-all bucket)."""
+    f = (flag or "").lower()
+    if "prohibited" in f:
+        return "prohibited"
+    if "category" in f:
+        return "category"
+    if "color" in f:
+        return "color"
+    if "warranty" in f:
+        return "warranty"
+    if "variation" in f:
+        return "variation"
+    if "fda" in f:
+        return "fda"
+    if "title language" in f or "weight" in f:
+        return "title_language"
+    if "brand" in f and "image" in f:
+        return "brand_image"
+    if ("name" in f and "brand" in f) or "name_brand" in f:
+        return "name_brand"
+    if "image" in f and "quality" in f:
+        return "image_quality"
+    return None
 
 
 # ── Cached file loaders ───────────────────────────────────────────────────────
@@ -39,6 +95,7 @@ def load_weight_categories():
     except Exception:
         return set()
 
+
 @st.cache_data
 def load_colors():
     """Return sorted color list from colors.txt (longest first for greedy matching)."""
@@ -49,17 +106,15 @@ def load_colors():
     except Exception:
         return []
 
+
 @st.cache_data
 def get_color_regex():
-    """
-    Build and cache a single compiled regex from colors.txt.
-    Matches any color as a whole word (case-insensitive).
-    """
     colors = load_colors()
     if not colors:
         return None
     pattern = r"\b(" + "|".join(re.escape(c) for c in colors) + r")\b"
     return re.compile(pattern, re.IGNORECASE)
+
 
 @st.cache_data
 def load_qc_excel(country_code: str):
@@ -88,374 +143,407 @@ def load_qc_excel(country_code: str):
     return {}
 
 
-# ── Session-state AI response cache ──────────────────────────────────────────
-def _ai_cache() -> dict:
-    """Get (or create) the per-session AI answer cache."""
-    if _AI_CACHE_KEY not in st.session_state:
-        st.session_state[_AI_CACHE_KEY] = {}
-    return st.session_state[_AI_CACHE_KEY]
+# ── Pure-python replacements for what used to be AI calls ────────────────────
+def check_category_match(current_cat: str, suggested_cat: str) -> Optional[bool]:
+    """
+    True  = current category is close enough to the suggestion to be acceptable
+    False = category genuinely looks wrong
+    None  = not enough information to judge (no suggestion available)
 
+    Pure string-similarity comparison (difflib) — no network call, deterministic.
+    """
+    current_cat = (current_cat or "").strip().lower()
+    suggested_cat = (suggested_cat or "").strip().lower()
+    if not current_cat or not suggested_cat:
+        return None
 
-# ── Raw single-item AI callers (used by thread pool) ─────────────────────────
-def _call_ai(prompt: str, timeout: int = 8) -> Optional[str]:
-    """POST to the AI gateway using the next key in the rotation pool."""
-    key = _next_key()   # thread-safe round-robin
-    try:
-        resp = requests.post(
-            "https://ai-gateway.zuma.jumia.com/v1/chat/completions",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {key}",
-            },
-            json={
-                "model": "claude-sonnet-4.5",
-                "max_tokens": 10,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.0,
-            },
-            timeout=timeout,
-        )
-        if resp.ok:
-            return resp.json()["choices"][0]["message"]["content"].strip().upper()
-    except Exception:
-        pass
-    return None
+    # Suggested_Categories can contain multiple "Path (score%)|Path (score%)"
+    # entries — compare against each candidate and take the best match.
+    candidates = [c.split("(")[0].strip() for c in suggested_cat.split("|") if c.strip()]
+    if not candidates:
+        candidates = [suggested_cat]
 
-
-
-def check_ai_category(name: str, current_cat: str, suggested_cat: str) -> bool:
-    """Returns True if AI thinks the original category is acceptable (wrongly rejected)."""
-    if not name or not current_cat:
-        return False
-    prompt = (
-        f"Product Name: {name}\n"
-        f"Current Category: {current_cat}\n"
-        f"AI Suggested Category: {suggested_cat}\n"
-        f"The system rejected this item because it thought the current category is wrong. "
-        f"Is the current category actually acceptable for this product? Reply YES or NO only."
+    best_ratio = max(
+        difflib.SequenceMatcher(None, current_cat, cand).ratio()
+        for cand in candidates
     )
-    ans = _call_ai(prompt)
-    return "YES" in ans if ans else False
+
+    # Also treat an exact substring/leaf-segment match as acceptable, since
+    # paths often differ only in parent segments.
+    current_leaf = current_cat.split("/")[-1].strip()
+    leaf_match = any(current_leaf and current_leaf in cand for cand in candidates)
+
+    return bool(leaf_match or best_ratio >= _CATEGORY_SIMILARITY_THRESHOLD)
 
 
-def check_ai_prohibited(name: str, current_cat: str) -> bool:
-    """Returns True if AI thinks the item is harmless and was WRONGLY flagged as prohibited."""
-    if not name:
+def check_prohibited_keywords(name: str, current_cat: str) -> Optional[bool]:
+    """
+    True  = harmless, looks like a false positive (safe context word present)
+    False = genuinely looks prohibited
+    None  = no known trigger keyword found in the title at all (can't judge)
+
+    Pure keyword/context matching — no network call, deterministic.
+    """
+    name_l = (name or "").lower()
+    cat_l = (current_cat or "").lower()
+
+    matched_trigger = None
+    for trigger in _PROHIBITED_KEYWORDS:
+        if trigger in name_l:
+            matched_trigger = trigger
+            break
+
+    if matched_trigger is None:
+        return None  # nothing to evaluate against
+
+    # If the product's own category is clearly an adult/intimate category,
+    # don't let a "safe context" word override that.
+    if any(k in cat_l for k in ("adult", "sex", "intimate", "sensual")):
         return False
-    prompt = (
-        f"Product Name: {name}\n"
-        f"Current Category: {current_cat}\n"
-        f"The AI rejected this as a 'Prohibited product' (e.g. adult toys, weapons, illegal items).\n"
-        f"Is this actually a harmless product that was mistaken due to its name or category "
-        f"(e.g., 'concrete vibrator' mistaken for a sex toy)? Reply YES if harmless, NO if truly prohibited."
-    )
-    ans = _call_ai(prompt)
-    return "YES" in ans if ans else False
 
+    safe_words = _PROHIBITED_KEYWORDS[matched_trigger]
+    if safe_words and any(w in name_l for w in safe_words):
+        return True
+
+    return False
+
+
+def check_name_brand_match(name: str, brand: str) -> Optional[bool]:
+    """
+    True  = brand plausibly matches the title (found verbatim, or brand is a
+            generic/no-brand placeholder)
+    False = a *different* well-known premium brand appears in the title than
+            the one listed — likely counterfeit/mislabelled
+    None  = ambiguous — can't be resolved without visual/human inspection
+
+    Pure substring/keyword matching — no network call, deterministic.
+    """
+    name_l = (name or "").strip().lower()
+    brand_l = (brand or "").strip().lower()
+    if not name_l or not brand_l:
+        return None
+
+    if brand_l in ("generic", "no brand", "unbranded", "un branded", "nan", "none", ""):
+        # Generic is fine unless the title itself claims a premium brand.
+        found_premium = [b for b in _PREMIUM_BRANDS if b in name_l]
+        if found_premium:
+            return False  # e.g. NAME says "Apple" but BRAND is "Generic"
+        return True
+
+    if brand_l in name_l:
+        return True  # brand literally appears in the title — clean match
+
+    # Brand not found in title at all, and title doesn't claim a different
+    # premium brand either — can't confidently say it's wrong.
+    found_other_premium = [b for b in _PREMIUM_BRANDS if b in name_l and b not in brand_l]
+    if found_other_premium:
+        return False  # title claims a different premium brand than listed
+
+    return None  # ambiguous, needs a human to look at it
+
+
+# ── Shared data lookup builder ────────────────────────────────────────────────
+_NEEDED = [
+    'PRODUCT_SET_SID', 'CATEGORY_CODE', 'NAME', 'BRAND', 'COLOR',
+    'PRODUCT_WARRANTY', 'COUNT_VARIATIONS', 'LIST_VARIATIONS',
+    'FDA', 'CATEGORY', 'MAIN_IMAGE', 'Image_Extraction_Status',
+]
+
+
+def _build_data_lookup(data: pd.DataFrame) -> dict:
+    if data.empty or "PRODUCT_SET_SID" not in data.columns:
+        return {}
+    _sub = data[[c for c in _NEEDED if c in data.columns]]
+    return {
+        str(sid).strip(): row
+        for sid, row in zip(_sub["PRODUCT_SET_SID"], _sub.to_dict("records"))
+    }
+
+
+# ── Image extraction errors (pipeline-level, unrelated to QC decisions) ──────
+def get_image_extraction_errors(data: pd.DataFrame) -> pd.DataFrame:
+    """Every row whose Image_Extraction_Status indicates a failure (broken
+    connection, timeout, etc.) rather than a QC decision. Shown separately
+    because these are infrastructure failures, not audit outcomes."""
+    if data.empty or "Image_Extraction_Status" not in data.columns:
+        return pd.DataFrame()
+    status = data["Image_Extraction_Status"].astype(str)
+    mask = status.str.strip().str.lower().ne("successful") & status.str.strip().ne("")
+    cols = [c for c in ["PRODUCT_SET_SID", "NAME", "MAIN_IMAGE", "Image_Extraction_Status"] if c in data.columns]
+    return data.loc[mask, cols].copy()
+
+
+# ── False approvals, broken out per check ─────────────────────────────────────
 def get_false_approvals(approved_df: pd.DataFrame, data: pd.DataFrame, country_code: str) -> pd.DataFrame:
     """
-    Scans approved items for missing mandatory fields based on the QC rules Excel.
-    Returns a DataFrame of False Approvals (items the system let through but shouldn't have).
-    Ignores manually-handled items (Is_Manual=True).
-
-    Optimisations:
-      - Pre-builds a SID→row dict so each lookup is O(1) instead of a full DataFrame scan.
-      - Uses a pre-compiled regex for color matching (~100x faster than a 455-item any() loop).
+    Scans approved items for violations the system should have caught.
+    Returns a DataFrame with a 'Check' column so results can be grouped into
+    one expandable section per check in the UI. Any per-row exception is
+    captured into the row itself rather than aborting the whole scan.
     """
-    color_re  = get_color_regex()          # single compiled regex from colors.txt
-    qc_rules  = load_qc_excel(country_code)
+    color_re = get_color_regex()
+    qc_rules = load_qc_excel(country_code)
+    weights = load_weight_categories()
+    data_lookup = _build_data_lookup(data)
 
-    # ── Pre-build O(1) lookup: SID → row dict ─────────────────────────────────
-    # Only materialise the columns actually used in the checks below
-    _NEEDED = ['PRODUCT_SET_SID', 'CATEGORY_CODE', 'NAME', 'COLOR',
-               'PRODUCT_WARRANTY', 'COUNT_VARIATIONS', 'LIST_VARIATIONS',
-               'FDA', 'CATEGORY']
-    data_lookup: dict = {}
-    if not data.empty and "PRODUCT_SET_SID" in data.columns:
-        _sub = data[[c for c in _NEEDED if c in data.columns]]
-        data_lookup = {
-            str(sid).strip(): row
-            for sid, row in zip(_sub["PRODUCT_SET_SID"], _sub.to_dict("records"))
-        }
+    results = []
 
-    false_approvals = []
-
-    for _, row in approved_df.iterrows():
-        # Skip manually-handled items
+    for row in approved_df.to_dict("records"):
         if str(row.get("Is_Manual", "")).strip().lower() == "true":
             continue
 
-        sid    = str(row["ProductSetSid"]).strip()
+        sid = str(row.get("ProductSetSid", "")).strip()
         merged = data_lookup.get(sid, {})
-
         cat_code = str(merged.get("CATEGORY_CODE", "")).strip()
-        name     = str(merged.get("NAME", "")).strip()
-        rule     = qc_rules.get(cat_code, {})
+        name = str(merged.get("NAME", "")).strip()
+        brand = str(merged.get("BRAND", "")).strip()
+        current_cat = str(merged.get("CATEGORY", "")).strip()
+        rule = qc_rules.get(cat_code, {})
 
-        # ── FDA ────────────────────────────────────────────────────────────────
-        if str(rule.get("FDA Documents", "")).strip().lower() == "mandatory":
-            fda_val = str(merged.get("FDA", "")).strip()
-            if not fda_val or fda_val.lower() in ("nan", "none", ""):
-                false_approvals.append({
-                    "ProductSetSid": sid,
-                    "Status":  "Rejected",
-                    "FLAG":    "[False Approval] Missed FDA",
-                    "Comment": "AI approved but FDA is mandatory and missing.",
-                })
-                continue
+        try:
+            # ── FDA ───────────────────────────────────────────────────────
+            if str(rule.get("FDA Documents", "")).strip().lower() == "mandatory":
+                fda_val = str(merged.get("FDA", "")).strip()
+                if not fda_val or fda_val.lower() in ("nan", "none", ""):
+                    results.append({"ProductSetSid": sid, "Check": "fda",
+                                     "Detail": "Approved but FDA documentation is mandatory and missing."})
 
-        # ── Color ──────────────────────────────────────────────────────────────
-        if str(rule.get("Color", "")).strip().lower() == "mandatory":
-            color_col_val = str(merged.get("COLOR", "")).strip()
-            color_in_col  = bool(color_col_val and color_col_val.lower() not in ("nan", "none", ""))
-            # Single regex search instead of 455-iteration loop
-            color_in_name = bool(color_re and color_re.search(name)) if name else False
+            # ── Color ─────────────────────────────────────────────────────
+            if str(rule.get("Color", "")).strip().lower() == "mandatory":
+                color_col_val = str(merged.get("COLOR", "")).strip()
+                color_in_col = bool(color_col_val and color_col_val.lower() not in ("nan", "none", ""))
+                color_in_name = bool(color_re and color_re.search(name)) if name else False
+                if not color_in_name and not color_in_col:
+                    results.append({"ProductSetSid": sid, "Check": "color",
+                                     "Detail": "Approved but Color is mandatory and missing from title and column."})
 
-            if not color_in_name and not color_in_col:
-                false_approvals.append({
-                    "ProductSetSid": sid,
-                    "Status":  "Rejected",
-                    "FLAG":    "[False Approval] Missed Color",
-                    "Comment": "AI approved but Color is mandatory and missing from both title and color column.",
-                })
-                continue
+            # ── Warranty ──────────────────────────────────────────────────
+            if str(rule.get("Warranty", "")).strip().lower() == "mandatory":
+                war_val = str(merged.get("PRODUCT_WARRANTY") or merged.get("product_warranty") or "").strip()
+                if not war_val or war_val.lower() in ("nan", "none", ""):
+                    results.append({"ProductSetSid": sid, "Check": "warranty",
+                                     "Detail": "Approved but Warranty is mandatory and missing."})
 
-        # ── Warranty ───────────────────────────────────────────────────────────
-        if str(rule.get("Warranty", "")).strip().lower() == "mandatory":
-            war_val = str(
-                merged.get("PRODUCT_WARRANTY") or merged.get("product_warranty") or ""
-            ).strip()
-            if not war_val or war_val.lower() in ("nan", "none", ""):
-                false_approvals.append({
-                    "ProductSetSid": sid,
-                    "Status":  "Rejected",
-                    "FLAG":    "[False Approval] Missed Warranty",
-                    "Comment": "AI approved but Warranty is mandatory and missing.",
-                })
-                continue
+            # ── Variation ─────────────────────────────────────────────────
+            if str(rule.get("Variation", "")).strip().lower() == "mandatory":
+                var_count = str(merged.get("COUNT_VARIATIONS") or merged.get("count_variations") or "").strip()
+                var_list = str(merged.get("LIST_VARIATIONS") or merged.get("list_variations") or "").strip()
+                var_present = (
+                    bool(var_count and var_count not in ("0", "nan", "none", ""))
+                    or bool(var_list and var_list.lower() not in ("nan", "none", "[]", ""))
+                )
+                if not var_present:
+                    results.append({"ProductSetSid": sid, "Check": "variation",
+                                     "Detail": "Approved but Variation is mandatory and missing."})
 
-        # ── Variation ──────────────────────────────────────────────────────────
-        if str(rule.get("Variation", "")).strip().lower() == "mandatory":
-            var_count = str(
-                merged.get("COUNT_VARIATIONS") or merged.get("count_variations") or ""
-            ).strip()
-            var_list  = str(
-                merged.get("LIST_VARIATIONS") or merged.get("list_variations") or ""
-            ).strip()
-            var_present = (
-                bool(var_count and var_count not in ("0", "nan", "none", ""))
-                or bool(var_list and var_list.lower() not in ("nan", "none", "[]", ""))
-            )
-            if not var_present:
-                false_approvals.append({
-                    "ProductSetSid": sid,
-                    "Status":  "Rejected",
-                    "FLAG":    "[False Approval] Missed Variation",
-                    "Comment": "AI approved but Variation is mandatory and missing.",
-                })
-                continue
+            # ── Title Language / Weight ───────────────────────────────────
+            if cat_code in weights:
+                if not re.search(r"\d+\s*(g|kg|ml|l|oz|lb|pcs|pieces)\b", name, re.IGNORECASE):
+                    results.append({"ProductSetSid": sid, "Check": "title_language",
+                                     "Detail": "Approved but category requires a weight/quantity in the title and none was found."})
 
-    if false_approvals:
-        return pd.DataFrame(false_approvals)
-    return pd.DataFrame()
+            # ── Name ↔ Brand ────────────────────────────────────────────────
+            verdict = check_name_brand_match(name, brand)
+            if verdict is False:
+                results.append({"ProductSetSid": sid, "Check": "name_brand",
+                                 "Detail": f"Approved but title implies a different brand than listed brand '{brand}'."})
+
+            # ── Prohibited (approved items that still contain a trigger word) ──
+            verdict_p = check_prohibited_keywords(name, current_cat)
+            if verdict_p is False:
+                results.append({"ProductSetSid": sid, "Check": "prohibited",
+                                 "Detail": "Approved but title contains a restricted-product keyword with no safe context."})
+
+        except Exception:
+            # Skip this item's remaining checks rather than surfacing a
+            # non-file validation bucket; the checks that did complete above
+            # are still recorded.
+            continue
+
+    if not results:
+        return pd.DataFrame(columns=["ProductSetSid", "Check", "Detail"])
+    return pd.DataFrame(results)
 
 
-def get_true_rejection_sids(
-    page_slice: pd.DataFrame,
+# ── Rejection evaluation, broken out per check ────────────────────────────────
+def evaluate_rejections(
+    rejected_df: pd.DataFrame,
     data: pd.DataFrame,
     country_code: str,
-    cat_path_to_code: dict = None,
-) -> set:
+) -> pd.DataFrame:
     """
-    Evaluates a slice of rejected items and returns the set of SIDs that are
-    TRUE rejections (correctly rejected by the AI).
+    Evaluates every rejected row and classifies each into exactly one of:
+      - "True Rejection"        — the system was right to reject it
+      - "False Rejection"       — should have been approved
+      - "Needs Manual Review"   — can't be resolved by pure rules (e.g.
+                                    image-quality / brand-on-image, or an
+                                    ambiguous name/brand/category case)
+      - "Unclassified"          — the FLAG string didn't match any known check
+                                    (surfaced instead of silently ignored)
 
-    Speed improvements vs the original:
-    ─────────────────────────────────────────────────────────────────────────
-    1. Rule-based pre-screening  — color / warranty / variation / weight checks
-       are resolved with pure pandas/dict logic (zero HTTP requests).
-    2. Session-state AI cache    — per (SID, flag_type) result is stored so
-       switching flags or reopening the modal never re-calls the API.
-    3. ThreadPoolExecutor        — all remaining items that need an AI call are
-       submitted simultaneously and results are collected as they complete.
-    ─────────────────────────────────────────────────────────────────────────
+    Pure rule-based logic throughout — no network/AI calls.
+    Returns one row per (sid, check) so the UI can group by 'Check'.
     """
-    true_rejections: set  = set()
-    ai_cache: dict        = _ai_cache()   # {(sid, flag_kind) -> bool}
-
-    weights  = load_weight_categories()
+    weights = load_weight_categories()
     color_re = get_color_regex()
     qc_rules = load_qc_excel(country_code)
+    data_lookup = _build_data_lookup(data)
 
-    # ── O(1) SID → raw-data-row lookup ───────────────────────────────────────
-    # Only materialise columns needed for the checks below
-    _NEEDED = ['PRODUCT_SET_SID', 'CATEGORY_CODE', 'NAME', 'COLOR',
-               'PRODUCT_WARRANTY', 'COUNT_VARIATIONS', 'LIST_VARIATIONS',
-               'FDA', 'CATEGORY']
-    data_lookup: dict = {}
-    if not data.empty and "PRODUCT_SET_SID" in data.columns:
-        _sub = data[[c for c in _NEEDED if c in data.columns]]
-        data_lookup = {
-            str(sid).strip(): row
-            for sid, row in zip(_sub["PRODUCT_SET_SID"], _sub.to_dict("records"))
-        }
+    total = len(rejected_df)
+    st.session_state["_bg_audit_progress"] = 1.0  # synchronous, no long-running phase anymore
+    st.session_state["_bg_audit_progress_text"] = f"✅ Validated {total} item(s)."
 
-    total = len(page_slice)
-    st.session_state["_bg_audit_progress"]      = 0.0 if total > 0 else 1.0
-    st.session_state["_bg_audit_progress_text"] = (
-        f"Processed 0/{total} items" if total > 0 else "No items to audit."
-    )
+    rows = []
 
-    # ── Phase 1: rule-based pre-screening (no AI, instant) ───────────────────
-    # Collect items that still need an AI call after pre-screening.
-    # ai_tasks: list of (sid, flag_kind, name, current_cat, sug_cat)
-    ai_tasks: list = []
+    for row in rejected_df.to_dict("records"):
+        sid = str(row.get("ProductSetSid", "")).strip()
+        flag_raw = str(row.get("FLAG", ""))
+        check_key = _classify_flag(flag_raw)
 
-    # Use to_dict('records') — avoids per-row Series allocation from iterrows()
-    for row in page_slice.to_dict("records"):
-        sid  = str(row.get("ProductSetSid", "")).strip()
-        flag = str(row.get("FLAG", "")).lower()
+        if check_key is None:
+            # Not one of the validations produced by the file — skip rather
+            # than inventing a catch-all bucket.
+            continue
 
-        merged      = data_lookup.get(sid, {})
-        cat_code    = str(merged.get("CATEGORY_CODE", "")).strip()
-        name        = str(merged.get("NAME", "")).strip()
+        merged = data_lookup.get(sid, {})
+        cat_code = str(merged.get("CATEGORY_CODE", "")).strip()
+        name = str(merged.get("NAME", "")).strip()
+        brand = str(merged.get("BRAND", "")).strip()
         current_cat = str(merged.get("CATEGORY", "")).strip()
-        rule        = qc_rules.get(cat_code, {})
-        sug_cat     = str(row.get("Suggested_Categories", ""))
+        rule = qc_rules.get(cat_code, {})
+        sug_cat = str(row.get("Suggested_Categories", ""))
 
-        # ── Color (pure rule — no AI needed) ─────────────────────────────────
-        if "color" in flag:
-            col_req       = str(rule.get("Color", "Mandatory")).strip().lower()
+        # ── Visual-only checks: no vision capability, don't guess ──────────
+        if check_key in _VISUAL_ONLY_CHECKS:
+            rows.append({"ProductSetSid": sid, "Check": check_key,
+                         "Classification": "Needs Manual Review",
+                         "Reason": "Requires visual inspection of the image; no automated verifier available."})
+            continue
+
+        # ── Color (pure rule) ──────────────────────────────────────────────
+        if check_key == "color":
+            col_req = str(rule.get("Color", "Mandatory")).strip().lower()
             color_col_val = str(merged.get("COLOR", "")).strip()
-            color_in_col  = bool(color_col_val and color_col_val.lower() not in ("nan", "none", ""))
+            color_in_col = bool(color_col_val and color_col_val.lower() not in ("nan", "none", ""))
             color_in_name = bool(color_re and color_re.search(name)) if name else False
             if not color_in_name and not color_in_col and col_req != "no need":
-                true_rejections.add(sid)   # color genuinely absent
-            # else: wrongly rejected → stays in audit
+                rows.append({"ProductSetSid": sid, "Check": "color", "Classification": "True Rejection",
+                             "Reason": "Color genuinely absent from title and column."})
+            else:
+                rows.append({"ProductSetSid": sid, "Check": "color", "Classification": "False Rejection",
+                             "Reason": "Color is present, or category doesn't require it."})
             continue
 
-        # ── Warranty (pure rule — no AI needed) ───────────────────────────────
-        if "warranty" in flag:
+        # ── Warranty (pure rule) ───────────────────────────────────────────
+        if check_key == "warranty":
             war_req = str(rule.get("Warranty", "Mandatory")).strip().lower()
-            war_val = str(
-                merged.get("PRODUCT_WARRANTY") or merged.get("product_warranty") or ""
-            ).strip()
+            war_val = str(merged.get("PRODUCT_WARRANTY") or merged.get("product_warranty") or "").strip()
             war_present = bool(war_val and war_val.lower() not in ("nan", "none", ""))
             if not war_present and war_req != "no need":
-                true_rejections.add(sid)
+                rows.append({"ProductSetSid": sid, "Check": "warranty", "Classification": "True Rejection",
+                             "Reason": "Warranty genuinely missing."})
+            else:
+                rows.append({"ProductSetSid": sid, "Check": "warranty", "Classification": "False Rejection",
+                             "Reason": "Warranty is present, or category doesn't require it."})
             continue
 
-        # ── Weight / Title language (pure rule — no AI needed) ────────────────
-        if "title language" in flag or "weight" in flag:
+        # ── Title Language / Weight (pure rule) ────────────────────────────
+        if check_key == "title_language":
             if cat_code in weights:
-                true_rejections.add(sid)
+                rows.append({"ProductSetSid": sid, "Check": "title_language", "Classification": "True Rejection",
+                             "Reason": "Category requires weight/quantity in title."})
+            else:
+                rows.append({"ProductSetSid": sid, "Check": "title_language", "Classification": "False Rejection",
+                             "Reason": "Category does not require weight/quantity in title."})
             continue
 
-        # ── Variation — can often be resolved without AI ──────────────────────
-        if "variation" in flag:
-            var_req   = str(rule.get("Variation", "Mandatory")).strip().lower()
+        # ── Variation (pure rule) ───────────────────────────────────────────
+        if check_key == "variation":
+            var_req = str(rule.get("Variation", "Mandatory")).strip().lower()
             var_count = str(merged.get("COUNT_VARIATIONS") or merged.get("count_variations") or "").strip()
-            var_list  = str(merged.get("LIST_VARIATIONS")  or merged.get("list_variations")  or "").strip()
+            var_list = str(merged.get("LIST_VARIATIONS") or merged.get("list_variations") or "").strip()
             var_present = (
                 bool(var_count and var_count not in ("0", "nan", "none", ""))
                 or bool(var_list and var_list.lower() not in ("nan", "none", "[]", ""))
             )
             if var_present:
-                continue   # seller has variations → wrongly rejected
-            if var_req == "no need":
-                continue   # category doesn't need variation → wrongly rejected
-            # Ambiguous — need AI to check if category is even correct
-            ai_tasks.append((sid, "variation", name, current_cat, sug_cat, cat_code, rule))
+                rows.append({"ProductSetSid": sid, "Check": "variation", "Classification": "False Rejection",
+                             "Reason": "Seller-provided variations exist."})
+            elif var_req == "no need":
+                rows.append({"ProductSetSid": sid, "Check": "variation", "Classification": "False Rejection",
+                             "Reason": "Category doesn't require variation."})
+            else:
+                rows.append({"ProductSetSid": sid, "Check": "variation", "Classification": "True Rejection",
+                             "Reason": "Variation required and genuinely missing."})
             continue
 
-        # ── FDA — can be partially resolved without AI ────────────────────────
-        if "fda" in flag:
-            fda_req     = str(rule.get("FDA Documents", "Mandatory")).strip().lower()
-            fda_val     = str(merged.get("FDA", "")).strip()
+        # ── FDA (pure rule) ──────────────────────────────────────────────────
+        if check_key == "fda":
+            fda_val = str(merged.get("FDA", "")).strip()
             fda_present = bool(fda_val and fda_val.lower() not in ("nan", "none", ""))
+            fda_req = str(rule.get("FDA Documents", "Mandatory")).strip().lower()
             if fda_present:
-                continue   # FDA is present → wrongly rejected
-            # Need AI to determine if category is correct / FDA actually required
-            ai_tasks.append((sid, "fda", name, current_cat, sug_cat, cat_code, rule))
+                rows.append({"ProductSetSid": sid, "Check": "fda", "Classification": "False Rejection",
+                             "Reason": "FDA documentation is present."})
+            elif fda_req == "no need":
+                rows.append({"ProductSetSid": sid, "Check": "fda", "Classification": "False Rejection",
+                             "Reason": "FDA documentation not actually required for this category."})
+            else:
+                rows.append({"ProductSetSid": sid, "Check": "fda", "Classification": "True Rejection",
+                             "Reason": "FDA documentation required and missing."})
             continue
 
-        # ── Wrong Category ────────────────────────────────────────────────────
-        if "category" in flag and "prohibited" not in flag:
-            ai_tasks.append((sid, "category", name, current_cat, sug_cat, cat_code, rule))
+        # ── Category (pure string-similarity rule) ────────────────────────
+        if check_key == "category":
+            verdict = check_category_match(current_cat, sug_cat)
+            if verdict is None:
+                rows.append({"ProductSetSid": sid, "Check": "category", "Classification": "Needs Manual Review",
+                             "Reason": "No suggested category available to compare against."})
+            elif verdict:
+                rows.append({"ProductSetSid": sid, "Check": "category", "Classification": "False Rejection",
+                             "Reason": "Current category text is close enough to the suggestion to be acceptable."})
+            else:
+                rows.append({"ProductSetSid": sid, "Check": "category", "Classification": "True Rejection",
+                             "Reason": "Current category text doesn't resemble the suggested category."})
             continue
 
-        # ── Prohibited ────────────────────────────────────────────────────────
-        if "prohibited" in flag:
-            ai_tasks.append((sid, "prohibited", name, current_cat, sug_cat, cat_code, rule))
+        # ── Prohibited (pure keyword/context rule) ─────────────────────────
+        if check_key == "prohibited":
+            verdict = check_prohibited_keywords(name, current_cat)
+            if verdict is None:
+                rows.append({"ProductSetSid": sid, "Check": "prohibited", "Classification": "Needs Manual Review",
+                             "Reason": "No recognized trigger keyword found in title — can't confirm automatically."})
+            elif verdict:
+                rows.append({"ProductSetSid": sid, "Check": "prohibited", "Classification": "False Rejection",
+                             "Reason": "Trigger keyword found alongside a safe-context word (likely harmless)."})
+            else:
+                rows.append({"ProductSetSid": sid, "Check": "prohibited", "Classification": "True Rejection",
+                             "Reason": "Trigger keyword found with no safe context — looks genuinely prohibited."})
             continue
 
-    # ── Phase 2: parallel AI calls for remaining ambiguous items ─────────────
-    if ai_tasks:
-        st.session_state["_bg_audit_progress_text"] = (
-            f"🤖 Running {len(ai_tasks)} AI checks in parallel..."
-        )
+        # ── Name ↔ Brand (pure keyword rule) ────────────────────────────────
+        if check_key == "name_brand":
+            verdict = check_name_brand_match(name, brand)
+            if verdict is None:
+                rows.append({"ProductSetSid": sid, "Check": "name_brand", "Classification": "Needs Manual Review",
+                             "Reason": "Brand doesn't appear in title and no conflicting premium brand found either — ambiguous."})
+            elif verdict:
+                rows.append({"ProductSetSid": sid, "Check": "name_brand", "Classification": "False Rejection",
+                             "Reason": "Brand matches the title (or title makes no premium-brand claim)."})
+            else:
+                rows.append({"ProductSetSid": sid, "Check": "name_brand", "Classification": "True Rejection",
+                             "Reason": "Title implies a different brand than the one listed."})
+            continue
 
-        def _resolve_one(task):
-            """Run one AI decision.  Returns (sid, is_true_rejection)."""
-            sid, kind, name, current_cat, sug_cat, cat_code, rule = task
+    if not rows:
+        return pd.DataFrame(columns=["ProductSetSid", "Check", "Classification", "Reason"])
+    return pd.DataFrame(rows)
 
-            # ── Check session cache first ──────────────────────────────────
-            cache_key = (sid, kind)
-            if cache_key in ai_cache:
-                return (sid, ai_cache[cache_key])
 
-            result = False   # default: NOT a true rejection (shows in audit)
-
-            if kind == "category":
-                is_acceptable = check_ai_category(name, current_cat, sug_cat)
-                result = not is_acceptable  # true rejection if category IS wrong
-
-            elif kind == "prohibited":
-                is_harmless = check_ai_prohibited(name, current_cat)
-                result = not is_harmless    # true rejection if NOT harmless
-
-            elif kind == "fda":
-                fda_req           = str(rule.get("FDA Documents", "Mandatory")).strip().lower()
-                category_ok       = check_ai_category(name, current_cat, sug_cat)
-                if category_ok:
-                    result = (fda_req != "no need")
-                else:
-                    sug_code = (cat_path_to_code or {}).get(sug_cat.strip().lower(), "")
-                    sug_rule = qc_rules.get(sug_code, {})
-                    sug_fda  = str(sug_rule.get("FDA Documents", "Mandatory")).strip().lower() if sug_rule else "mandatory"
-                    result   = (sug_fda != "no need")
-
-            elif kind == "variation":
-                var_req     = str(rule.get("Variation", "Mandatory")).strip().lower()
-                category_ok = check_ai_category(name, current_cat, sug_cat)
-                if category_ok:
-                    result = (var_req != "no need")
-                else:
-                    sug_code = (cat_path_to_code or {}).get(sug_cat.strip().lower(), "")
-                    sug_rule = qc_rules.get(sug_code, {})
-                    sug_var  = str(sug_rule.get("Variation", "Mandatory")).strip().lower() if sug_rule else "mandatory"
-                    result   = (sug_var != "no need")
-
-            ai_cache[cache_key] = result
-            return (sid, result)
-
-        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
-            futures = {pool.submit(_resolve_one, t): t for t in ai_tasks}
-            done    = 0
-            for future in as_completed(futures):
-                try:
-                    sid, is_true = future.result()
-                    if is_true:
-                        true_rejections.add(sid)
-                except Exception:
-                    pass
-                done += 1
-                pct = done / len(ai_tasks)
-                st.session_state["_bg_audit_progress"]      = pct
-                st.session_state["_bg_audit_progress_text"] = (
-                    f"🤖 AI checks: {done}/{len(ai_tasks)} complete..."
-                )
-
-    st.session_state["_bg_audit_progress"]      = 1.0
-    st.session_state["_bg_audit_progress_text"] = "✅ Validation complete."
-    return true_rejections
+def get_true_rejection_sids(rejected_df: pd.DataFrame, data: pd.DataFrame, country_code: str) -> set:
+    """Backward-compatible wrapper: just the SIDs classified as True Rejection.
+    Prefer evaluate_rejections() directly for the full per-check breakdown."""
+    df = evaluate_rejections(rejected_df, data, country_code)
+    if df.empty:
+        return set()
+    return set(df.loc[df["Classification"] == "True Rejection", "ProductSetSid"])

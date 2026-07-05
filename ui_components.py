@@ -156,16 +156,16 @@ def flag_pill_header(flag_name: str, count: int, is_zip: bool = False) -> str:
         "Duplicate product": ("#dcfce7", "#15803d"),
     }
     bg, fg = color_map.get(flag_name, ("#f3f4f6", "#374151"))
-    
+
     if is_zip:
         bg, fg = ("#f8fafc", "#334155")
-    
+
     zip_badge = (
         ' <span style="background:linear-gradient(135deg, #3b82f6, #1d4ed8);color:white;border-radius:6px;padding:2px 8px;font-size:10px;font-weight:900;box-shadow:0 2px 4px rgba(0,0,0,0.1);margin-left:8px;">ZIP</span>'
         if is_zip
         else ""
     )
-    
+
     return (
         f'<div style="display:flex;align-items:center;padding:10px 0;">'
         f'<span style="background:{fg};color:white;border-radius:8px;'
@@ -387,7 +387,7 @@ def apply_status_change(
     sync_quick_rejects: bool = True,
 ) -> int:
     sid_set = _normalize_sid_set(sids)
-    
+
     is_image_rej = status == "Rejected" and any(x in str(flag).lower() for x in ["image", "stretched", "blurry", "poor", "mismatch"])
     if is_image_rej:
         all_data = st.session_state.get("all_data_map")
@@ -880,7 +880,7 @@ def render_flag_expander(
                 width="large",
                 help="AI predicted correct category path",
             ),
-            "Is_Zip": None, 
+            "Is_Zip": None,
         }
     )
 
@@ -1091,7 +1091,7 @@ def build_fast_grid_html(
 ):
     if seller_trust is None: seller_trust = {}
     if support_files is None: support_files = {}
-    
+
     from translations import get_translation
     lang = st.session_state.get("ui_lang", "en")
 
@@ -1345,7 +1345,7 @@ def build_fast_grid_html(
   body{{background:var(--bg);color:var(--text);padding:8px 8px 80px 8px;overflow-x:hidden;width:100%;transition:background .2s, color .2s;}}
 
   .ctrl-bar{{position:-webkit-sticky;position:sticky;top:0;z-index:99999;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;background:var(--card);backdrop-filter:blur(8px);border-bottom:2px solid var(--accent);border-radius:4px;margin-bottom:12px;box-shadow:0 4px 16px rgba(0,0,0,0.15);}}
-  
+
   #grid-search {{
     flex: 1;
     min-width: 200px;
@@ -1421,6 +1421,11 @@ def build_fast_grid_html(
   .zoom-btn:hover{{background:rgba(0,0,0,0.7);}}
   .zoom-btn svg{{width:12px;height:12px;flex-shrink:0;}}
 
+  .zoom-nav-btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.5); color: white; border: none; font-size: 24px; padding: 10px; cursor: pointer; border-radius: 4px; z-index: 100001; }}
+  .zoom-nav-btn:hover {{ background: rgba(0,0,0,0.8); }}
+  .zoom-nav-btn.prev {{ left: -40px; }}
+  .zoom-nav-btn.next {{ right: -40px; }}
+
   .tick{{position:absolute;bottom:6px;left:6px;width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,.18);display:flex;align-items:center;justify-content:center;color:transparent;font-size:13px;font-weight:900;pointer-events:none;z-index:10;}}
   .card.selected .tick{{background:{O};color:#fff;}}
   .card.committed-rej.selected .tick{{z-index:25;background:{O};color:#fff;}}
@@ -1462,7 +1467,7 @@ def build_fast_grid_html(
     cursor: pointer; transition: transform 0.2s;
   }}
   .trust-badge:hover {{ transform: scale(1.1); background: #dc2626; }}
-  
+
   /* Per-card undo shimmer */
   .card.undo-processing {{
     pointer-events: none;
@@ -1596,7 +1601,7 @@ def build_fast_grid_html(
   .custom-panel-confirm:hover {{ opacity: 0.88; }}
   .custom-panel-cancel {{ background: #e0e0e0; color: #333; }}
   .custom-panel-cancel:hover {{ background: #ccc; }}
-  
+
   input[type="search"]::-webkit-search-cancel-button {{
     -webkit-appearance: searchfield-cancel-button;
     cursor: pointer;
@@ -1762,7 +1767,9 @@ def build_fast_grid_html(
 </div>
 
 <div id="zoom-tooltip">
+  <button class="zoom-nav-btn prev" onclick="event.stopPropagation(); window.zoomMove(-1)" title="Previous">&#10094;</button>
   <img id="tooltip-img" alt="Zoomed product" referrerpolicy="no-referrer">
+  <button class="zoom-nav-btn next" onclick="event.stopPropagation(); window.zoomMove(1)" title="Next">&#10095;</button>
   <button class="tooltip-close" onclick="closeZoom()" title="Close">×</button>
 </div>
 
@@ -1806,22 +1813,8 @@ def build_fast_grid_html(
   }} catch(e) {{  }}
 }})();
 
-try {{
-  var par = window.parent.document;
-  if (!par.window.__stModalLocked) {{
-    par.window.__stModalLocked = true;
-    function blockOutsideClicks(e) {{
-      var dialog = par.querySelector('[data-testid="stDialog"]');
-      if (dialog && !dialog.contains(e.target)) {{
-        e.stopPropagation();
-        e.preventDefault();
-      }}
-    }}
-    par.addEventListener('mousedown', blockOutsideClicks, true);
-    par.addEventListener('mouseup', blockOutsideClicks, true);
-    par.addEventListener('click', blockOutsideClicks, true);
-  }}
-}} catch(e) {{ console.error("Could not lock dialog", e); }}
+// blockOutsideClicks removed — dismissible=False in Python handles this
+// and the capture listeners were preventing Streamlit buttons from firing
 
 function escapeHtml(u){{return(u||"").toString().replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");}}
 var CARDS = {cards_json};
@@ -1891,51 +1884,7 @@ function scrollToTop() {{
 }}
 
 function updateParentPagination() {{
-  var pending = Object.keys(selected).length + Object.keys(staged).length;
-  try {{
-    var par = window.parent.document;
-    var buttons = par.querySelectorAll('button');
-    buttons.forEach(b => {{
-      var txt = b.innerText || "";
-      if (txt.includes('Close') && !b.dataset.fastCloseBound) {{
-        b.dataset.fastCloseBound = "true";
-        b.addEventListener('click', function() {{
-          var modalContainer = par.querySelector('div[data-testid="stModal"]');
-          if (modalContainer) {{
-            modalContainer.style.transition = 'opacity 0.15s ease-out';
-            modalContainer.style.opacity = '0';
-            setTimeout(() => modalContainer.style.display = 'none', 150);
-          }}
-        }});
-      }}
-      if (txt.includes('Prev Page') || txt.includes('Next Page') || txt.includes('Close')) {{
-        if (pending > 0 && !txt.includes('Close')) {{
-          b.style.pointerEvents = 'none';
-          b.style.opacity = '0.3';
-          b.title = "Confirm or clear your selections before navigating.";
-        }} else {{
-          b.style.pointerEvents = 'auto';
-          b.style.opacity = '1';
-          b.title = "";
-        }}
-      }}
-    }});
-    var inputs = par.querySelectorAll('input[type="number"]');
-    inputs.forEach(inp => {{
-      var wrapper = inp.closest('div[data-testid="stNumberInput"]');
-      if (wrapper && wrapper.innerText.includes('Jump to Page')) {{
-        if (pending > 0) {{
-          wrapper.style.pointerEvents = 'none';
-          wrapper.style.opacity = '0.3';
-          wrapper.title = "Confirm or clear your selections before navigating.";
-        }} else {{
-          wrapper.style.pointerEvents = 'auto';
-          wrapper.style.opacity = '1';
-          wrapper.title = "";
-        }}
-      }}
-    }});
-  }} catch(e) {{}}
+  // Parent pagination control removed — Streamlit handles Prev/Next natively
 }}
 
 function onImgLoad(img, sid) {{
@@ -2065,7 +2014,7 @@ function buildCardActionsHtml(safeSid, warnings, cardData) {{
   var optionsHtml = opts.map(function(o) {{
     return `<option value="${{o[0]}}">${{o[1]}}</option>`;
   }}).join('');
-  
+
   var autoCommentHtml = '';
   if (defaultCode === 'REJECT_WRONG_CAT' && (card.ai_caption || card.suggested_cat || card.cat_reason)) {{
     var parts = [];
@@ -2100,15 +2049,15 @@ function getHighlightedName(card) {{
   var words = [];
   if (warns.includes("Unnecessary words")) words = words.concat(UNNECESSARY_WORDS);
   if (warns.includes("Prohibited Words")) words = words.concat(PROHIBITED_WORDS);
-  
+
   if (warns.includes("BRAND name repeated in NAME")) words.push(card.brand);
-  
+
   if (words.length === 0) return card.name.length > 38 ? escapeHtml(card.name.slice(0,38)) + '\u2026' : escapeHtml(card.name);
-  
+
   words.sort((a,b) => b.length - a.length);
   var regex = new RegExp('(' + words.map(w => w.replace(/[.*+?^${{}}()|[\\]\\\\]/g, '\\\\$&')).join('|') + ')', 'gi');
   var hName = name.replace(regex, '<span class="hlt">$1</span>');
-  
+
   return hName;
 }}
 
@@ -2144,7 +2093,7 @@ function renderCard(card) {{
   if (card.is_manual_review) warnHtml += `<span class="warn-badge" style="background:#0369a1;color:#fff;font-weight:800;">👁 MANUAL REVIEW</span>`;
   if (card.color_mismatch) warnHtml += `<span class="warn-badge" style="background:#b45309;color:#fff;" title="${{escapeHtml(card.color_mismatch)}}">⚠ Color Mismatch</span>`;
   var priceHtml = card.price ? `<div class="price-badge">${{escapeHtml(card.price)}}</div>` : '';
-  
+
   var colorLabel = card.is_manual_review ? 'Color-M' : 'Color';
   var colorHtml = card.color ? `<div class="co" title="${{colorLabel}}: ${{escapeHtml(card.color)}}">${{colorLabel}}: ${{escapeHtml(card.color)}}</div>` : '';
   var aiColorHtml = (card.color_ai && card.color_ai !== card.color) ? `<div class="ai-color-pill" title="AI detected: ${{escapeHtml(card.color_ai)}}">🎨 AI Color: ${{escapeHtml(card.color_ai)}}</div>` : '';
@@ -2276,6 +2225,24 @@ window.showZoom = function(sid, event) {{
 window.closeZoom = function() {{
   document.getElementById('zoom-tooltip').style.display = 'none';
   window.currentZoomSid = null;
+}};
+
+window.zoomMove = function(dir) {{
+  if (!window.currentZoomSid) return;
+  var displayCards = getDisplayCards();
+  var idx = displayCards.findIndex(c => c.sid === window.currentZoomSid);
+  if (idx < 0) return;
+  var nextIdx = idx + dir;
+  if (nextIdx < 0) nextIdx = displayCards.length - 1;
+  if (nextIdx >= displayCards.length) nextIdx = 0;
+  var nextSid = displayCards[nextIdx].sid;
+
+  var el = document.getElementById('card-' + escapeHtml(nextSid));
+  if (el) el.scrollIntoView({{ block: 'nearest', inline: 'nearest' }});
+
+  var fakeEvent = {{ clientX: window.innerWidth/2, clientY: window.innerHeight/2 }};
+  window.currentZoomSid = null;
+  window.showZoom(nextSid, fakeEvent);
 }};
 
 document.addEventListener('click', function(e) {{
@@ -2501,7 +2468,7 @@ window.undoReject = function(sid) {{
           document.querySelectorAll('.card.undo-processing').forEach(function(c) {{
             c.classList.remove('undo-processing');
           }});
-        }}, 1000); 
+        }}, 1000);
       }});
     }});
   }}, 400);
@@ -2634,10 +2601,10 @@ function _moveFocus(dir) {{
   var idx = _focusedSid ? sids.indexOf(_focusedSid) : -1;
   idx = Math.max(0, Math.min(sids.length - 1, idx + dir));
   _focusedSid = sids[idx];
-  document.querySelectorAll('.card').forEach(function(c) {{ c.style.outline = ''; }});
+  document.querySelectorAll('.card').forEach(function(c) {{ c.style.borderLeft = ''; }});
   var el = document.getElementById('card-' + escapeHtml(_focusedSid));
   if (el) {{
-    el.style.outline = '3px solid #2196F3';
+    el.style.borderLeft = '4px solid #2196F3';
     el.scrollIntoView({{ block: 'nearest', inline: 'nearest' }});
   }}
 }}
@@ -2875,25 +2842,82 @@ def visual_review_modal(support_files):
         st.session_state.grid_page = 0
 
     st.markdown(f"<div style='margin-bottom:-10px;color:#6b7280;font-size:12px;'>Total items: {len(review_data)}</div>", unsafe_allow_html=True)
-    
+
+    # ------------------------------------------------------------------
+    # Pagination controls
+    #
+    # IMPORTANT: `jump_top` and `jump_bot` are widget-backed session_state
+    # keys (they belong to the two st.number_input widgets below). Once a
+    # widget with a given key has been instantiated in a run, Streamlit
+    # forbids writing to that key again in the *same* run (it raises
+    # StreamlitAPIException). The old code tried to do exactly that from
+    # the "Prev"/"Next" button branches (`if st.button(...): st.session_state.jump_top = ...`)
+    # which broke as soon as both widgets existed on the page.
+    #
+    # The fix: drive all page changes through on_click / on_change
+    # callbacks. Callbacks run *before* the script body (and therefore
+    # before any widget is instantiated for that run), so it's always
+    # safe to set jump_top / jump_bot / grid_page there. Streamlit
+    # automatically reruns the script after a callback fires, so no
+    # manual st.rerun() is needed either.
+    # ------------------------------------------------------------------
+
+    def _goto_page(new_page_0idx):
+        new_page_0idx = max(0, min(total_pages - 1, new_page_0idx))
+        st.session_state.grid_page = new_page_0idx
+        st.session_state.jump_top = new_page_0idx + 1
+        st.session_state.jump_bot = new_page_0idx + 1
+        st.session_state.do_scroll_top = True
+
+    def _prev_page():
+        _goto_page(st.session_state.get("grid_page", 0) - 1)
+
+    def _next_page():
+        _goto_page(st.session_state.get("grid_page", 0) + 1)
+
+    def _jump_from_widget(source_key):
+        # Called on_change of whichever number_input the user actually typed into.
+        new_page_0idx = st.session_state[source_key] - 1
+        new_page_0idx = max(0, min(total_pages - 1, new_page_0idx))
+        st.session_state.grid_page = new_page_0idx
+        other_key = "jump_bot" if source_key == "jump_top" else "jump_top"
+        st.session_state[other_key] = new_page_0idx + 1
+        st.session_state.do_scroll_top = True
+
+    # Keep jump_top/jump_bot initialized (only before their widgets exist,
+    # i.e. only if this is the very first time we see these keys).
+    if "jump_top" not in st.session_state:
+        st.session_state.jump_top = st.session_state.get("grid_page", 0) + 1
+    if "jump_bot" not in st.session_state:
+        st.session_state.jump_bot = st.session_state.get("grid_page", 0) + 1
+
     pg_cols = st.columns([1, 2, 1], vertical_alignment="bottom", gap="small")
     with pg_cols[0]:
-        if st.button("⬅ Prev", key="prev_top", use_container_width=True, disabled=st.session_state.get("grid_page", 0) == 0):
-            st.session_state.grid_page = max(0, st.session_state.get("grid_page", 0) - 1)
-            st.session_state.do_scroll_top = True
-            st.rerun()
+        st.button(
+            "⬅ Prev",
+            key="prev_top",
+            use_container_width=True,
+            disabled=st.session_state.get("grid_page", 0) == 0,
+            on_click=_prev_page,
+        )
     with pg_cols[1]:
-        new_page = st.number_input(f"Page (of {total_pages})", min_value=1, max_value=max(1, total_pages), value=st.session_state.grid_page + 1, key="jump_top")
-        if new_page - 1 != st.session_state.grid_page:
-            st.session_state.grid_page = new_page - 1
-            st.session_state.do_scroll_top = True
-            st.rerun()
+        st.number_input(
+            f"Page (of {total_pages})",
+            min_value=1,
+            max_value=max(1, total_pages),
+            key="jump_top",
+            on_change=_jump_from_widget,
+            args=("jump_top",),
+        )
     with pg_cols[2]:
-        if st.button("Next ➡", key="next_top", use_container_width=True, disabled=st.session_state.grid_page >= total_pages - 1):
-            st.session_state.grid_page += 1
-            st.session_state.do_scroll_top = True
-            st.rerun()
-            
+        st.button(
+            "Next ➡",
+            key="next_top",
+            use_container_width=True,
+            disabled=st.session_state.grid_page >= total_pages - 1,
+            on_click=_next_page,
+        )
+
     st.progress(min(1.0, (st.session_state.grid_page + 1) / total_pages))
 
     with st.spinner("Loading new page..."):
@@ -2945,7 +2969,7 @@ def visual_review_modal(support_files):
                             _warns.append(_zflag)
 
             if _warns:
-                page_warnings[_sid] = list(dict.fromkeys(_warns)) 
+                page_warnings[_sid] = list(dict.fromkeys(_warns))
 
         seller_trust = {}
         if not fr.empty and "SELLER_NAME" in fr.columns:
@@ -3042,28 +3066,39 @@ def visual_review_modal(support_files):
     st.iframe(grid_html, height=750)
 
     st.markdown("---")
-    
-    pg_cols_bot = st.columns([1, 2, 1, 1], vertical_alignment="bottom", gap="small")
+
+    pg_cols_bot = st.columns([1, 2, 1], vertical_alignment="bottom", gap="small")
     with pg_cols_bot[0]:
-        if st.button("⬅ Prev", key="prev_bot", use_container_width=True, disabled=st.session_state.get("grid_page", 0) == 0):
-            st.session_state.grid_page = max(0, st.session_state.get("grid_page", 0) - 1)
-            st.session_state.do_scroll_top = True
-            st.rerun()
+        st.button(
+            "⬅ Prev",
+            key="prev_bot",
+            use_container_width=True,
+            disabled=st.session_state.get("grid_page", 0) == 0,
+            on_click=_prev_page,
+        )
     with pg_cols_bot[1]:
-        new_page_bot = st.number_input(f"Page (of {total_pages})", min_value=1, max_value=max(1, total_pages), value=st.session_state.grid_page + 1, key="jump_bot")
-        if new_page_bot - 1 != st.session_state.grid_page:
-            st.session_state.grid_page = new_page_bot - 1
-            st.session_state.do_scroll_top = True
-            st.rerun()
+        st.number_input(
+            f"Page (of {total_pages})",
+            min_value=1,
+            max_value=max(1, total_pages),
+            key="jump_bot",
+            on_change=_jump_from_widget,
+            args=("jump_bot",),
+        )
     with pg_cols_bot[2]:
-        if st.button("Next ➡", key="next_bot", use_container_width=True, disabled=st.session_state.grid_page >= total_pages - 1):
-            st.session_state.grid_page += 1
-            st.session_state.do_scroll_top = True
-            st.rerun()
-        with pg_cols_bot[3]:
-            if st.button("Close Review", key="close_bot_fallback", width='stretch', type="secondary"):
-                st.session_state.show_review_modal = False
-                st.rerun()
+        st.button(
+            "Next ➡",
+            key="next_bot",
+            use_container_width=True,
+            disabled=st.session_state.grid_page >= total_pages - 1,
+            on_click=_next_page,
+        )
+
+    st.progress(min(1.0, (st.session_state.grid_page + 1) / total_pages))
+
+    if st.button("✖ Close Review", key="close_bot_fallback", use_container_width=True, type="secondary"):
+        st.session_state.show_review_modal = False
+        st.rerun()
 
 
 def render_manual_review_buttons(support_files):
