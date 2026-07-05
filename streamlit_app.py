@@ -2805,6 +2805,9 @@ _FLAG_SVGS = {
     "Nigeria": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#008751" d="M0 0h170.7v512H0z"/><path fill="#fff" d="M170.7 0h170.6v512H170.7z"/><path fill="#008751" d="M341.3 0H512v512H341.3z"/></svg>""",
     "Ghana": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#006b3f" d="M0 0h512v170.7H0z"/><path fill="#fcd116" d="M0 170.7h512v170.6H0z"/><path fill="#ce1126" d="M0 341.3h512V512H0z"/><path fill="#000" d="M256 183l18 55h58l-47 34 18 55-47-34-47 34 18-55-47-34h58z"/></svg>""",
     "Morocco": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#c1272d" d="M512 0H0v512h512z"/><path fill="none" stroke="#006233" stroke-width="12.5" d="m256 191.4-38 116.8 99.4-72.2H194.6l99.3 72.2z"/></svg>""",
+    "Egypt": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#ce1126" d="M0 0h512v170.7H0z"/><path fill="#fff" d="M0 170.7h512v170.6H0z"/><path fill="#000" d="M0 341.3h512V512H0z"/><path fill="#c09300" d="M256 210a46 46 0 1 0 0 92 46 46 0 0 0 0-92zm-40 46 12-14h56l12 14-12 14h-56z"/></svg>""",
+    "Senegal": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#00853f" d="M0 0h170.7v512H0z"/><path fill="#fdef42" d="M170.7 0h170.6v512H170.7z"/><path fill="#e31b23" d="M341.3 0H512v512H341.3z"/><path fill="#00853f" d="M256 208l14 42h44l-36 26 14 42-36-26-36 26 14-42-36-26h44z"/></svg>""",
+    "Ivory Coast": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#f77f00" d="M0 0h170.7v512H0z"/><path fill="#fff" d="M170.7 0h170.6v512H170.7z"/><path fill="#009e60" d="M341.3 0H512v512H341.3z"/></svg>""",
 }
 
 def _svg_to_b64(svg_str: str) -> str:
@@ -2813,17 +2816,26 @@ def _svg_to_b64(svg_str: str) -> str:
 
 _FLAG_DIR = Path("flags")
 _FILE_MAP = {"Kenya": "ke", "Uganda": "ug", "Nigeria": "ng", "Ghana": "gh", "Morocco": "ma", "Egypt": "eg", "Senegal": "sn", "Ivory Coast": "ic"}
+_GENERIC_FLAG_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" fill="#ccc"/><text x="256" y="290" font-size="200" text-anchor="middle" fill="#666" font-family="sans-serif">?</text></svg>"""
 _flag_b64 = {}
+_flags_missing = []
 for _cname, _code in _FILE_MAP.items():
     _svg_path = _FLAG_DIR / f"{_code}.svg"
+    content = ""
     if _svg_path.exists():
         try:
             content = _svg_path.read_text(encoding="utf-8").strip()
-            _flag_b64[_cname] = _svg_to_b64(content) if content else _svg_to_b64(_FLAG_SVGS.get(_cname, ""))
         except Exception:
-            _flag_b64[_cname] = _svg_to_b64(_FLAG_SVGS.get(_cname, ""))
-    else:
-        _flag_b64[_cname] = _svg_to_b64(_FLAG_SVGS.get(_cname, ""))
+            content = ""
+    if not content:
+        content = _FLAG_SVGS.get(_cname, "")
+    if not content:
+        _flags_missing.append(_cname)
+        content = _GENERIC_FLAG_SVG
+    _flag_b64[_cname] = _svg_to_b64(content)
+
+if _flags_missing:
+    st.warning(f"⚠️ No flag SVG found for: {', '.join(_flags_missing)}. Showing placeholder — add a file to flags/ or an entry in _FLAG_SVGS.")
 
 _countries = ["Kenya", "Uganda", "Nigeria", "Ghana", "Morocco", "Egypt", "Senegal", "Ivory Coast"]
 _O = JUMIA_COLORS["primary_orange"]
