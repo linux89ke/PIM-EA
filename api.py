@@ -19,7 +19,7 @@ from typing import Any, List, Dict, Optional
 
 import pandas as pd
 import redis.asyncio as aioredis
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -300,14 +300,14 @@ async def get_report(country: str, file_hash: str):
     r = await get_redis()
     raw = await r.get(_result_key(file_hash, country) + ":report")
     if not raw: raise HTTPException(404)
-    return pickle.loads(raw).to_dict(orient="records")
+    return Response(content=raw, media_type="application/octet-stream")
 
 @app.get("/result/data/{country}/{file_hash}")
 async def get_data(country: str, file_hash: str):
     r = await get_redis()
     raw = await r.get(_result_key(file_hash, country) + ":data")
     if not raw: raise HTTPException(404)
-    return pickle.loads(raw).to_dict(orient="records")
+    return Response(content=raw, media_type="application/octet-stream")
 
 @app.delete("/result/{country}/{file_hash}")
 async def invalidate_cache(country: str, file_hash: str):
