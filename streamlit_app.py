@@ -92,7 +92,9 @@ from data_utils import (
     save_df_parquet,
     standardize_input_data,
     validate_input_schema,
+    normalize_text,
 )
+from custom_country_rules import check_kenya_book_category
 from ghana_rules import check_ghana_smart_glasses, load_ghana_qc_rules
 from loaders import compile_regex_patterns, load_support_files_lazy
 from morocco_rules import check_morocco_prohibited_brands, load_morocco_qc_rules
@@ -776,7 +778,7 @@ def check_image_blurry(data: pd.DataFrame, _image_cache: dict = None) -> pd.Data
     for url, (w, h) in url_data.items():
         if w <= 200 and h <= 200:
             reject_map[url] = f"Image too small/blurry ({w}x{h}px) — below 200x200"
-        elif w < 300 and h < 300:
+        elif w < 250 and h < 250:
             commentary_map[url] = (
                 f"Image resolution low ({w}x{h}px) — consider upgrading"
             )
@@ -825,6 +827,7 @@ def check_miscellaneous_category(
     compiled_rules: dict = None,
     cat_path_to_code: dict = None,
     code_to_path: dict = None,
+    country_code: str = None,
 ) -> pd.DataFrame:
     if not categories_list or not code_to_path:
         try:
@@ -835,28 +838,41 @@ def check_miscellaneous_category(
         except:
             pass
 
+    custom_flagged = pd.DataFrame(columns=data.columns)
+    if str(country_code or "").upper() == "KE":
+        try:
+            custom_flagged = check_kenya_book_category(data)
+        except Exception as _e:
+            logger.warning("Kenya book rule failed: %s", _e)
+
     if _CAT_MATCHER_AVAILABLE:
         try:
             _engine = _get_cat_matcher_engine()
             if _engine is not None:
                 if categories_list and not _engine._tfidf_built:
                     _engine.build_tfidf_index(categories_list)
-                return check_wrong_category(
+                base_flagged = check_wrong_category(
                     data,
                     categories_list=categories_list,
                     cat_path_to_code=cat_path_to_code,
                     code_to_path=code_to_path,
                 )
+                if not custom_flagged.empty:
+                    flagged = pd.concat([custom_flagged, base_flagged], ignore_index=True)
+                    return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
+                return base_flagged
         except Exception as _e:
             logger.warning("check_wrong_category engine error: %s", _e)
 
     if "CATEGORY" not in data.columns:
-        return pd.DataFrame(columns=data.columns)
+        return custom_flagged if not custom_flagged.empty else pd.DataFrame(columns=data.columns)
     flagged = data[
         data["CATEGORY"].astype(str).str.contains("miscellaneous", case=False, na=False)
     ].copy()
     if not flagged.empty:
         flagged["Comment_Detail"] = "Category contains 'Miscellaneous'"
+    if not custom_flagged.empty:
+        flagged = pd.concat([custom_flagged, flagged], ignore_index=True)
     return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
 
 
@@ -872,7 +888,15 @@ def check_restricted_brands(
     if data.empty or not country_rules:
         return pd.DataFrame(columns=data.columns)
 
-    ldf = _to_polars_cached(df_hash(data), data)
+    d = data.copy()
+    if "_brand_norm" not in d.columns:
+        d["_brand_norm"] = _normalize_series(d.get("BRAND", pd.Series("", index=d.index)))
+    if "_name_norm" not in d.columns:
+        d["_name_norm"] = _normalize_series(d.get("NAME", pd.Series("", index=d.index)))
+    if "_seller_norm" not in d.columns:
+        d["_seller_norm"] = _normalize_series(d.get("SELLER_NAME", pd.Series("", index=d.index)))
+
+    ldf = _to_polars_cached(df_hash(d), d)
 
     all_keywords = set()
     brand_names_only = set()
@@ -881,12 +905,10 @@ def check_restricted_brands(
         all_keywords.update(rule.get("variations", []))
         brand_names_only.add(rule["brand"])
 
-    _name_pattern = "(?i)" + "|".join(
-        r"\b" + re.escape(k) + r"\b" for k in brand_names_only if k
-    )
+    _name_pattern = "(?i)" + "|".join(re.escape(k) for k in brand_names_only if k)
     candidate_ldf = ldf.filter(
-        pl.col("_brand_lower").is_in(list(all_keywords))
-        | pl.col("_name_lower").str.contains(_name_pattern)
+        pl.col("_brand_norm").is_in(list(all_keywords))
+        | pl.col("_name_norm").str.contains(_name_pattern)
     )
 
     if candidate_ldf.is_empty():
@@ -900,11 +922,8 @@ def check_restricted_brands(
     for rule in country_rules:
         brand_name = rule["brand"]
         brand_raw = rule["brand_raw"]
-        brand_pattern = r"(?<!\w)" + re.escape(brand_name) + r"(?!\w)"
-        main_brand_matches = d["_brand_lower"] == brand_name
-        main_name_matches = d["_name_lower"].str.contains(
-            brand_pattern, regex=True, na=False
-        )
+        main_brand_matches = d["_brand_norm"] == brand_name
+        main_name_matches = d["_name_norm"].str.contains(re.escape(brand_name), regex=True, na=False)
         current_match_mask = main_brand_matches | main_name_matches
         for idx in d[main_brand_matches].index:
             match_details[idx] = ("main_brand", brand_raw)
@@ -913,12 +932,12 @@ def check_restricted_brands(
         if rule["variations"]:
             sorted_vars = sorted(rule["variations"], key=len, reverse=True)
             var_pattern = (
-                r"(?<!\w)(?:" + "|".join([re.escape(v) for v in sorted_vars]) + r")(?!\w)"
+                r"(?:" + "|".join([re.escape(v) for v in sorted_vars]) + r")"
             )
-            var_brand_matches = d["_brand_lower"].str.contains(
+            var_brand_matches = d["_brand_norm"].str.contains(
                 var_pattern, regex=True, na=False
             )
-            var_name_matches = d["_name_lower"].str.contains(
+            var_name_matches = d["_name_norm"].str.contains(
                 var_pattern, regex=True, na=False
             )
             for idx in d[var_brand_matches | var_name_matches].index:
@@ -947,7 +966,7 @@ def check_restricted_brands(
             ]
         if current_match.empty:
             continue
-        rejected = current_match[~current_match["_seller_lower"].isin(rule["sellers"])]
+        rejected = current_match[~current_match["_seller_norm"].isin(rule["sellers"])]
         if not rejected.empty:
             for idx in rejected.index:
                 flagged_indices.add(idx)
@@ -2092,6 +2111,12 @@ def validate_products(
         data["_seller_lower"] = (
             data["SELLER_NAME"].astype(str).str.lower().str.strip().fillna("")
         )
+    if "_brand_norm" not in data.columns:
+        data["_brand_norm"] = _normalize_series(data["BRAND"])
+    if "_name_norm" not in data.columns:
+        data["_name_norm"] = _normalize_series(data["NAME"])
+    if "_seller_norm" not in data.columns:
+        data["_seller_norm"] = _normalize_series(data["SELLER_NAME"])
     if "_cat_clean" not in data.columns:
         data["_cat_clean"] = data["CATEGORY_CODE"].apply(clean_category_code)
     if "_sid_clean" not in data.columns:
@@ -2109,6 +2134,7 @@ def validate_products(
                 "compiled_rules": st.session_state.get("compiled_json_rules", {}),
                 "cat_path_to_code": support_files.get("cat_path_to_code", {}),
                 "code_to_path": support_files.get("code_to_path", {}),
+                "country_code": country_validator.code,
             },
         ),
         (
@@ -3241,13 +3267,14 @@ if st.session_state.get("last_processed_files") != process_signature:
                             final_report.loc[_zip_mask, "Is_Zip"] = True
 
                         if has_zip_source and not qc_zip.empty and _sid_col_qc:
+                            data = data.copy()
                             _extra_ctx = [c for c in qc_zip.columns if c not in data.columns and "status" not in c.lower() and c != _sid_col_qc]
                             for _ecol in _extra_ctx:
                                 _emap = qc_zip.set_index(_sid_col_qc)[_ecol].to_dict()
-                                data[_ecol] = data["PRODUCT_SET_SID"].astype(str).str.strip().map(_emap)
+                                data.loc[:, _ecol] = data["PRODUCT_SET_SID"].astype(str).str.strip().map(_emap)
                             if "image1" in qc_zip.columns and "IMAGE1_ZIP" not in data.columns:
                                 _img1_map = qc_zip.set_index(_sid_col_qc)["image1"].to_dict()
-                                data["IMAGE1_ZIP"] = data["PRODUCT_SET_SID"].astype(str).str.strip().map(_img1_map)
+                                data.loc[:, "IMAGE1_ZIP"] = data["PRODUCT_SET_SID"].astype(str).str.strip().map(_img1_map)
                             status_cols = [c for c in qc_zip.columns if "status" in c.lower()]
                             fmap = support_files.get("flags_mapping", {})
                             _fr_sid_to_idx = pd.Series(final_report.index, index=final_report["ProductSetSid"].astype(str).str.strip()).to_dict()
@@ -3587,7 +3614,7 @@ def render_main_results():
     _commentary_in_scope = {sid: comment for sid, comment in _blurry_commentary.items() if fr[fr["ProductSetSid"] == sid]["Status"].eq("Approved").any()}
     if _commentary_in_scope:
         with st.expander(f"Low Resolution Advisory — {len(_commentary_in_scope)} product(s) (not rejected)", expanded=False):
-            st.info("These products have images between 201–299px. They have not been rejected, but image quality could be improved. Products ≤200px are automatically rejected as Image Blurry.")
+            st.info("These products have images between 201–249px. They have not been rejected, but image quality could be improved. Products ≤200px are automatically rejected as Image Blurry.")
             _advisory_rows = []
             for _sid, _comment in _commentary_in_scope.items():
                 _row = data[data["PRODUCT_SET_SID"] == _sid]

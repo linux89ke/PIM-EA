@@ -1218,13 +1218,12 @@ def build_fast_grid_html(
         sale_p = row.get("GLOBAL_SALE_PRICE")
         reg_p = row.get("GLOBAL_PRICE")
         usd_val = sale_p if pd.notna(sale_p) and str(sale_p).strip() != "" else reg_p
-        price_str = (
-            format_local_price(
+        if pd.isna(usd_val) or str(usd_val).strip().lower() in ("", "nan", "none", "null"):
+            price_str = "NaN"
+        else:
+            price_str = format_local_price(
                 usd_val, st.session_state.get("selected_country", "Kenya")
-            )
-            if pd.notna(usd_val)
-            else ""
-        )
+            ) or "NaN"
 
         color_val = str(row.get("COLOR", "")).strip()
         if color_val.lower() in ("nan", "none", "null"):
@@ -1323,6 +1322,22 @@ def build_fast_grid_html(
         )
 
     cards_json = orjson.dumps(cards_data).decode("utf-8").replace("</", "<\\/")
+    seller_opts = sorted(
+        {
+            str(card.get("seller", "")).strip()
+            for card in cards_data
+            if str(card.get("seller", "")).strip()
+        }
+    )
+    category_opts = sorted(
+        {
+            str(card.get("cat", "")).strip()
+            for card in cards_data
+            if str(card.get("cat", "")).strip()
+        }
+    )
+    seller_opts_json = _js_json(seller_opts)
+    category_opts_json = _js_json(category_opts)
 
     scroll_js = ""
     if scroll_to_top:
@@ -1354,6 +1369,10 @@ def build_fast_grid_html(
   body{{background:var(--bg);color:var(--text);padding:8px 8px 80px 8px;overflow-x:hidden;width:100%;transition:background .2s, color .2s;}}
 
   .ctrl-bar{{position:-webkit-sticky;position:sticky;top:0;z-index:99999;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;background:var(--card);backdrop-filter:blur(8px);border-bottom:2px solid var(--accent);border-radius:4px;margin-bottom:12px;box-shadow:0 4px 16px rgba(0,0,0,0.15);}}
+  .ctrl-bar.top-bar{{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;scrollbar-color:rgba(0,0,0,.35) transparent;}}
+  .ctrl-bar.top-bar::-webkit-scrollbar{{height:8px;}}
+  .ctrl-bar.top-bar::-webkit-scrollbar-thumb{{background:rgba(0,0,0,.28);border-radius:999px;}}
+  .ctrl-bar.top-bar::-webkit-scrollbar-track{{background:transparent;}}
 
   #grid-search {{
     flex: 1;
@@ -1366,6 +1385,23 @@ def build_fast_grid_html(
     background: var(--bg);
     color: var(--text);
   }}
+  .filter-group{{display:flex;flex-direction:column;gap:4px;min-width:180px;}}
+  .filter-group .group-label{{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;font-weight:800;color:var(--text);opacity:.86;white-space:nowrap;}}
+  .filter-group .sel-count{{font-size:10px;font-weight:700;color:var(--accent);background:rgba(246,139,30,.12);padding:2px 6px;border-radius:999px;white-space:nowrap;}}
+  .filter-group select[multiple]{{min-height:72px;padding:6px 10px;}}
+  .filter-group select{{width:100%;}}
+  .filter-group .hint{{font-size:10px;color:var(--text);opacity:.62;white-space:nowrap;}}
+  .top-summary{{display:flex;flex-direction:column;gap:2px;min-width:180px;max-width:320px;}}
+  .top-summary .main{{font-size:12px;font-weight:800;color:var(--text);white-space:nowrap;}}
+  .top-summary .sub{{font-size:10px;color:var(--text);opacity:.72;white-space:nowrap;}}
+  .toolbar-btn{{white-space:nowrap;}}
+  .toolbar-btn.small{{padding:7px 10px;}}
+  .page-nav{{display:flex;align-items:center;gap:6px;white-space:nowrap;}}
+  .page-pill{{font-size:11px;font-weight:800;color:var(--text);opacity:.75;padding:0 4px;}}
+  .empty-state{{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;background:linear-gradient(135deg,rgba(246,139,30,.08),rgba(59,130,246,.06));border:1px dashed rgba(246,139,30,.35);border-radius:14px;margin:18px 0;}}
+  .empty-state .title{{font-size:15px;font-weight:800;color:var(--text);margin-bottom:4px;}}
+  .empty-state .desc{{font-size:12px;color:var(--text);opacity:.74;}}
+  .empty-state .actions{{display:flex;gap:8px;flex-wrap:wrap;}}
   #dark-toggle {{
     padding: 6px 12px;
     border-radius: 8px;
@@ -1412,17 +1448,29 @@ def build_fast_grid_html(
   .card-img.img-loaded{{opacity:1;}}
   .card.committed-rej .card-img{{filter:grayscale(80%);}}
 
-  .warn-wrap{{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:4px;z-index:10;pointer-events:none;}}
-  .warn-badge{{background:linear-gradient(90deg,#FFC107,#FF9800);color:#313133;font-size:9px;font-weight:800;padding:3px 8px;border-radius:9999px;box-shadow:0 2px 6px rgba(255,152,0,.3);animation:pulse 2s infinite;}}
+  .warn-wrap{{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:6px;z-index:10;pointer-events:none;max-width:calc(100% - 16px);}}
+  .warn-group{{display:flex;flex-direction:column;gap:4px;align-items:flex-end;}}
+  .warn-group.inline{{flex-direction:row;flex-wrap:wrap;justify-content:flex-end;}}
+  .warn-badge{{display:inline-flex;align-items:center;justify-content:center;max-width:100%;background:linear-gradient(90deg,#FFC107,#FF9800);color:#313133;font-size:9px;font-weight:800;padding:3px 8px;border-radius:9999px;box-shadow:0 2px 6px rgba(255,152,0,.3);animation:pulse 2s infinite;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
+  .warn-badge.critical{{background:linear-gradient(90deg,#dc2626,#b91c1c);color:#fff;box-shadow:0 2px 6px rgba(220,38,38,.28);}}
+  .warn-badge.advisory{{background:linear-gradient(90deg,#f59e0b,#f97316);color:#fff;box-shadow:0 2px 6px rgba(249,115,22,.22);animation:none;}}
+  .warn-badge.info{{background:linear-gradient(90deg,#3b82f6,#2563eb);color:#fff;box-shadow:0 2px 6px rgba(37,99,235,.22);animation:none;}}
+  .warn-badge.neutral{{background:linear-gradient(90deg,#6b7280,#4b5563);color:#fff;box-shadow:0 2px 6px rgba(75,85,99,.2);animation:none;}}
   @keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:0.85}}}}
   .price-badge{{position:absolute;top:8px;left:8px;background:rgba(246,139,30,0.95);color:#fff;font-size:10px;font-weight:800;padding:3px 8px;border-radius:9999px;z-index:10;pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.2);}}
 
-  .meta{{font-size:11px;margin-top:8px;line-height:1.4;flex-grow:1;display:flex;flex-direction:column;}}
-  .meta .nm{{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:help;}}
-  .meta .br{{color:{O};font-weight:700;margin:2px 0;}}
-  .meta .ct{{color:#666;font-size:10px;word-break:break-word;}}
-  .meta .sl{{color:#999;font-size:9px;margin-top:4px;border-top:1px dashed #eee;padding-top:4px;cursor:help;}}
+  .meta{{font-size:11px;margin-top:8px;line-height:1.35;flex-grow:1;display:flex;flex-direction:column;gap:4px;}}
+  .meta-core{{display:flex;flex-direction:column;gap:3px;}}
+  .meta .nm{{font-weight:800;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:help;}}
+  .meta .br{{color:{O};font-weight:800;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
+  .meta .ct{{color:#666;font-size:10px;word-break:break-word;line-height:1.25;}}
+  .meta .sl{{color:#999;font-size:9px;margin-top:2px;border-top:1px dashed #eee;padding-top:4px;cursor:help;display:flex;align-items:center;gap:6px;min-width:0;}}
   .meta .co{{color:#555;font-size:10px;margin-top:4px;background:#f0f0f0;padding:3px 5px;border-radius:4px;display:inline-block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;font-weight:600;}}
+  .meta-extra{{border-top:1px solid #ececec;padding-top:4px;}}
+  .meta-extra summary{{cursor:pointer;list-style:none;font-size:10px;font-weight:800;color:var(--accent);user-select:none;}}
+  .meta-extra summary::-webkit-details-marker{{display:none;}}
+  .meta-extra-body{{display:flex;flex-direction:column;gap:4px;padding-top:6px;}}
+  .meta-extra .co{{margin-top:0;}}
 
   .acts{{display:flex;gap:4px;margin-top:auto;padding-top:8px;}}
   .act-btn{{flex:1;padding:6px;font-size:11px;border:none;border-radius:4px;cursor:pointer;font-weight:700;color:#fff;background:{O};}}
@@ -1639,9 +1687,46 @@ def build_fast_grid_html(
   <div style="margin-top:16px;font-weight:700;color:#333;font-size:16px;">Updating Language...</div>
 </div>
 
-<div class="ctrl-bar">
-  <input id="grid-search" type="search" placeholder="{labels_dict['search_grid']}">
-  <div id="grid-count" style="font-size:11px; color:var(--text); opacity:0.7; margin-right:10px;">{len(page_data)} {labels_dict['products_label']}</div>
+<div class="ctrl-bar top-bar">
+  <div class="filter-group" style="min-width:220px;flex:1.1;">
+    <div class="group-label"><span>{labels_dict['search_grid']}</span><span class="sel-count" id="search-count">0</span></div>
+    <input id="grid-search" type="search" placeholder="{labels_dict['search_grid']}" title="{labels_dict['search_grid']}">
+  </div>
+  <div class="filter-group">
+    <div class="group-label"><span>Seller</span><span class="sel-count" id="seller-selected-count">Selected: 0</span></div>
+    <select id="seller-filter" class="reason-sel" multiple size="4" title="Hold Ctrl/Cmd to choose multiple sellers">
+{''.join(f'<option value="{escapeHtml(opt)}">{escapeHtml(opt)}</option>' for opt in seller_opts)}
+    </select>
+    <div class="hint">Ctrl/Cmd for multi-select</div>
+  </div>
+  <div class="filter-group">
+    <div class="group-label"><span>Category</span><span class="sel-count" id="category-selected-count">Selected: 0</span></div>
+    <select id="category-filter" class="reason-sel" multiple size="4" title="Hold Ctrl/Cmd to choose multiple categories">
+{''.join(f'<option value="{escapeHtml(opt)}">{escapeHtml(opt)}</option>' for opt in category_opts)}
+    </select>
+    <div class="hint">Ctrl/Cmd for multi-select</div>
+  </div>
+  <div class="filter-group" style="min-width:150px;max-width:170px;">
+    <div class="group-label"><span>Page size</span><span class="sel-count" id="page-count">Page 1</span></div>
+    <select class="reason-sel" id="page-size-sel" title="Cards per page">
+      <option value="20">20</option>
+      <option value="50" selected>50</option>
+      <option value="100">100</option>
+      <option value="200">200</option>
+    </select>
+    <div class="hint">More cards = more scrolling</div>
+  </div>
+  <div class="page-nav">
+    <button class="desel-btn toolbar-btn small" onclick="goPage(-1)">Prev</button>
+    <span class="page-pill" id="page-info">Page 1 / 1</span>
+    <button class="desel-btn toolbar-btn small" onclick="goPage(1)">Next</button>
+  </div>
+  <div class="top-summary">
+    <div class="main" id="grid-count">{len(page_data)} {labels_dict['products_label']}</div>
+    <div class="sub" id="filter-summary">No filters active</div>
+  </div>
+  <button class="desel-btn toolbar-btn small" onclick="resetAllFilters()">Reset All Filters</button>
+  <button class="desel-btn toolbar-btn small" onclick="document.getElementById('shortcut-help').style.display='flex'">Shortcuts</button>
   <button id="dark-toggle" onclick="toggleDark()">{labels_dict['dark_mode']}</button>
   <select id="iframe-lang-sel" class="reason-sel" style="max-width:60px;" onchange="document.getElementById('lang-loading').style.display='flex'; sendMsg('change_lang', this.value)" title="Change Language">
     <option value="en" {"selected" if lang=="en" else ""}>EN</option>
@@ -1838,6 +1923,15 @@ var POOR_IMG_SIDS = new Set({poor_img_sids_json});
 var PREFETCH_URLS = {prefetch_json};
 var PLACEHOLDER = "{_PLACEHOLDER_SVG}";
 var LABELS = {labels_json};
+var DEFAULT_PAGE_SIZE = 50;
+var PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
+var PAGE_STATE = {{
+  pageSize: DEFAULT_PAGE_SIZE,
+  page: 1,
+  search: '',
+  sellers: [],
+  categories: []
+}};
 
 window._gridSelected = window._gridSelected || {{}};
 window._stagedRejections = window._stagedRejections || {{}};
@@ -2114,7 +2208,8 @@ function renderCard(card) {{
     warnHtml += `<span class="warn-badge" style="background:#dc2626;color:#fff;font-weight:800;" title="${{escapeHtml(card.qc_skip_reason || 'Manual Review')}}">${{mrText}}</span>`;
   }}
   if (card.color_mismatch) warnHtml += `<span class="warn-badge" style="background:#b45309;color:#fff;" title="${{escapeHtml(card.color_mismatch)}}">⚠ Color Mismatch</span>`;
-  var priceHtml = card.price ? `<div class="price-badge">${{escapeHtml(card.price)}}</div>` : '';
+  var priceText = String(card.price || '').trim();
+  var priceHtml = priceText ? `<div class="price-badge">${{escapeHtml(priceText)}}</div>` : '';
 
   var colorLabel = card.is_manual_review ? 'Color-M' : 'Color';
   var colorHtml = card.color ? `<div class="co" title="${{colorLabel}}: ${{escapeHtml(card.color)}}">${{colorLabel}}: ${{escapeHtml(card.color)}}</div>` : '';
@@ -2283,6 +2378,29 @@ function updateSelCount() {{
 
 window._currentFilter = window._currentFilter || '';
 
+function _shortText(text, maxLen) {{
+  var t = String(text || '').trim();
+  if (!t) return '';
+  return t.length > maxLen ? t.slice(0, maxLen) + '\u2026' : t;
+}}
+
+function _readMultiSelectValues(id) {{
+  var el = document.getElementById(id);
+  if (!el) return [];
+  return Array.from(el.selectedOptions || []).map(function(opt) {{ return opt.value; }}).filter(Boolean);
+}}
+
+function _setMultiSelectValues(id, values) {{
+  var el = document.getElementById(id);
+  if (!el) return;
+  var set = new Set(values || []);
+  Array.from(el.options).forEach(function(opt) {{ opt.selected = set.has(opt.value); }});
+}}
+
+function _pageSizeValue() {{
+  return Math.max(1, parseInt(PAGE_STATE.pageSize || DEFAULT_PAGE_SIZE, 10) || DEFAULT_PAGE_SIZE);
+}}
+
 function getSortedCards() {{
   var sort = window._currentSort;
   if (!sort) return CARDS;
@@ -2299,22 +2417,113 @@ function getSortedCards() {{
   return sorted;
 }}
 
-function getDisplayCards() {{
+function getBaseFilteredCards() {{
   var cards = getSortedCards();
   var f = window._currentFilter;
-  if (!f) return cards;
-  if (f === 'committed') return cards.filter(function(c) {{ return c.sid in COMMITTED; }});
-  if (f === 'brand_ocr') return cards.filter(function(c) {{ return c.sid in COMMITTED && (COMMITTED[c.sid]||'').includes('Brand Image Check'); }});
-  if (f === 'no_flags') return cards.filter(function(c) {{ return !(c.warnings||[]).length && !(c.sid in COMMITTED) && !(c.sid in staged); }});
-  if (f === 'duplicates') return cards.filter(function(c) {{ return c.is_duplicate; }});
-  if (f === 'manual_review') return cards.filter(function(c) {{ return c.is_manual_review; }});
-  if (f === 'color_mismatch') return cards.filter(function(c) {{ return !!c.color_mismatch; }});
-  return cards.filter(function(c) {{
-    var inWarnings = (c.warnings||[]).some(function(w) {{ return w === f; }});
-    var inCommitted = c.sid in COMMITTED && (COMMITTED[c.sid]||'').replace(/_/g,' ').toLowerCase() === f.replace(/_/g,' ').toLowerCase();
-    return inWarnings || inCommitted;
-  }});
+  if (f) {{
+    if (f === 'committed') cards = cards.filter(function(c) {{ return c.sid in COMMITTED; }});
+    else if (f === 'brand_ocr') cards = cards.filter(function(c) {{ return c.sid in COMMITTED && (COMMITTED[c.sid]||'').includes('Brand Image Check'); }});
+    else if (f === 'no_flags') cards = cards.filter(function(c) {{ return !(c.warnings||[]).length && !(c.sid in COMMITTED) && !(c.sid in staged); }});
+    else if (f === 'duplicates') cards = cards.filter(function(c) {{ return c.is_duplicate; }});
+    else if (f === 'manual_review') cards = cards.filter(function(c) {{ return c.is_manual_review; }});
+    else if (f === 'color_mismatch') cards = cards.filter(function(c) {{ return !!c.color_mismatch; }});
+    else cards = cards.filter(function(c) {{
+      var inWarnings = (c.warnings||[]).some(function(w) {{ return w === f; }});
+      var inCommitted = c.sid in COMMITTED && (COMMITTED[c.sid]||'').replace(/_/g,' ').toLowerCase() === f.replace(/_/g,' ').toLowerCase();
+      return inWarnings || inCommitted;
+    }});
+  }}
+  var q = (PAGE_STATE.search || '').toLowerCase().trim();
+  if (q) {{
+    cards = cards.filter(function(c) {{
+      var text = [c.name, c.brand, c.sid, c.cat, c.seller].join(' ').toLowerCase();
+      return text.includes(q);
+    }});
+  }}
+  if (PAGE_STATE.sellers && PAGE_STATE.sellers.length) {{
+    var sellerSet = new Set(PAGE_STATE.sellers);
+    cards = cards.filter(function(c) {{ return sellerSet.has(c.seller); }});
+  }}
+  if (PAGE_STATE.categories && PAGE_STATE.categories.length) {{
+    var catSet = new Set(PAGE_STATE.categories);
+    cards = cards.filter(function(c) {{ return catSet.has(c.cat); }});
+  }}
+  return cards;
 }}
+
+function getDisplayCards() {{
+  var cards = getBaseFilteredCards();
+  var pageSize = _pageSizeValue();
+  var totalPages = Math.max(1, Math.ceil(cards.length / pageSize));
+  if (PAGE_STATE.page > totalPages) PAGE_STATE.page = totalPages;
+  if (PAGE_STATE.page < 1) PAGE_STATE.page = 1;
+  var start = (PAGE_STATE.page - 1) * pageSize;
+  return cards.slice(start, start + pageSize);
+}}
+
+function _updateFilterSummary(filteredCount) {{
+  var sellerCount = (PAGE_STATE.sellers || []).length;
+  var catCount = (PAGE_STATE.categories || []).length;
+  var searchActive = !!(PAGE_STATE.search || '').trim();
+  var searchCount = document.getElementById('search-count');
+  if (searchCount) searchCount.textContent = searchActive ? 'Active' : '0';
+  var sellerCountEl = document.getElementById('seller-selected-count');
+  if (sellerCountEl) sellerCountEl.textContent = 'Selected: ' + sellerCount;
+  var catCountEl = document.getElementById('category-selected-count');
+  if (catCountEl) catCountEl.textContent = 'Selected: ' + catCount;
+  var pageCountEl = document.getElementById('page-count');
+  if (pageCountEl) pageCountEl.textContent = 'Page ' + PAGE_STATE.page;
+  var summaryEl = document.getElementById('filter-summary');
+  if (summaryEl) {{
+    var parts = [];
+    if (searchActive) parts.push('Name: ' + _shortText(PAGE_STATE.search, 24));
+    parts.push('Seller: ' + sellerCount + ' selected');
+    parts.push('Category: ' + catCount + ' selected');
+    summaryEl.textContent = parts.join(' | ');
+  }}
+}}
+
+function _updatePageControls(totalCount) {{
+  var pageSize = _pageSizeValue();
+  var totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  if (PAGE_STATE.page > totalPages) PAGE_STATE.page = totalPages;
+  if (PAGE_STATE.page < 1) PAGE_STATE.page = 1;
+  var pageInfo = document.getElementById('page-info');
+  if (pageInfo) pageInfo.textContent = 'Page ' + PAGE_STATE.page + ' / ' + totalPages;
+  var prev = document.getElementById('page-prev');
+  var next = document.getElementById('page-next');
+  if (prev) prev.disabled = PAGE_STATE.page <= 1;
+  if (next) next.disabled = PAGE_STATE.page >= totalPages;
+}}
+
+window.goPage = function(delta) {{
+  var total = getBaseFilteredCards().length;
+  var totalPages = Math.max(1, Math.ceil(total / _pageSizeValue()));
+  PAGE_STATE.page = Math.max(1, Math.min(totalPages, PAGE_STATE.page + delta));
+  renderAll();
+}};
+
+window.resetAllFilters = function() {{
+  PAGE_STATE.search = '';
+  PAGE_STATE.sellers = [];
+  PAGE_STATE.categories = [];
+  PAGE_STATE.page = 1;
+  _setMultiSelectValues('seller-filter', []);
+  _setMultiSelectValues('category-filter', []);
+  var searchEl = document.getElementById('grid-search');
+  if (searchEl) searchEl.value = '';
+  renderAll();
+}};
+
+window._syncFilterState = function() {{
+  PAGE_STATE.search = (document.getElementById('grid-search') || {{ value: '' }}).value || '';
+  PAGE_STATE.sellers = _readMultiSelectValues('seller-filter');
+  PAGE_STATE.categories = _readMultiSelectValues('category-filter');
+  var pageSizeSel = document.getElementById('page-size-sel');
+  if (pageSizeSel) PAGE_STATE.pageSize = parseInt(pageSizeSel.value, 10) || DEFAULT_PAGE_SIZE;
+  PAGE_STATE.page = 1;
+  renderAll();
+}};
 
 window.applySort = function(val) {{
   window._currentSort = val;
@@ -2723,6 +2932,15 @@ try {{
 def visual_review_modal(support_files):
     scroll_top_flag = st.session_state.get("do_scroll_top", False)
     st.session_state.do_scroll_top = False
+    def _clear_grid_search_n():
+        st.session_state.pop("grid_search_n", None)
+        st.rerun()
+    def _clear_grid_filter_sellers():
+        st.session_state.pop("grid_filter_sellers", None)
+        st.rerun()
+    def _clear_grid_filter_categories():
+        st.session_state.pop("grid_filter_categories", None)
+        st.rerun()
 
     fr = st.session_state.final_report
     data = st.session_state.all_data_map
@@ -2752,6 +2970,21 @@ def visual_review_modal(support_files):
         | (fr["ProductSetSid"].isin(poor_img_rej_sids))
     ]
 
+    seller_opts = sorted(
+        {
+            str(v).strip()
+            for v in data.get("SELLER_NAME", pd.Series(dtype=str)).dropna().astype(str)
+            if str(v).strip() and str(v).strip().lower() != "nan"
+        }
+    )
+    category_opts = sorted(
+        {
+            str(v).strip()
+            for v in data.get("CATEGORY", pd.Series(dtype=str)).dropna().astype(str)
+            if str(v).strip() and str(v).strip().lower() != "nan"
+        }
+    )
+
     c1, c2, c3, c4 = st.columns(
         [1.5, 1.5, 1.5, 0.8], gap="large", vertical_alignment="bottom"
     )
@@ -2763,32 +2996,38 @@ def visual_review_modal(support_files):
                 key="grid_search_n",
             )
         with c1b:
-            if search_n and st.button("✖", key="clr_n", help="Clear name search"):
-                st.session_state.grid_search_n = ""
-                st.rerun()
+            st.button("✖", key="clr_n", help="Clear name search", on_click=_clear_grid_search_n, disabled=not bool(search_n))
     with c2:
         c2a, c2b = st.columns([6, 1], vertical_alignment="bottom", gap="small")
         with c2a:
-            search_sc = st.text_input(
-                "Search by Seller/Category",
-                placeholder="Seller or Category…",
-                icon=":material/store:",
-                key="grid_search_sc",
+            search_sellers = st.multiselect(
+                "Filter by Seller",
+                options=seller_opts,
+                default=st.session_state.get("grid_filter_sellers", []),
+                key="grid_filter_sellers",
             )
         with c2b:
-            if search_sc and st.button("✖", key="clr_sc", help="Clear seller search"):
-                st.session_state.grid_search_sc = ""
-                st.rerun()
+            st.button("✖", key="clr_sellers", help="Clear seller filter", on_click=_clear_grid_filter_sellers, disabled=not bool(search_sellers))
     with c3:
+        c3a, c3b = st.columns([6, 1], vertical_alignment="bottom", gap="small")
+        with c3a:
+            search_categories = st.multiselect(
+                "Filter by Category",
+                options=category_opts,
+                default=st.session_state.get("grid_filter_categories", []),
+                key="grid_filter_categories",
+            )
+        with c3b:
+            st.button("✖", key="clr_categories", help="Clear category filter", on_click=_clear_grid_filter_categories, disabled=not bool(search_categories))
+    with c4:
         st.session_state.grid_items_per_page = st.select_slider(
             "Items per page",
             options=[20, 50, 100, 200],
             value=st.session_state.get("grid_items_per_page", 50),
         )
-    with c4:
-        if st.button("Close", width='stretch', type="secondary"):
-            st.session_state.show_review_modal = False
-            st.rerun()
+    if st.button("Close", width='stretch', type="secondary"):
+        st.session_state.show_review_modal = False
+        st.rerun()
 
     if "MAIN_IMAGE" not in data.columns:
         data["MAIN_IMAGE"] = ""
@@ -2828,7 +3067,11 @@ def visual_review_modal(support_files):
 
     if "_grid_page_contexts" not in st.session_state:
         st.session_state._grid_page_contexts = {}
-    _curr_ctx = (search_n or "", search_sc or "")
+    _curr_ctx = (
+        search_n or "",
+        tuple(sorted(search_sellers)) if search_sellers else (),
+        tuple(sorted(search_categories)) if search_categories else (),
+    )
     _prev_ctx = st.session_state.get("_grid_last_ctx", ("", ""))
     if _curr_ctx != _prev_ctx:
         st.session_state._grid_page_contexts[_prev_ctx] = st.session_state.get("grid_page", 0)
@@ -2839,20 +3082,14 @@ def visual_review_modal(support_files):
         review_data = review_data[
             review_data["NAME"].astype(str).str.contains(search_n, case=False, na=False)
         ]
-    if search_sc:
-        mc = (
-            review_data["CATEGORY"]
-            .astype(str)
-            .str.contains(search_sc, case=False, na=False)
-            if "CATEGORY" in review_data.columns
-            else pd.Series(False, index=review_data.index)
-        )
-        ms = (
-            review_data["SELLER_NAME"]
-            .astype(str)
-            .str.contains(search_sc, case=False, na=False)
-        )
-        review_data = review_data[mc | ms]
+    if search_sellers:
+        review_data = review_data[
+            review_data["SELLER_NAME"].astype(str).isin(search_sellers)
+        ]
+    if search_categories and "CATEGORY" in review_data.columns:
+        review_data = review_data[
+            review_data["CATEGORY"].astype(str).isin(search_categories)
+        ]
 
     review_data = review_data.sort_values(
         by=["SELLER_NAME", "NAME"], na_position="last"
@@ -3283,7 +3520,7 @@ def render_exports_section(support_files, country_validator):
     all_rows = st.session_state.get("all_data_rows", data)
     app_df = fr[fr["Status"] == "Approved"]
     rej_df = fr[fr["Status"] == "Rejected"]
-    c_code = st.session_state.get("selected_country", "Kenya")[:2].upper()
+    c_code = country_validator.code
     date_str = datetime.now().strftime("%Y-%m-%d")
     reasons_df = support_files.get("reasons", pd.DataFrame())
 

@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
-from data_utils import clean_category_code
+from data_utils import clean_category_code, normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +178,7 @@ def load_restricted_brands_from_local() -> Dict[str, List[Dict]]:
             valid = brand_col_vals.str.lower().ne("nan") & brand_col_vals.ne("")
             df = df[valid].copy()
             df["_b_lower"] = brand_col_vals[valid].str.lower().values
+            df["_b_norm"] = brand_col_vals[valid].map(normalize_text).values
 
             def _split_set(series, sep=","):
                 return series.astype(str).str.strip().apply(
@@ -212,28 +213,29 @@ def load_restricted_brands_from_local() -> Dict[str, List[Dict]]:
             exp_vars_s = df.get(exp_vars_col, pd.Series([""] * len(df), index=df.index)).apply(_parse_expanded)
 
             brand_dict: dict = {}
-            for b_lower, brand_raw, sellers, cats, variations, exp_vars in zip(
-                df["_b_lower"], brand_col_vals[valid], sellers_s, cats_s, vars_s, exp_vars_s
+            for b_lower, b_norm, brand_raw, sellers, cats, variations, exp_vars in zip(
+                df["_b_lower"], df["_b_norm"], brand_col_vals[valid], sellers_s, cats_s, vars_s, exp_vars_s
             ):
-                if b_lower not in brand_dict:
-                    brand_dict[b_lower] = {
+                if b_norm not in brand_dict:
+                    brand_dict[b_norm] = {
+                        "brand": b_norm,
                         "brand_raw": brand_raw,
                         "sellers": set(),
                         "categories": set(),
                         "variations": set(),
                         "has_blank_category": False,
                     }
-                brand_dict[b_lower]["sellers"].update(sellers)
+                brand_dict[b_norm]["sellers"].update(normalize_text(s) for s in sellers)
                 if cats is None:
-                    brand_dict[b_lower]["has_blank_category"] = True
+                    brand_dict[b_norm]["has_blank_category"] = True
                 else:
-                    brand_dict[b_lower]["categories"].update(cats)
-                brand_dict[b_lower]["variations"].update(variations)
-                brand_dict[b_lower]["variations"].update(exp_vars)
+                    brand_dict[b_norm]["categories"].update(cats)
+                brand_dict[b_norm]["variations"].update(normalize_text(v) for v in variations)
+                brand_dict[b_norm]["variations"].update(normalize_text(v) for v in exp_vars)
 
             country_rules = [
                 {
-                    "brand": b_lower,
+                    "brand": data["brand"],
                     "brand_raw": data["brand_raw"],
                     "sellers": data["sellers"],
                     "categories": set() if data["has_blank_category"] else data["categories"],

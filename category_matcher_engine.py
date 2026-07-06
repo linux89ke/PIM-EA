@@ -368,11 +368,23 @@ class CategoryMatcherEngine:
         if df is None or df.empty or len(df['category'].unique()) < 2:
             return
         try:
+            df = df.dropna(subset=["name", "category"]).copy()
+            df["name"] = df["name"].astype(str).str.strip()
+            df["category"] = df["category"].astype(str).str.strip()
+            df = df[(df["name"] != "") & (df["category"] != "")]
+            if df.empty or len(df["category"].unique()) < 2:
+                return
+            df = df.groupby("name", as_index=False)["category"].last()
             df['clean_name'] = df['name'].apply(clean_text)
-            self.correction_vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=5000)
+            self.correction_vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=3000, dtype=np.float32)
             X = self.correction_vectorizer.fit_transform(df['clean_name'])
             y = df['category']
-            self.correction_classifier = LogisticRegression(class_weight='balanced', max_iter=1000)
+            self.correction_classifier = LogisticRegression(
+                class_weight='balanced',
+                max_iter=300,
+                solver='saga',
+                n_jobs=-1,
+            )
             self.correction_classifier.fit(X, y)
         except Exception as e:
             logger.warning(f"Failed to retrain correction classifier: {e}")

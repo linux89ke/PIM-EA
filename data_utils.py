@@ -7,6 +7,7 @@ import re
 import hashlib
 import logging
 import os
+import unicodedata
 import pandas as pd
 from io import BytesIO
 from typing import Dict, List, Set, Tuple, Optional
@@ -91,7 +92,11 @@ def clean_category_code(code) -> str:
 def normalize_text(text: str) -> str:
     if pd.isna(text):
         return ""
-    text = str(text).lower().strip()
+    if str(text).strip().lower() in ("nan", "none"):
+        return ""
+    text = unicodedata.normalize("NFKD", str(text))
+    text = text.encode("ascii", "ignore").decode("ascii")
+    text = text.lower().strip()
     noise = r'\b(new|sale|original|genuine|authentic|official|premium|quality|best|hot|2024|2025)\b'
     text = re.sub(noise, '', text)
     text = re.sub(r'[^\w\s]', '', text)
@@ -115,7 +120,9 @@ _NOISE_PATTERN = re.compile(
 
 def _normalize_series(s: pd.Series) -> pd.Series:
     return (
-        s.astype(str).str.lower().str.strip()
+        s.astype(str)
+        .map(lambda x: unicodedata.normalize("NFKD", x).encode("ascii", "ignore").decode("ascii") if x and x.lower() not in ("nan", "none") else "")
+        .str.lower().str.strip()
         .str.replace(_NOISE_PATTERN, '', regex=True)
         .str.replace(r'[^\w\s]', '', regex=True)
         .str.replace(r'\s+', '', regex=True)
@@ -449,12 +456,14 @@ def fetch_exchange_rate(country: str) -> float:
 def format_local_price(usd_price, country: str) -> str:
     from constants import COUNTRY_CURRENCY
     try:
-        price = float(usd_price)
-        if price <= 0:
+        price = pd.to_numeric(usd_price, errors="coerce")
+        if pd.isna(price) or price <= 0:
             return ""
         cfg = COUNTRY_CURRENCY.get(country, {})
         rate = fetch_exchange_rate(country)
-        local = price * rate
+        local = float(price) * rate
+        if pd.isna(local):
+            return ""
         symbol = cfg.get("symbol", "$")
         if cfg.get("code") in ("KES", "UGX", "NGN"):
             return f"{symbol} {local:,.0f}"
