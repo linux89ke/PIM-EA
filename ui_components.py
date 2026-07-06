@@ -1253,7 +1253,15 @@ def build_fast_grid_html(
         is_duplicate = dup_raw.lower() not in ("", "nan", "none", "false")
 
         mr_raw = str(row.get("Manual_Review", "")).strip().lower()
-        is_manual_review = mr_raw in ("true", "1", "yes") or "Manual review" in page_warnings.get(sid, [])
+        qc_skip = str(row.get("QC_Skip_Reason", "")).strip()
+        if qc_skip.lower() in ("nan", "none", "null", ""):
+            qc_skip = ""
+
+        is_manual_review = (
+            mr_raw in ("true", "1", "yes") 
+            or "Manual review" in page_warnings.get(sid, [])
+            or bool(qc_skip)
+        )
 
         cat_reason = str(row.get("Category_Check_Rejection_Reason", "")).strip()
         if cat_reason.lower() in ("nan", "none", "rejected", ""):
@@ -1304,6 +1312,7 @@ def build_fast_grid_html(
                 "data_cat": str(row.get("CATEGORY", "")).replace('"', "&quot;"),
                 "is_duplicate": is_duplicate,
                 "is_manual_review": is_manual_review,
+                "qc_skip_reason": qc_skip,
                 "color_mismatch": color_mismatch,
                 "color_ai": color_ai,
                 "cat_reason": cat_reason,
@@ -1387,8 +1396,10 @@ def build_fast_grid_html(
   .card.selected{{border-color:{O};box-shadow:0 0 0 5px rgba(255,136,0,.35);background:rgba(255,136,0,.04);}}
   .card.staged-rej{{border-color:{R};box-shadow:0 0 0 4px rgba(231,60,23,.3);background:rgba(231,60,23,.04);}}
   .card.committed-rej{{border-color:#bbb;opacity:.6;}}
+  .card.manual-review{{border-color:#dc2626;box-shadow:0 0 0 3px rgba(220,38,38,0.25);}}
   .card.zip-card{{border-left:4px solid #3b82f6;box-shadow:-4px 0 8px rgba(59,130,246,0.20);}}
   .card.zip-card.selected{{border-left:4px solid #3b82f6;box-shadow:-4px 0 8px rgba(59,130,246,0.20),0 0 0 5px rgba(255,136,0,.35);}}
+  .card.zip-card.manual-review{{border-color:#dc2626;border-left:4px solid #3b82f6;box-shadow:-4px 0 8px rgba(59,130,246,0.20), 0 0 0 3px rgba(220,38,38,0.25);}}
   .ai-color-pill{{display:inline-block;background:#dbeafe;color:#1e40af;font-size:10px;font-weight:700;padding:2px 7px;border-radius:99px;border:1px solid #93c5fd;margin-top:3px;}}
   .ai-brand-pill{{display:inline-block;background:#fef9c3;color:#854d0e;font-size:10px;font-weight:700;padding:2px 7px;border-radius:99px;border:1px solid #fde68a;margin-top:3px;}}
 
@@ -1652,6 +1663,8 @@ def build_fast_grid_html(
     <option value="REJECT_WRONG_BRAND">{labels_dict['wrong_brand']}</option>
     <option value="REJECT_PROHIBITED">{labels_dict['prohibited']}</option>
     <option value="REJECT_COLOR">{labels_dict['missing_color']}</option>
+    <option value="REJECT_FDA">FDA</option>
+    <option value="REJECT_DUPLICATE">{labels_dict['sort_duplicates']}</option>
     <option value="OTHER_CUSTOM">{labels_dict['other_custom']}</option>
   </select>
   <button class="batch-btn" onclick="doBatchReject('top')">{labels_dict["batch_reject"]}</button>
@@ -1757,6 +1770,8 @@ def build_fast_grid_html(
     <option value="REJECT_WRONG_BRAND">{labels_dict["wrong_brand"]}</option>
     <option value="REJECT_PROHIBITED">{labels_dict["prohibited"]}</option>
     <option value="REJECT_COLOR">{labels_dict["missing_color"]}</option>
+    <option value="REJECT_FDA">FDA</option>
+    <option value="REJECT_DUPLICATE">{labels_dict["sort_duplicates"]}</option>
     <option value="OTHER_CUSTOM">Other Reason (Custom)</option>
   </select>
   <button class="batch-btn" onclick="doBatchReject('bottom')">{labels_dict["batch_reject"]}</button>
@@ -1895,7 +1910,7 @@ function onImgLoad(img, sid) {{
   var w = img.naturalWidth, h = img.naturalHeight;
   var warns = [];
   if (w > 0 && h > 0) {{
-    if (w < 200 || h < 200) warns.push('Low Resolution');
+    if (w < 250 || h < 250) warns.push('Low Resolution');
     var ratio = h / w;
     if (ratio > 1.5) warns.push('Tall (Screenshot?)');
     else if (ratio < 0.6) warns.push('Wide Aspect');
@@ -1984,6 +1999,7 @@ function buildCardActionsHtml(safeSid, warnings, cardData) {{
     'Product Warranty':       ['REJECT_WARRANTY',       'Product Warranty'],
     'Warranty Check':         ['REJECT_WARRANTY',       'Product Warranty'],
     'FDA':                    ['REJECT_FDA',            'FDA'],
+    'Duplicate product':      ['REJECT_DUPLICATE',      'Duplicate Product'],
     'Wrong Variation':        ['REJECT_VARIATION',      'Wrong Variation'],
     'Variation Check':        ['REJECT_VARIATION',      'Wrong Variation'],
     'BRAND name repeated in NAME': ['REJECT_BRAND_IN_NAME', 'Brand in Name'],
@@ -2009,6 +2025,8 @@ function buildCardActionsHtml(safeSid, warnings, cardData) {{
     ['REJECT_PROHIBITED',    escapeHtml(LABELS.prohibited)],
     ['REJECT_COLOR',         escapeHtml(LABELS.missing_color)],
     ['REJECT_WRONG_BRAND',   escapeHtml(LABELS.wrong_brand)],
+    ['REJECT_FDA',           'FDA'],
+    ['REJECT_DUPLICATE',     'Duplicate Product'],
     ['OTHER_CUSTOM',         'Other Reason (Custom)'],
   ];
   var optionsHtml = opts.map(function(o) {{
@@ -2083,6 +2101,7 @@ function renderCard(card) {{
   var isBrandImgRej = isCommitted && (String(COMMITTED[sid]).includes('Brand Image Check'));
   var cls = 'card'
     + (isCommitted ? ' committed-rej' + (isPoorImgRej ? ' poor-img-rej' : '') + (isBrandImgRej ? ' brand-image-rej' : '') : isStaged ? ' staged-rej' : '')
+    + (card.is_manual_review && !isCommitted && !isStaged && !isSelected ? ' manual-review' : '')
     + (isSelected ? ' selected' : '')
     + (card.is_zip ? ' zip-card' : '');
 
@@ -2090,7 +2109,10 @@ function renderCard(card) {{
   var shortName = card.name.length > 38 ? escapeHtml(card.name.slice(0,38)) + '\u2026' : escapeHtml(card.name);
   var warnHtml = (card.warnings || []).map(w => `<span class="warn-badge">${{escapeHtml(w)}}</span>`).join('');
   if (card.is_duplicate) warnHtml += `<span class="warn-badge" style="background:#7c3aed;color:#fff;font-weight:800;">⧉ DUPLICATE</span>`;
-  if (card.is_manual_review) warnHtml += `<span class="warn-badge" style="background:#0369a1;color:#fff;font-weight:800;">👁 MANUAL REVIEW</span>`;
+  if (card.is_manual_review) {{
+    var mrText = card.qc_skip_reason ? `👁 MANUAL REVIEW: ${{escapeHtml(card.qc_skip_reason)}}` : `👁 MANUAL REVIEW`;
+    warnHtml += `<span class="warn-badge" style="background:#dc2626;color:#fff;font-weight:800;" title="${{escapeHtml(card.qc_skip_reason || 'Manual Review')}}">${{mrText}}</span>`;
+  }}
   if (card.color_mismatch) warnHtml += `<span class="warn-badge" style="background:#b45309;color:#fff;" title="${{escapeHtml(card.color_mismatch)}}">⚠ Color Mismatch</span>`;
   var priceHtml = card.price ? `<div class="price-badge">${{escapeHtml(card.price)}}</div>` : '';
 
@@ -2359,7 +2381,7 @@ window.stageReject = function(sid, r) {{
   }}
 
   if (r === 'REJECT_WRONG_CAT' && currentCard) {{
-      var nameTokens = currentCard.name.toLowerCase().split(/[^\w]+/).filter(w => w.length > 4);
+      var nameTokens = currentCard.name.toLowerCase().split(/[^\\w]+/).filter(w => w.length > 4);
       if (nameTokens.length > 0) {{
           CARDS.forEach(c => {{
               if (c.sid !== sid && !(c.sid in staged)) {{
@@ -2696,7 +2718,7 @@ try {{
 
 
 @st.dialog(
-    "Visual Review Mode", width="large", icon=":material/pageview:", dismissible=False
+    "Visual Review Mode", width="large", icon=":material/pageview:", dismissible=True
 )
 def visual_review_modal(support_files):
     scroll_top_flag = st.session_state.get("do_scroll_top", False)
@@ -2952,8 +2974,6 @@ def visual_review_modal(support_files):
                 _flag = _row_fr.iloc[0]["FLAG"]
                 if _flag and _flag not in ("Approved", "Manual review"):
                     _warns.append(_flag)
-                elif _flag == "Manual review":
-                    _warns.append("Manual review")
 
             _zip_index = st.session_state.get("_zip_sid_index")
             if _zip_index is not None and _sid in _zip_index.index:
@@ -3101,6 +3121,7 @@ def visual_review_modal(support_files):
         st.rerun()
 
 
+@st.fragment
 def render_manual_review_buttons(support_files):
     _fr = st.session_state.get("final_report", pd.DataFrame())
     if _fr.empty or st.session_state.get("file_mode") == "post_qc":

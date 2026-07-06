@@ -128,7 +128,7 @@ from ui_components import (
 # ──────────────────────────────────────────────────────────────────────────────
 # GLOBAL STYLES & BRANDING (Javascript Injector for targeted styling)
 # ──────────────────────────────────────────────────────────────────────────────
-components.html(
+st.iframe(
     """
     <script>
     (function() {
@@ -186,8 +186,7 @@ components.html(
     })();
     </script>
     """,
-    height=0,
-    scrolling=False,
+    height=1,
 )
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -978,7 +977,7 @@ def check_prohibited_products(
         set(rule["keyword"] for rule in prohibited_rules), key=len, reverse=True
     )
     combined_pattern = re.compile(
-        r"(?<!\w)(" + "|".join(re.escape(k) for k in all_kws) + r")(?!\w)",
+        r"(?<!\w)(?:" + "|".join(re.escape(k) for k in all_kws) + r")(?!\w)",
         re.IGNORECASE,
     )
     match_mask = data["_name_lower"].str.contains(combined_pattern, na=False)
@@ -1303,7 +1302,7 @@ def check_perfume_tester(
     if perfume.empty:
         return pd.DataFrame(columns=data.columns)
     tester_pattern = re.compile(
-        r"\b(tester|testeur)s?\b|\btester(?=[\d\-_])", re.IGNORECASE
+        r"\b(?:tester|testeur)s?\b|\btester(?=[\d\-_])", re.IGNORECASE
     )
     flagged = perfume[
         perfume["_name_lower"].str.contains(tester_pattern, na=False)
@@ -1614,7 +1613,7 @@ def check_generic_with_brand_in_name(
     mask = data["_brand_lower"].isin(_PSEUDO_BRANDS)
     if "CATEGORY" in data.columns:
         mask = mask & ~data["CATEGORY"].astype(str).str.lower().str.contains(
-            r"\b(case|cases|cover|covers)\b", regex=True, na=False
+            r"\b(?:case|cases|cover|covers)\b", regex=True, na=False
         )
     gen = data[mask].copy()
     if gen.empty:
@@ -1723,24 +1722,50 @@ def check_missing_color(
                     return True
         return False
 
+    has_color_family = "COLOR_FAMILY" in target.columns
+    color_families = (
+        target["COLOR_FAMILY"].astype(str).str.strip().str.lower().values
+        if has_color_family
+        else [""] * len(target)
+    )
+
     mask = []
-    for n, c in zip(names, colors):
-        is_name_valid = bool(pattern.search(n))
+    for n, c, cf in zip(names, colors, color_families):
+        # Check if the title contains a color keyword
+        color_in_title = bool(pattern.search(n))
+
+        # Check COLOR column validity
         is_col_valid = False
         if has_color and c not in null_like:
             is_col_valid = _is_valid_color(c, valid_colors)
-        if is_col_valid or is_name_valid:
-            mask.append(False)
+
+        # Check COLOR_FAMILY column validity (non-empty and not junk)
+        is_cf_valid = bool(has_color_family and cf not in null_like and cf not in _JUNK_COLORS)
+
+        # Pass only if COLOR or COLOR_FAMILY column has a valid value.
+        # Color in title alone is NOT sufficient — the color must be declared
+        # in the COLOR or COLOR_FAMILY column.
+        if is_col_valid or is_cf_valid:
+            mask.append(False)   # passes
         else:
-            mask.append(True)
+            mask.append(True)    # flag for rejection regardless of title content
+
     flagged = target[mask].copy()
     if not flagged.empty:
 
         def get_reason(row):
             c_val = str(row.get("COLOR", "")).strip().lower()
+            cf_val = str(row.get("COLOR_FAMILY", "")).strip().lower()
+            name_val = str(row.get("NAME", ""))
+            color_in_name = bool(pattern.search(name_val))
             if c_val and c_val not in null_like:
                 return f"Invalid color value provided: '{str(row.get('COLOR', '')).strip()}'"
-            return "Color missing in both NAME and COLOR attributes"
+            if color_in_name:
+                return (
+                    "Color detected in title but not filled in the COLOR or COLOR_FAMILY column. "
+                    "Please add the color to the COLOR or COLOR_FAMILY attribute."
+                )
+            return "Color missing in both COLOR and COLOR_FAMILY attributes"
 
         flagged["Comment_Detail"] = flagged.apply(get_reason, axis=1)
     return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
@@ -1795,7 +1820,7 @@ def check_incomplete_smartphone_name(
     ].copy()
     if target.empty:
         return pd.DataFrame(columns=data.columns)
-    pat = re.compile(r"\b\d+\s*(gb|tb)\b", re.IGNORECASE)
+    pat = re.compile(r"\b\d+\s*(?:gb|tb)\b", re.IGNORECASE)
     flagged = target[~target["_name_lower"].str.contains(pat, na=False)].copy()
     if not flagged.empty:
         flagged["Comment_Detail"] = "Name missing Storage/Memory spec (e.g., 64GB)"
@@ -3041,12 +3066,34 @@ if st.session_state.get("last_processed_files") != process_signature:
                             has_zip_source = True
                             with zipfile.ZipFile(_buf) as zf:
                                 members = zf.infolist()
-                                qc_file = next((info for info in members if "qc_results" in info.filename.lower() and info.filename.lower().endswith((".xlsx", ".xls", ".csv"))), None)
-                                if qc_file:
-                                    qc_data = zf.read(qc_file)
-                                    st.session_state.zip_qc_results = (pd.read_csv(BytesIO(qc_data), dtype=str) if qc_file.filename.lower().endswith(".csv") else pd.read_excel(BytesIO(qc_data), dtype=str))
-                                    _build_zip_sid_index(st.session_state.zip_qc_results)
-                                    raw_data = st.session_state.zip_qc_results.copy()
+                                qc_files = [info for info in members if "qc_results" in info.filename.lower() and info.filename.lower().endswith((".xlsx", ".xls", ".csv"))]
+                                if qc_files:
+                                    qc_dfs = []
+                                    for qcf in qc_files:
+                                        qc_data = zf.read(qcf)
+                                        qdf = (pd.read_csv(BytesIO(qc_data), dtype=str) if qcf.filename.lower().endswith(".csv") else pd.read_excel(BytesIO(qc_data), dtype=str))
+                                        
+                                        if "QC_Skip_Reason" in qdf.columns:
+                                            qdf["QC_Skip_Reason"] = qdf["QC_Skip_Reason"].astype(str).replace(
+                                                {
+                                                    "VARIATION and SELLER_SKU are blank for this SKU when exporting from PIM; please manually QC": "Variation missing",
+                                                    "VARIATION and SELLER_SKU are blank for this SKU when exporting from PIM; please manually QC.": "Variation missing"
+                                                }
+                                            )
+                                        if "incomplete sku" in qcf.filename.lower():
+                                            if "QC_Skip_Reason" not in qdf.columns:
+                                                qdf["QC_Skip_Reason"] = "Variation missing"
+                                            else:
+                                                qdf["QC_Skip_Reason"] = qdf["QC_Skip_Reason"].replace({"nan": "Variation missing", "None": "Variation missing", "": "Variation missing"})
+                                            if "Manual_Review" not in qdf.columns:
+                                                qdf["Manual_Review"] = "True"
+                                        
+                                        qc_dfs.append(qdf)
+                                    
+                                    if qc_dfs:
+                                        st.session_state.zip_qc_results = pd.concat(qc_dfs, ignore_index=True)
+                                        _build_zip_sid_index(st.session_state.zip_qc_results)
+                                        raw_data = st.session_state.zip_qc_results.copy()
                                 st.session_state.zip_image_index = _index_zip_images(zf)
                                 st.session_state.zip_image_source_bytes = uf["bytes"]
                         elif any(k in uf["name"].lower() for k in ("qc_results", "qc_result")):
@@ -3124,7 +3171,15 @@ if st.session_state.get("last_processed_files") != process_signature:
                         for _c in ["NAME", "BRAND", "COLOR", "SELLER_NAME", "CATEGORY_CODE", "LIST_VARIATIONS"]:
                             if _c in data_filtered.columns: data_filtered[_c] = data_filtered[_c].astype(str).fillna("")
                         if "COLOR_FAMILY" not in data_filtered.columns: data_filtered["COLOR_FAMILY"] = ""
+                        if "VARIATION" in data_filtered.columns:
+                            data_filtered["_var_len"] = data_filtered["VARIATION"].astype(str).str.len()
+                            data_filtered = data_filtered.sort_values(by="_var_len", ascending=False).drop(columns=["_var_len"])
                         data = data_filtered.drop_duplicates(subset=["PRODUCT_SET_SID"], keep="first")
+                        
+                        if "QC_Skip_Reason" in data.columns and "VARIATION" in data.columns:
+                            mask = (data["QC_Skip_Reason"] == "Variation missing") & (data["VARIATION"].astype(str).str.strip() != "") & (data["VARIATION"].notna()) & (data["VARIATION"].astype(str).str.lower() != "nan")
+                            data.loc[mask, "QC_Skip_Reason"] = ""
+                            data.loc[mask, "Manual_Review"] = "False"
                         data_has_warranty = all(c in data.columns for c in ["PRODUCT_WARRANTY", "WARRANTY_DURATION"])
 
                         qc_zip = st.session_state.zip_qc_results
@@ -3235,6 +3290,36 @@ if st.session_state.get("last_processed_files") != process_signature:
                                     if _cr and _cr.lower() not in ("nan", "rejected"): _final_cmt = _cr
                                 _fidx = _fr_sid_to_idx.get(_sid)
                                 if _fidx is not None:
+                                    if "warranty" in _base_key.lower():
+                                        _wval = str(_r.get("PRODUCT_WARRANTY", "")).strip()
+                                        if _wval and _wval.lower() not in ("nan", "none"):
+                                            final_report.at[_fidx, "Status"] = "Approved"
+                                            final_report.at[_fidx, "FLAG"] = "Approved by User"
+                                            final_report.at[_fidx, "Comment"] = "Approved by user for warranty"
+                                            final_report.at[_fidx, "Reason"] = ""
+                                            final_report.at[_fidx, "Is_Zip"] = True
+                                            continue
+
+                                    if "title" in _base_key.lower() and "weight" in _base_key.lower() or "title_language_weight" in _base_key.lower():
+                                        missing_vol_df = res_zip.get("Missing Weight/Volume") if res_zip else None
+                                        if missing_vol_df is None or missing_vol_df.empty or _sid not in missing_vol_df["PRODUCT_SET_SID"].astype(str).values:
+                                            final_report.at[_fidx, "Status"] = "Approved"
+                                            final_report.at[_fidx, "FLAG"] = "Approved by User"
+                                            final_report.at[_fidx, "Comment"] = "Approved by user for Title/Volume"
+                                            final_report.at[_fidx, "Reason"] = ""
+                                            final_report.at[_fidx, "Is_Zip"] = True
+                                            continue
+
+                                    if "color" in _base_key.lower():
+                                        missing_col_df = res_zip.get("Missing COLOR") if res_zip else None
+                                        if missing_col_df is None or missing_col_df.empty or _sid not in missing_col_df["PRODUCT_SET_SID"].astype(str).values:
+                                            final_report.at[_fidx, "Status"] = "Approved"
+                                            final_report.at[_fidx, "FLAG"] = "Approved by User"
+                                            final_report.at[_fidx, "Comment"] = "Approved by user for Color"
+                                            final_report.at[_fidx, "Reason"] = ""
+                                            final_report.at[_fidx, "Is_Zip"] = True
+                                            continue
+
                                     final_report.at[_fidx, "Status"] = "Rejected"
                                     final_report.at[_fidx, "FLAG"] = _flag_pf
                                     final_report.at[_fidx, "Comment"] = _final_cmt
