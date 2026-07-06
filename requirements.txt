@@ -11,3 +11,4 @@ lxml>=6.0.0
 polars
 st-styled
 orjson>=3.10.0
+python-docx
