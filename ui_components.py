@@ -5,6 +5,7 @@ ui_components.py - All Streamlit UI rendering components, dialogs, and the image
 import base64
 import concurrent.futures
 import gc
+import html as html_lib
 import json
 import logging
 import re
@@ -1695,14 +1696,14 @@ def build_fast_grid_html(
   <div class="filter-group">
     <div class="group-label"><span>Seller</span><span class="sel-count" id="seller-selected-count">Selected: 0</span></div>
     <select id="seller-filter" class="reason-sel" multiple size="4" title="Hold Ctrl/Cmd to choose multiple sellers">
-{''.join(f'<option value="{escapeHtml(opt)}">{escapeHtml(opt)}</option>' for opt in seller_opts)}
+{''.join(f'<option value="{html_lib.escape(opt)}">{html_lib.escape(opt)}</option>' for opt in seller_opts)}
     </select>
     <div class="hint">Ctrl/Cmd for multi-select</div>
   </div>
   <div class="filter-group">
     <div class="group-label"><span>Category</span><span class="sel-count" id="category-selected-count">Selected: 0</span></div>
     <select id="category-filter" class="reason-sel" multiple size="4" title="Hold Ctrl/Cmd to choose multiple categories">
-{''.join(f'<option value="{escapeHtml(opt)}">{escapeHtml(opt)}</option>' for opt in category_opts)}
+{''.join(f'<option value="{html_lib.escape(opt)}">{html_lib.escape(opt)}</option>' for opt in category_opts)}
     </select>
     <div class="hint">Ctrl/Cmd for multi-select</div>
   </div>
