@@ -123,6 +123,11 @@ def generate_smart_export(
     df = _normalize_export_df(df, export_type)
     # Rename internal 'Reason' column to 'ReasonOne' for the export file
     df = df.rename(columns={"Reason": "ReasonOne"}, errors="ignore")
+    if 'Status' in df.columns:
+        approved_mask = df['Status'].astype(str).str.strip().eq('Approved')
+        for _col in ('ReasonOne', 'Comment'):
+            if _col in df.columns:
+                df.loc[approved_mask, _col] = ''
     cols = (
         FULL_DATA_COLS + [c for c in ["Status", "ReasonOne", "Comment", "FLAG", "SellerName"] if c not in FULL_DATA_COLS]
         if export_type == 'full'
