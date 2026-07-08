@@ -1637,16 +1637,30 @@ def check_generic_with_brand_in_name(
     gen = data[mask].copy()
     if gen.empty:
         return pd.DataFrame(columns=data.columns)
-    sorted_b = sorted(
-        [str(b).strip().lower() for b in brands_list if b], key=len, reverse=True
-    )
+    # Pre-clean the brands and organize them into an O(1) dictionary lookup by their first word
+    brand_trie = {}
+    for b in brands_list:
+        if not b: continue
+        bc = re.sub(r"\s+", " ", re.sub(r"['\.\-]", " ", str(b).lower())).strip()
+        if not bc: continue
+        first_word = bc.split()[0]
+        if first_word not in brand_trie:
+            brand_trie[first_word] = []
+        brand_trie[first_word].append((bc, b.title()))
+        
+    # Sort within each bucket by length descending so longer matches (like 'Apple Watch') match before shorter ones ('Apple')
+    for fw in brand_trie:
+        brand_trie[fw].sort(key=lambda x: len(x[0]), reverse=True)
 
     def detect(n):
         nc = re.sub(r"\s+", " ", re.sub(r"['\.\-]", " ", str(n).lower())).strip()
-        for b in sorted_b:
-            bc = re.sub(r"\s+", " ", re.sub(r"['\.\-]", " ", b)).strip()
-            if nc.startswith(bc) and (len(nc) == len(bc) or not nc[len(bc)].isalnum()):
-                return b.title()
+        words = nc.split()
+        if not words: return None
+        first_word = words[0]
+        if first_word in brand_trie:
+            for bc, original in brand_trie[first_word]:
+                if nc.startswith(bc) and (len(nc) == len(bc) or not nc[len(bc)].isalnum()):
+                    return original
         return None
 
     gen["Detected_Brand"] = [detect(n) for n in gen["NAME"].values]
@@ -1965,7 +1979,8 @@ def check_duplicate_products(
         else None
     )
 
-    d["_size_key"] = d["NAME"].astype(str).apply(_extract_size_key)
+    _size_keys = [_extract_size_key(str(n)) for n in d["NAME"].values]
+    d["_size_key"] = _size_keys
 
     _names_lower = d["NAME"].astype(str).str.lower()
     if _color_pat:
@@ -1981,14 +1996,11 @@ def check_duplicate_products(
     d["_color_key"] = _from_name.where(_from_name != "", _fallback)
 
     if "_norm_name" not in d.columns:
-        d["_norm_name"] = d["NAME"].astype(str).str.lower()
-        d["_norm_name"] = d["_norm_name"].str.replace(
-            r"\b(new|sale|original|genuine|authentic|official|premium|quality|best|hot|2024|2025)\b",
-            "",
-            regex=True,
-        )
-        d["_norm_name"] = d["_norm_name"].str.replace(r"[^\w\s]", "", regex=True)
-        d["_norm_name"] = d["_norm_name"].str.replace(r"\s+", "", regex=True)
+        _nn = d["NAME"].astype(str).str.lower()
+        _nn = _nn.str.replace(r"\b(new|sale|original|genuine|authentic|official|premium|quality|best|hot|2024|2025)\b", "", regex=True)
+        _nn = _nn.str.replace(r"[^\w\s]", "", regex=True)
+        _nn = _nn.str.replace(r"\s+", "", regex=True)
+        d["_norm_name"] = _nn
 
     flagged_indices: dict = {} 
 
@@ -2019,12 +2031,10 @@ def check_duplicate_products(
                 if img_dup_mask.any():
                     _first_img = hash_d.drop_duplicates(
                         subset=["_img_key"], keep="first"
-                    ).set_index("_img_key")["NAME"]
-                    for idx in hash_d[img_dup_mask].index:
-                        k = hash_d.loc[idx, "_img_key"]
-                        flagged_indices[idx] = (
-                            f"Duplicate (same image): '{str(_first_img.get(k, ''))[:40]}'"
-                        )
+                    ).set_index("_img_key")["NAME"].to_dict()
+                    _img_dups = hash_d[img_dup_mask]
+                    for idx, k in zip(_img_dups.index, _img_dups["_img_key"]):
+                        flagged_indices[idx] = f"Duplicate (same image): '{str(_first_img.get(k, ''))[:40]}'"
 
     d["_text_key"] = (
         d["_seller_lower"]
@@ -2039,15 +2049,40 @@ def check_duplicate_products(
     )
     text_dup_mask = d.duplicated(subset=["_text_key"], keep="first")
     if text_dup_mask.any():
-        _first_text = d.drop_duplicates(subset=["_text_key"], keep="first").set_index(
-            "_text_key"
-        )["NAME"]
-        for idx in d[text_dup_mask].index:
+        _first_text = d.drop_duplicates(subset=["_text_key"], keep="first").set_index("_text_key")["NAME"].to_dict()
+        _txt_dups = d[text_dup_mask]
+        for idx, k in zip(_txt_dups.index, _txt_dups["_text_key"]):
             if idx not in flagged_indices: 
-                k = d.loc[idx, "_text_key"]
-                flagged_indices[idx] = (
-                    f"Duplicate: '{str(_first_text.get(k, ''))[:40]}'"
-                )
+                flagged_indices[idx] = f"Duplicate: '{str(_first_text.get(k, ''))[:40]}'"
+
+    def _extract_model_key(name):
+        words = str(name).split()
+        digit_words = [re.sub(r'[^a-zA-Z0-9]', '', w).lower() for w in words if any(char.isdigit() for char in w)]
+        if digit_words:
+            return "-".join(digit_words)
+        return "".join(re.sub(r'[^a-zA-Z0-9]', '', w).lower() for w in words)
+
+    d["_model_key"] = [_extract_model_key(n) for n in d["NAME"].values]
+    d["_seo_key"] = (
+        d["_seller_lower"]
+        + "|"
+        + d["_brand_lower"]
+        + "|"
+        + d["_model_key"]
+        + "|"
+        + d["_color_key"]
+        + "|"
+        + d["_size_key"]
+    )
+    
+    seo_dup_mask = d.duplicated(subset=["_seo_key"], keep="first")
+    if seo_dup_mask.any():
+        _first_seo = d.drop_duplicates(subset=["_seo_key"], keep="first").set_index("_seo_key")["NAME"].to_dict()
+        _seo_dups = d[seo_dup_mask]
+        for idx, k in zip(_seo_dups.index, _seo_dups["_seo_key"]):
+            if idx not in flagged_indices: 
+                flagged_indices[idx] = f"Duplicate (SEO variant): '{str(_first_seo.get(k, ''))[:40]}'"
+
 
     if not flagged_indices:
         return pd.DataFrame(columns=data.columns)
@@ -2856,6 +2891,9 @@ _FLAG_SVGS = {
     "Nigeria": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#008751" d="M0 0h170.7v512H0z"/><path fill="#fff" d="M170.7 0h170.6v512H170.7z"/><path fill="#008751" d="M341.3 0H512v512H341.3z"/></svg>""",
     "Ghana": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#006b3f" d="M0 0h512v170.7H0z"/><path fill="#fcd116" d="M0 170.7h512v170.6H0z"/><path fill="#ce1126" d="M0 341.3h512V512H0z"/><path fill="#000" d="M256 183l18 55h58l-47 34 18 55-47-34-47 34 18-55-47-34h58z"/></svg>""",
     "Morocco": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#c1272d" d="M512 0H0v512h512z"/><path fill="none" stroke="#006233" stroke-width="12.5" d="m256 191.4-38 116.8 99.4-72.2H194.6l99.3 72.2z"/></svg>""",
+    "Egypt": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#ce1126" d="M0 0h512v170.7H0z"/><path fill="#fff" d="M0 170.7h512v170.6H0z"/><path fill="#000" d="M0 341.3h512V512H0z"/><circle cx="256" cy="256" r="30" fill="#c09300"/></svg>""",
+    "Senegal": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#00853f" d="M0 0h170.7v512H0z"/><path fill="#fdef42" d="M170.7 0h170.6v512H170.7z"/><path fill="#e31b23" d="M341.3 0H512v512H341.3z"/><path fill="#00853f" d="M256 183l18 55h58l-47 34 18 55-47-34-47 34 18-55-47-34h58z"/></svg>""",
+    "Ivory Coast": """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="#f77f00" d="M0 0h170.7v512H0z"/><path fill="#fff" d="M170.7 0h170.6v512H170.7z"/><path fill="#009e60" d="M341.3 0H512v512H341.3z"/></svg>""",
 }
 
 def _svg_to_b64(svg_str: str) -> str:

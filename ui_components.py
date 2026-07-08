@@ -853,10 +853,7 @@ def render_flag_expander(
     if len(df_view) <= 2:
         df_kwargs["height"] = 150
 
-    event = st.dataframe(
-        df_styled,
-        **df_kwargs,
-        column_config={
+    _col_cfg = {
             "PRODUCT_SET_SID": st.column_config.TextColumn(pinned=True),
             "NAME": st.column_config.TextColumn(pinned=True),
             "PARENTSKU": st.column_config.TextColumn(),
@@ -883,6 +880,20 @@ def render_flag_expander(
             ),
             "Is_Zip": None,
         }
+
+    # Wire up the Show Image Previews toggle
+    if show_table_images and img_col:
+        df_view.insert(0, "_Image_Preview", df_view.apply(get_img, axis=1))
+        _col_cfg["_Image_Preview"] = st.column_config.ImageColumn("Preview", width="small")
+    elif "_Image_Preview" in df_view.columns:
+        df_view = df_view.drop(columns=["_Image_Preview"])
+
+    df_styled = df_view.style.apply(style_rows, axis=1)
+
+    event = st.dataframe(
+        df_styled,
+        **df_kwargs,
+        column_config=_col_cfg,
     )
 
     raw_selected = list(event.selection.rows)
@@ -3153,7 +3164,7 @@ def visual_review_modal(support_files):
             if "blurry" in comment or "low res" in comment or "resolution" in comment or "small" in comment: w.append("Low Resolution")
             
             flag = _fr_flag_map.get(sid)
-            if pd.notna(flag) and flag not in ("Approved", "Manual review"):
+            if pd.notna(flag) and flag not in ("Approved", "Manual review", "Approved by User"):
                 w.append(flag)
                 
             if _zip_index is not None and sid in _zip_index.index:
