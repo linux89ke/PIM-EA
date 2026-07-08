@@ -298,8 +298,14 @@ def _verify(check_key: str, rec: dict, rule: dict, weights: set, color_re) -> st
     if check_key == "color":
         req = _clean(rule.get("Color", "Mandatory")).lower()
         color_val = _clean(rec.get("COLOR"))
-        # Only the COLOR column counts — COLOR_FAMILY alone or color in product name/title
-        # is NOT sufficient. The COLOR column must have a specific color value.
+        _MULTICOLOR_VARIANTS = {
+            "multicolor", "multicolour", "multicolored", "multicoloured",
+            "multi colour", "multi color", "multi-colour", "multi-color",
+            "multicolors", "multicolours",
+        }
+        # Multicolor variants are explicitly accepted as valid color values
+        if color_val.lower() in _MULTICOLOR_VARIANTS:
+            return "False Rejection"
         has_color_in_column = bool(color_val)
         if req == "no need":
             return "False Rejection"

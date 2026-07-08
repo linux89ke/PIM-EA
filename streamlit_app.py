@@ -104,6 +104,7 @@ from nigeria_rules import (
     check_nigeria_gift_card,
     check_nigeria_hp_toners,
     check_nigeria_powerbanks,
+    check_generic_powerbanks,
     check_nigeria_rice,
     check_nigeria_tvs,
     check_nigeria_xmas_tree,
@@ -1716,9 +1717,8 @@ def check_missing_color(
         "random", "random color", "random colour", "assorted", "various",
         "as in the picture", "as in the pictures", "as the picture", "as per image",
         "as shown", "see image", "see photo", "all color available",
-        "all color availble", "all colors available", "multicolour", "multicolored",
-        "multicoloured", "multi colour", "multi color", "multi-colour",
-        "multi-color", "multicolors", "mult", "multic",
+        "all color availble", "all colors available",
+        "mult", "multic",
     }
     _MODIFIER_WORDS = {
         "dark", "light", "bright", "deep", "pale", "soft", "matte", "matt",
@@ -1733,8 +1733,16 @@ def check_missing_color(
         "bead", "beaded", "ring", "with", "and", "or",
     }
 
+    _MULTICOLOR_VARIANTS = {
+        "multicolor", "multicolour", "multicolored", "multicoloured",
+        "multi colour", "multi color", "multi-colour", "multi-color",
+        "multicolors", "multicolours",
+    }
+
     def _is_valid_color(color_str: str, valid_set: set) -> bool:
         c = color_str.strip().lower()
+        if c in _MULTICOLOR_VARIANTS:
+            return True   # explicitly accepted
         if c in _JUNK_COLORS:
             return False
         if re.match(r"^[.\-_*]{1,5}$", c):
@@ -1746,7 +1754,7 @@ def check_missing_color(
             part = part.strip()
             if not part:
                 continue
-            if part in valid_set:
+            if part in valid_set or part in _MULTICOLOR_VARIANTS:
                 return True
             tokens = part.split()
             for token in tokens:
@@ -1764,41 +1772,39 @@ def check_missing_color(
 
     mask = []
     for n, c, cf in zip(names, colors, color_families):
-        # Check if the title contains a color keyword
-        color_in_title = bool(pattern.search(n))
-
-        # Check COLOR column validity
+        # Check COLOR column validity ONLY — this is the strict requirement.
+        # COLOR_FAMILY alone or color appearing in the product title/name
+        # is NOT sufficient; the COLOR column must be explicitly filled.
         is_col_valid = False
         if has_color and c not in null_like:
             is_col_valid = _is_valid_color(c, valid_colors)
 
-        # Check COLOR_FAMILY column validity (non-empty and not junk)
-        is_cf_valid = bool(has_color_family and cf not in null_like and cf not in _JUNK_COLORS)
-
-        # Pass only if COLOR or COLOR_FAMILY column has a valid value.
-        # Color in title alone is NOT sufficient — the color must be declared
-        # in the COLOR or COLOR_FAMILY column.
-        if is_col_valid or is_cf_valid:
-            mask.append(False)   # passes
+        if is_col_valid:
+            mask.append(False)   # passes — COLOR column has a valid value
         else:
-            mask.append(True)    # flag for rejection regardless of title content
+            mask.append(True)    # flag — COLOR column is missing or invalid
 
     flagged = target[mask].copy()
     if not flagged.empty:
 
         def get_reason(row):
             c_val = str(row.get("COLOR", "")).strip().lower()
-            cf_val = str(row.get("COLOR_FAMILY", "")).strip().lower()
             name_val = str(row.get("NAME", ""))
+            cf_val = str(row.get("COLOR_FAMILY", "")).strip()
             color_in_name = bool(pattern.search(name_val))
             if c_val and c_val not in null_like:
-                return f"Invalid color value provided: '{str(row.get('COLOR', '')).strip()}'"
+                return f"Invalid color value in COLOR column: '{str(row.get('COLOR', '')).strip()}' — please use a specific color (e.g. Red, Blue)"
+            if cf_val and cf_val.lower() not in null_like:
+                return (
+                    f"COLOR_FAMILY is filled ('{cf_val}') but the COLOR column is empty. "
+                    "The COLOR column must be explicitly filled for this category."
+                )
             if color_in_name:
                 return (
-                    "Color detected in title but not filled in the COLOR or COLOR_FAMILY column. "
-                    "Please add the color to the COLOR or COLOR_FAMILY attribute."
+                    "Color detected in product title but the COLOR column is empty. "
+                    "Please fill the COLOR attribute with the specific color value."
                 )
-            return "Color missing in both COLOR and COLOR_FAMILY attributes"
+            return "COLOR column is required for this category but is missing or empty."
 
         flagged["Comment_Detail"] = flagged.apply(get_reason, axis=1)
     return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
@@ -2380,9 +2386,8 @@ def validate_products(
             ("NG - Rice Brand Seller", check_nigeria_rice, {"ng_rules": _ng}),
             ("Powerbank Not Authorized", check_nigeria_powerbanks, {"ng_rules": _ng}),
         ]
-    if country_validator.code in ("KE", "UG"):
-        _ng = support_files.get("ng_qc_rules", {})
-        validations += [("Powerbank Not Authorized", check_nigeria_powerbanks, {"ng_rules": _ng})]
+    if country_validator.code in ("KE", "UG", "GH", "SN", "CI", "EG", "MA"):
+        validations += [("Powerbank Not Authorized", check_generic_powerbanks, {})]
     if country_validator.code == "MA":
         _ma = load_morocco_qc_rules()
         validations = [v for v in validations if v[0] != "Restricted brands"]
@@ -2644,7 +2649,6 @@ def derive_status_report(data, results, support_files, country_validator):
     return country_validator.ensure_status_column(final_df), results
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
 def cached_validate_products(
     data_hash: str,
     _data: pd.DataFrame,
@@ -2704,7 +2708,7 @@ if "post_qc_data" not in st.session_state:
 if "file_mode" not in st.session_state:
     st.session_state.file_mode = None
 if "no_computation_zip" not in st.session_state:
-    st.session_state.no_computation_zip = True
+    st.session_state.no_computation_zip = False
 if "zip_qc_results" not in st.session_state:
     st.session_state.zip_qc_results = pd.DataFrame()
 if "intersection_sids" not in st.session_state:
@@ -3363,6 +3367,7 @@ if st.session_state.get("last_processed_files") != process_signature:
                                             final_report.at[_fidx, "Comment"] = "Approved by user for warranty"
                                             final_report.at[_fidx, "Reason"] = ""
                                             final_report.at[_fidx, "Is_Zip"] = True
+                                            final_report.at[_fidx, "zip_override"] = "warranty"
                                             continue
 
                                     if "title" in _base_key.lower() and "weight" in _base_key.lower() or "title_language_weight" in _base_key.lower():

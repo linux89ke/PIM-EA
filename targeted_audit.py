@@ -125,13 +125,6 @@ def targeted_audit_modal(support_files):
     _inject_css()
 
     st.markdown("### :material/fact_check: Targeted Audit")
-    st.markdown(
-        '<div class="audit-caption">Reads the file\'s own per-check status and reason columns '
-        "directly. Every distinct reason is broken out on its own — nothing is merged into a "
-        "generic bucket — and any reason mentioning an error is separated out as an AI Error "
-        "rather than treated as a real finding.</div>",
-        unsafe_allow_html=True,
-    )
 
     fr = st.session_state.get("final_report", pd.DataFrame())
     data = st.session_state.get("all_data_map", pd.DataFrame())
@@ -144,15 +137,6 @@ def targeted_audit_modal(support_files):
             st.session_state.show_targeted_audit_modal = False
             st.rerun()
         return
-
-    with st.expander("🔧 Column diagnostics (click if a check seems to be missing)", expanded=False):
-        st.caption(
-            "Each check reads two specific columns from your data. If a check's results never "
-            "show up — even though you'd expect findings — it usually means the column name "
-            "below doesn't match your file exactly. ❌ means that exact column name wasn't found."
-        )
-        diag = diagnose_columns(data)
-        st.dataframe(diag, width='stretch', hide_index=True)
 
     run_col, search_col, clear_col = st.columns([1.6, 2, 1])
     with run_col:

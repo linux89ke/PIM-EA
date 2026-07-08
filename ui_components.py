@@ -1199,12 +1199,16 @@ def build_fast_grid_html(
     _zip_sid_set = set()
     if _zip_index_ss is not None and not _zip_index_ss.empty:
         _zip_sid_set = set(_zip_index_ss.index.astype(str).tolist())
+    _fr_ss = st.session_state.get("final_report", pd.DataFrame())
     if not _zip_sid_set:
-        _fr_ss = st.session_state.get("final_report", pd.DataFrame())
         if not _fr_ss.empty and "Is_Zip" in _fr_ss.columns and "ProductSetSid" in _fr_ss.columns:
             _zip_sid_set = set(
                 _fr_ss[_fr_ss["Is_Zip"] == True]["ProductSetSid"].astype(str).tolist()
             )
+
+    _zip_override_map = {}
+    if not _fr_ss.empty and "zip_override" in _fr_ss.columns and "ProductSetSid" in _fr_ss.columns:
+        _zip_override_map = _fr_ss.set_index("ProductSetSid")["zip_override"].fillna("").to_dict()
 
     cards_data = []
     for _, row in page_data.iterrows():
@@ -1332,6 +1336,7 @@ def build_fast_grid_html(
                 "suggested_cat": suggested_cat,
                 "ai_caption": ai_caption,
                 "is_zip": sid in _zip_sid_set,
+                "zip_override": str(_zip_override_map.get(sid, "")),
             }
         )
 
@@ -2211,8 +2216,12 @@ function renderCard(card) {{
     `<div class="co" style="color:#9333ea;font-size:10px;white-space:normal;line-height:1.3;" title="${{escapeHtml(card.cat_reason)}}">${{escapeHtml(card.cat_reason.length > 80 ? card.cat_reason.slice(0,80)+'…' : card.cat_reason)}}</div>` : '';
   var suggestedCatHtml = card.suggested_cat ? `<div class="co" style="color:#0369a1;" title="AI suggests: ${{escapeHtml(card.suggested_cat)}}">→ ${{escapeHtml(card.suggested_cat.length > 50 ? card.suggested_cat.slice(0,50)+'…' : card.suggested_cat)}}</div>` : '';
   var aiBrandHtml = (card.brand_detected && card.brand_detected.toLowerCase() !== card.brand.toLowerCase()) ? `<div class="ai-brand-pill" title="AI detected brand: ${{escapeHtml(card.brand_detected)}}">🏷 AI Brand: ${{escapeHtml(card.brand_detected)}}</div>` : '';
-  var brandDetectedHtml = (isBrandImgRej && card.brand_detected) ? `<div class="co" style="background:#E8F5E9;color:#2E7D32;border:1px solid #C8E6C9;" title="Brand Detected: ${{escapeHtml(card.brand_detected)}}">Detected Brand: ${{escapeHtml(card.brand_detected)}}</div>` : '';
-  var zipBadgeHtml = card.is_zip ? `<span style="background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:#fff;font-size:10px;font-weight:900;padding:2px 8px;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.15);margin-left:8px;display:inline-block;">ZIP</span>` : '';
+  var brandDetectedHtml = (isBrandImgRej && card.brand_detected) ? '<div class="co" style="background:#E8F5E9;color:#2E7D32;border:1px solid #C8E6C9;" title="Brand Detected: ' + escapeHtml(card.brand_detected) + '">Detected Brand: ' + escapeHtml(card.brand_detected) + '</div>' : '';
+  var zipBadgeHtml = card.is_zip ? '<span style="background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:#fff;font-size:10px;font-weight:900;padding:2px 8px;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.15);margin-left:8px;display:inline-block;">ZIP</span>' : '';
+  if (card.zip_override) {{
+    var overrideType = card.zip_override === 'color' ? 'Color' : 'Warranty';
+    zipBadgeHtml += '<span style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;font-size:10px;font-weight:900;padding:2px 8px;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.15);margin-left:4px;display:inline-block;" title="Auto-approved by main ' + overrideType.toLowerCase() + ' check">🔓 ' + overrideType + ' Overridden</span>';
+  }}
 
   var zoomHtml = `<button class="zoom-btn" onclick="event.stopPropagation();showZoom('${{safeSid}}', event)" title="Preview">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -3499,7 +3508,8 @@ def render_manual_review_buttons(support_files):
         else "Targeted Audit"
     )
 
-    has_zip = st.session_state.get("no_computation_zip", False) or not st.session_state.get("zip_qc_results", pd.DataFrame()).empty
+    has_zip_in_fr = not _fr.empty and "Is_Zip" in _fr.columns and _fr["Is_Zip"].any()
+    has_zip = has_zip_in_fr or st.session_state.get("no_computation_zip", False) or not st.session_state.get("zip_qc_results", pd.DataFrame()).empty
 
     st.markdown("---")
 
