@@ -37,9 +37,15 @@ _REPORTABLE_VERDICTS = ["False Approval", "False Rejection", "Needs Manual Revie
 
 _VERDICT_INTRO = {
     "False Approval": "were approved by the pipeline, but the file's own mandatory-attribute "
-                       "rule for this category says they should not have been.",
+                       "rule for this category says they should not have been. For color checks, "
+                       "this means the product was approved despite having no value in the COLOR "
+                       "column (COLOR_FAMILY alone or color mentioned only in the product name "
+                       "does not count as a valid color declaration).",
     "False Rejection": "were rejected, but re-checking against the file's own rule for this "
-                        "category shows the rejection was incorrect.",
+                        "category shows the rejection was incorrect. For color checks, this means "
+                        "the product was rejected for missing color, but the COLOR column already "
+                        "had a specific color value declared, or color was not mandatory for this "
+                        "category.",
     "Needs Manual Review": "cannot be resolved automatically from the data alone and require a "
                             "human to review — often because they depend on visual inspection or "
                             "a subjective AI suggestion.",
@@ -85,7 +91,7 @@ _DOC_EXTRA_FIELDS = {
     "duplicate": [],
     "category": ["Suggested Categories", "Top1 Category", "Category Match Score",
                  "Top1 Score", "Initial Category Path"],
-    "color": ["Color", "Color Family", "Color (AI Normalized)"],
+    "color": ["Color", "Color (AI Normalized)", "Color Family"],
     "warranty": ["Warranty", "Warranty Type", "Warranty Duration", "Warranty Address"],
     "variation": ["Variation", "Existing Variation Count"],
     "fda": ["FDA"],

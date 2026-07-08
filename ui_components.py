@@ -1089,6 +1089,8 @@ def build_fast_grid_html(
     show_images=True,
     seller_trust=None,
     support_files=None,
+    curr_sort="",
+    curr_flag="",
 ):
     if seller_trust is None: seller_trust = {}
     if support_files is None: support_files = {}
@@ -1353,6 +1355,81 @@ def build_fast_grid_html(
         }
         """
 
+
+    def _sel(val, curr): return "selected" if val == curr else ""
+    sort_html = f'''
+  <select class="reason-sel sort-sel" id="sort-sel-top" onchange="sendMsg('grid_sort_issue', this.value)" style="max-width:170px;" title="{labels_dict.get('sort_by_issue', 'Sort')}">
+    <option value="" {_sel('', curr_sort)}>{labels_dict.get('sort_by_issue', 'Sort')}</option>
+    <option value="most_flagged" {_sel('most_flagged', curr_sort)}>{labels_dict.get('most_flagged', 'Most Flagged')}</option>
+    <option value="no_issue" {_sel('no_issue', curr_sort)}>{labels_dict.get('no_issue_first', 'No Issue')}</option>
+    <option disabled>── {labels_dict.get('grp_image', 'Image')} ──</option>
+    <option value="low_res" {_sel('low_res', curr_sort)}>{labels_dict.get('sort_low_res', 'Low Res')}</option>
+    <option value="tall" {_sel('tall', curr_sort)}>{labels_dict.get('sort_tall', 'Tall')}</option>
+    <option value="wide" {_sel('wide', curr_sort)}>{labels_dict.get('sort_wide', 'Wide')}</option>
+    <option value="broken" {_sel('broken', curr_sort)}>{labels_dict.get('sort_broken', 'Broken')}</option>
+    <option disabled>── {labels_dict.get('grp_qc_flags', 'QC')} ──</option>
+    <option value="Wrong Category" {_sel('Wrong Category', curr_sort)}>{labels_dict.get('sort_wrong_cat', 'Wrong Cat')}</option>
+    <option value="Restricted brands" {_sel('Restricted brands', curr_sort)}>{labels_dict.get('sort_restr_brand', 'Restricted')}</option>
+    <option value="Suspected Fake product" {_sel('Suspected Fake product', curr_sort)}>{labels_dict.get('sort_fake', 'Fake')}</option>
+    <option value="Missing COLOR" {_sel('Missing COLOR', curr_sort)}>{labels_dict.get('sort_missing_color', 'Color')}</option>
+    <option value="Product Warranty" {_sel('Product Warranty', curr_sort)}>{labels_dict.get('sort_warranty', 'Warranty')}</option>
+    <option value="Duplicate product" {_sel('Duplicate product', curr_sort)}>{labels_dict.get('sort_duplicates', 'Duplicate')}</option>
+    <option disabled>── {labels_dict.get('grp_prefetch', 'Prefetch')} ──</option>
+    <option value="Category Check" {_sel('Category Check', curr_sort)}>Category Check</option>
+    <option value="Warranty Check" {_sel('Warranty Check', curr_sort)}>Warranty Check</option>
+    <option value="FDA" {_sel('FDA', curr_sort)}>FDA</option>
+    <option value="Color Check" {_sel('Color Check', curr_sort)}>Color Check</option>
+    <option value="Variation Check" {_sel('Variation Check', curr_sort)}>Variation Check</option>
+    <option value="Brand Image Check" {_sel('Brand Image Check', curr_sort)}>Brand Image Check</option>
+    <option value="Title Language Check" {_sel('Title Language Check', curr_sort)}>Title Language Check</option>
+    <option value="Image Quality Check" {_sel('Image Quality Check', curr_sort)}>Image Quality Check</option>
+  </select>
+'''
+    filter_html = f'''
+  <select class="reason-sel sort-sel" id="filter-sel-top" onchange="sendMsg('grid_filter_flag', this.value)" style="max-width:180px;" title="{labels_dict.get('filter_by_flag', 'Filter')}">
+    <option value="" {_sel('', curr_flag)}>{labels_dict.get('filter_by_flag', 'Filter')}</option>
+    <option value="brand_ocr" {_sel('brand_ocr', curr_flag)}>{labels_dict.get('filter_brand_ocr', 'Brand OCR')}</option>
+    <option value="duplicates" {_sel('duplicates', curr_flag)}>{labels_dict.get('filter_duplicates', 'Duplicates')}</option>
+    <option value="manual_review" {_sel('manual_review', curr_flag)}>{labels_dict.get('filter_manual', 'Manual Review')}</option>
+    <option value="color_mismatch" {_sel('color_mismatch', curr_flag)}>{labels_dict.get('filter_color_mis', 'Color Mis')}</option>
+    <option value="committed" {_sel('committed', curr_flag)}>{labels_dict.get('all_rejected', 'All Rejected')}</option>
+    <option value="no_flags" {_sel('no_flags', curr_flag)}>{labels_dict.get('clean_no_flags', 'Clean')}</option>
+    <option disabled>── {labels_dict.get('grp_qc_flags', 'QC')} ──</option>
+    <option value="Wrong Category" {_sel('Wrong Category', curr_flag)}>{labels_dict.get('sort_wrong_cat', 'Wrong Cat')}</option>
+    <option value="Restricted brands" {_sel('Restricted brands', curr_flag)}>{labels_dict.get('sort_restr_brand', 'Restricted')}</option>
+    <option value="Suspected Fake product" {_sel('Suspected Fake product', curr_flag)}>{labels_dict.get('sort_fake', 'Fake')}</option>
+    <option value="Missing COLOR" {_sel('Missing COLOR', curr_flag)}>{labels_dict.get('sort_missing_color', 'Color')}</option>
+    <option value="Product Warranty" {_sel('Product Warranty', curr_flag)}>{labels_dict.get('sort_warranty', 'Warranty')}</option>
+    <option value="Duplicate product" {_sel('Duplicate product', curr_flag)}>{labels_dict.get('sort_duplicates', 'Duplicate')}</option>
+    <option value="BRAND name repeated in NAME" {_sel('BRAND name repeated in NAME', curr_flag)}>{labels_dict.get('filter_brand_name', 'Brand Name')}</option>
+    <option value="Unnecessary words" {_sel('Unnecessary words', curr_flag)}>{labels_dict.get('filter_unneeded', 'Unneeded')}</option>
+    <option value="Prohibited Words" {_sel('Prohibited Words', curr_flag)}>{labels_dict.get('filter_prohibited', 'Prohibited')}</option>
+    <option disabled>── {labels_dict.get('grp_prefetch', 'Prefetch')} ──</option>
+    <option value="Category Check" {_sel('Category Check', curr_flag)}>Category Check</option>
+    <option value="Warranty Check" {_sel('Warranty Check', curr_flag)}>Warranty Check</option>
+    <option value="FDA" {_sel('FDA', curr_flag)}>FDA</option>
+    <option value="Color Check" {_sel('Color Check', curr_flag)}>Color Check</option>
+    <option value="Variation Check" {_sel('Variation Check', curr_flag)}>Variation Check</option>
+    <option value="Brand Image Check" {_sel('Brand Image Check', curr_flag)}>Brand Image Check</option>
+    <option value="Title Language Check" {_sel('Title Language Check', curr_flag)}>Title Language Check</option>
+    <option value="Image Quality Check" {_sel('Image Quality Check', curr_flag)}>Image Quality Check</option>
+    <option value="Product Name Brand Name" {_sel('Product Name Brand Name', curr_flag)}>Name/Brand Check</option>
+  </select>
+'''
+    _cols_btns_parts = []
+    for _n in [5, 6, 7, 8]:
+        _active = _n == cols_per_row
+        _border = "var(--accent)" if _active else "var(--border)"
+        _bg = "var(--accent)" if _active else "transparent"
+        _color = "#fff" if _active else "var(--text)"
+        _cols_btns_parts.append(
+            f'<button onclick="sendMsg(\'grid_cols_per_row\', {_n})" '
+            f'style="padding:1px 7px;font-size:10px;font-weight:700;border-radius:4px;'
+            f'border:1px solid {_border};background:{_bg};color:{_color};'
+            f'cursor:pointer;line-height:1.6;">{_n}</button>'
+        )
+    _cols_btns = "".join(_cols_btns_parts)
+
     return f"""<!DOCTYPE html>
 <html dir="{html_dir}">
 <head>
@@ -1415,7 +1492,7 @@ def build_fast_grid_html(
   }}
   #dark-toggle:hover {{ background: #f3f4f6; }}
 
-  .bottom-bar {{position: fixed; bottom: 0; left: 0; width: 100%; top: auto; border-bottom: none; border-top: 1px solid rgba(246, 139, 30, 0.2); margin: 0; z-index: 10000; box-shadow: 0 -4px 16px rgba(0,0,0,0.1); background: var(--card); padding: 12px 16px;}}
+  .bottom-bar {{position: fixed; bottom: 26px; left: 0; width: 100%; top: auto; border-bottom: none; border-top: 1px solid rgba(246, 139, 30, 0.2); margin: 0; z-index: 10000; box-shadow: 0 -4px 16px rgba(0,0,0,0.1); background: var(--card); padding: 12px 16px;}}
 
   .sel-count{{font-weight:700;color:{O};font-size:13px;min-width:80px;}}
   .reason-sel{{flex:1;min-width:160px;padding:6px 10px;border:1px solid #ccc;border-radius:4px;font-size:12px;background:#fff;cursor:pointer;}}
@@ -1689,45 +1766,7 @@ def build_fast_grid_html(
 </div>
 
 <div class="ctrl-bar top-bar">
-  <div class="filter-group" style="min-width:220px;flex:1.1;">
-    <div class="group-label"><span>{labels_dict['search_grid']}</span><span class="sel-count" id="search-count">0</span></div>
-    <input id="grid-search" type="search" placeholder="{labels_dict['search_grid']}" title="{labels_dict['search_grid']}">
-  </div>
-  <div class="filter-group">
-    <div class="group-label"><span>Seller</span><span class="sel-count" id="seller-selected-count">Selected: 0</span></div>
-    <select id="seller-filter" class="reason-sel" multiple size="4" title="Hold Ctrl/Cmd to choose multiple sellers">
-{''.join(f'<option value="{html_lib.escape(opt)}">{html_lib.escape(opt)}</option>' for opt in seller_opts)}
-    </select>
-    <div class="hint">Ctrl/Cmd for multi-select</div>
-  </div>
-  <div class="filter-group">
-    <div class="group-label"><span>Category</span><span class="sel-count" id="category-selected-count">Selected: 0</span></div>
-    <select id="category-filter" class="reason-sel" multiple size="4" title="Hold Ctrl/Cmd to choose multiple categories">
-{''.join(f'<option value="{html_lib.escape(opt)}">{html_lib.escape(opt)}</option>' for opt in category_opts)}
-    </select>
-    <div class="hint">Ctrl/Cmd for multi-select</div>
-  </div>
-  <div class="filter-group" style="min-width:150px;max-width:170px;">
-    <div class="group-label"><span>Page size</span><span class="sel-count" id="page-count">Page 1</span></div>
-    <select class="reason-sel" id="page-size-sel" title="Cards per page">
-      <option value="20">20</option>
-      <option value="50" selected>50</option>
-      <option value="100">100</option>
-      <option value="200">200</option>
-    </select>
-    <div class="hint">More cards = more scrolling</div>
-  </div>
-  <div class="page-nav">
-    <button class="desel-btn toolbar-btn small" onclick="goPage(-1)">Prev</button>
-    <span class="page-pill" id="page-info">Page 1 / 1</span>
-    <button class="desel-btn toolbar-btn small" onclick="goPage(1)">Next</button>
-  </div>
-  <div class="top-summary">
-    <div class="main" id="grid-count">{len(page_data)} {labels_dict['products_label']}</div>
-    <div class="sub" id="filter-summary">No filters active</div>
-  </div>
-  <button class="desel-btn toolbar-btn small" onclick="resetAllFilters()">Reset All Filters</button>
-  <button class="desel-btn toolbar-btn small" onclick="document.getElementById('shortcut-help').style.display='flex'">Shortcuts</button>
+
   <button id="dark-toggle" onclick="toggleDark()">{labels_dict['dark_mode']}</button>
   <select id="iframe-lang-sel" class="reason-sel" style="max-width:60px;" onchange="document.getElementById('lang-loading').style.display='flex'; sendMsg('change_lang', this.value)" title="Change Language">
     <option value="en" {"selected" if lang=="en" else ""}>EN</option>
@@ -1746,80 +1785,20 @@ def build_fast_grid_html(
     <option value="REJECT_WRONG_CAT">{labels_dict['wrong_cat']}</option>
     <option value="REJECT_FAKE">{labels_dict['fake_prod']}</option>
     <option value="REJECT_BRAND">{labels_dict['restr_brand']}</option>
-    <option value="REJECT_WRONG_BRAND">{labels_dict['wrong_brand']}</option>
-    <option value="REJECT_PROHIBITED">{labels_dict['prohibited']}</option>
-    <option value="REJECT_COLOR">{labels_dict['missing_color']}</option>
+    <option value="REJECT_WRONG_BRAND">{labels_dict.get('wrong_brand', 'Wrong Brand')}</option>
+    <option value="REJECT_PROHIBITED">{labels_dict.get('prohibited', 'Prohibited')}</option>
+    <option value="REJECT_COLOR">{labels_dict.get('missing_color', 'Missing Color')}</option>
     <option value="REJECT_FDA">FDA</option>
-    <option value="REJECT_DUPLICATE">{labels_dict['sort_duplicates']}</option>
-    <option value="OTHER_CUSTOM">{labels_dict['other_custom']}</option>
+    <option value="REJECT_DUPLICATE">{labels_dict.get('sort_duplicates', 'Duplicate')}</option>
+    <option value="OTHER_CUSTOM">{labels_dict.get('other_custom', 'Other (Custom)')}</option>
   </select>
   <button class="batch-btn" onclick="doBatchReject('top')">{labels_dict["batch_reject"]}</button>
   <button class="desel-btn" onclick="doBatchUndo()">{labels_dict["undo"]}</button>
   <button class="desel-btn" onclick="window.doSelectAll()">{labels_dict["select_all"]}</button>
   <button class="desel-btn" onclick="doDeselAll()">{labels_dict["deselect_all"]}</button>
   <button class="batch-btn top-btn" onclick="window.scrollTo(0, document.body.scrollHeight)">{_t("go_bottom")}</button>
-  <select class="reason-sel sort-sel" id="sort-sel-top" onchange="applySort(this.value)" style="max-width:170px;" title="{labels_dict['sort_by_issue']}">
-    <option value="">{labels_dict['sort_by_issue']}</option>
-    <option value="most_flagged">{labels_dict['most_flagged']}</option>
-    <option value="no_issue">{labels_dict['no_issue_first']}</option>
-    <option disabled>── {labels_dict['grp_image']} ──</option>
-    <option value="low_res">{labels_dict['sort_low_res']}</option>
-    <option value="tall">{labels_dict['sort_tall']}</option>
-    <option value="wide">{labels_dict['sort_wide']}</option>
-    <option value="broken">{labels_dict['sort_broken']}</option>
-    <option disabled>── {labels_dict['grp_qc_flags']} ──</option>
-    <option value="Wrong Category">{labels_dict['sort_wrong_cat']}</option>
-    <option value="Restricted brands">{labels_dict['sort_restr_brand']}</option>
-    <option value="Suspected Fake product">{labels_dict['sort_fake']}</option>
-    <option value="Missing COLOR">{labels_dict['sort_missing_color']}</option>
-    <option value="Product Warranty">{labels_dict['sort_warranty']}</option>
-    <option value="Duplicate product">{labels_dict['sort_duplicates']}</option>
-    <option disabled>── {labels_dict['grp_prefetch']} ──</option>
-    <option value="Category Check">Category Check</option>
-    <option value="Warranty Check">Warranty Check</option>
-    <option value="FDA">FDA</option>
-    <option value="Color Check">Color Check</option>
-    <option value="Variation Check">Variation Check</option>
-    <option value="Brand Image Check">Brand Image Check</option>
-    <option value="Title Language Check">Title Language Check</option>
-    <option value="Image Quality Check">Image Quality Check</option>
-    <option value="Product Name Brand Name">Name/Brand Check</option>
-  </select>
-  <select class="reason-sel sort-sel" id="filter-sel-top" onchange="applyFilter(this.value)" style="max-width:180px;" title="{labels_dict['filter_by_flag']}">
-    <option value="">{labels_dict['filter_by_flag']}</option>
-    <option value="brand_ocr">{labels_dict['filter_brand_ocr']}</option>
-    <option value="duplicates">{labels_dict['filter_duplicates']}</option>
-    <option value="manual_review">{labels_dict['filter_manual']}</option>
-    <option value="color_mismatch">{labels_dict['filter_color_mis']}</option>
-    <option value="committed">{labels_dict['all_rejected']}</option>
-    <option value="no_flags">{labels_dict['clean_no_flags']}</option>
-    <option disabled>── {labels_dict['grp_qc_flags']} ──</option>
-    <option value="Wrong Category">{labels_dict['sort_wrong_cat']}</option>
-    <option value="Restricted brands">{labels_dict['sort_restr_brand']}</option>
-    <option value="Suspected Fake product">{labels_dict['sort_fake']}</option>
-    <option value="Missing COLOR">{labels_dict['sort_missing_color']}</option>
-    <option value="Product Warranty">{labels_dict['sort_warranty']}</option>
-    <option value="Duplicate product">{labels_dict['sort_duplicates']}</option>
-    <option value="BRAND name repeated in NAME">{labels_dict['filter_brand_name']}</option>
-    <option value="Unnecessary words">{labels_dict['filter_unneeded']}</option>
-    <option value="Prohibited Words">{labels_dict['filter_prohibited']}</option>
-    <option disabled>── {labels_dict['grp_prefetch']} ──</option>
-    <option value="Category Check">Category Check</option>
-    <option value="Warranty Check">Warranty Check</option>
-    <option value="FDA">FDA</option>
-    <option value="Color Check">Color Check</option>
-    <option value="Variation Check">Variation Check</option>
-    <option value="Brand Image Check">Brand Image Check</option>
-    <option value="Title Language Check">Title Language Check</option>
-    <option value="Image Quality Check">Image Quality Check</option>
-    <option value="Product Name Brand Name">Name/Brand Check</option>
-    <option disabled>── Image Flags ──</option>
-    <option value="Poor images">Poor Image</option>
-    <option value="Low Resolution">Low Resolution</option>
-    <option value="Tall (Screenshot?)">Tall/Screenshot</option>
-    <option value="Wide Aspect">Wide Aspect</option>
-    <option value="Broken Image">Broken Image</option>
-  </select>
+  {sort_html}
+  {filter_html}
 </div>
 
 <div id="shortcut-help" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);
@@ -2922,26 +2901,34 @@ try {{
 }} catch(e) {{
   document.getElementById('card-grid').innerHTML = '<div style="color:red;padding:20px;font-size:14px;font-family:monospace;white-space:pre-wrap;background:#fff3f3;border:2px solid red;border-radius:8px;margin:20px;">&#x26A0; JS ERROR in renderAll():<br>' + String(e) + '<br><br>Stack:<br>' + (e.stack||'') + '</div>';
 }}
+
 </script>
+
+<div id="cols-strip" style="position:fixed;bottom:0;left:0;width:100%;z-index:9999;background:var(--card);border-top:1px solid var(--border);display:flex;align-items:center;gap:6px;padding:3px 12px;height:26px;opacity:0.55;transition:opacity .2s;" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0.55'">
+  <span style="font-size:10px;font-weight:700;color:var(--text);opacity:.6;white-space:nowrap;letter-spacing:.5px;">⊞ COLS</span>
+  {_cols_btns}
+</div>
+
 </body>
 </html>"""
 
 
 @st.dialog(
-    "Visual Review Mode", width="large", icon=":material/pageview:", dismissible=True
+    "Visual Review Mode", width="large", icon=":material/pageview:", dismissible=False
 )
 def visual_review_modal(support_files):
     scroll_top_flag = st.session_state.get("do_scroll_top", False)
     st.session_state.do_scroll_top = False
     def _clear_grid_search_n():
-        st.session_state.pop("grid_search_n", None)
-        st.rerun()
+        st.session_state["grid_search_n"] = ""
     def _clear_grid_filter_sellers():
-        st.session_state.pop("grid_filter_sellers", None)
-        st.rerun()
+        st.session_state["grid_filter_sellers"] = []
     def _clear_grid_filter_categories():
-        st.session_state.pop("grid_filter_categories", None)
-        st.rerun()
+        st.session_state["grid_filter_categories"] = []
+    def _clear_grid_filter_flag():
+        st.session_state["grid_filter_flag"] = ""
+    def _clear_grid_sort_issue():
+        st.session_state["grid_sort_issue"] = ""
 
     fr = st.session_state.final_report
     data = st.session_state.all_data_map
@@ -2970,65 +2957,6 @@ def visual_review_modal(support_files):
         | (fr["ProductSetSid"].isin(committed_rej_sids))
         | (fr["ProductSetSid"].isin(poor_img_rej_sids))
     ]
-
-    seller_opts = sorted(
-        {
-            str(v).strip()
-            for v in data.get("SELLER_NAME", pd.Series(dtype=str)).dropna().astype(str)
-            if str(v).strip() and str(v).strip().lower() != "nan"
-        }
-    )
-    category_opts = sorted(
-        {
-            str(v).strip()
-            for v in data.get("CATEGORY", pd.Series(dtype=str)).dropna().astype(str)
-            if str(v).strip() and str(v).strip().lower() != "nan"
-        }
-    )
-
-    c1, c2, c3, c4 = st.columns(
-        [1.5, 1.5, 1.5, 0.8], gap="large", vertical_alignment="bottom"
-    )
-    with c1:
-        c1a, c1b = st.columns([6, 1], vertical_alignment="bottom", gap="small")
-        with c1a:
-            search_n = st.text_input(
-                "Search by Name", placeholder="Product name…", icon=":material/search:",
-                key="grid_search_n",
-            )
-        with c1b:
-            st.button("✖", key="clr_n", help="Clear name search", on_click=_clear_grid_search_n, disabled=not bool(search_n))
-    with c2:
-        c2a, c2b = st.columns([6, 1], vertical_alignment="bottom", gap="small")
-        with c2a:
-            search_sellers = st.multiselect(
-                "Filter by Seller",
-                options=seller_opts,
-                default=st.session_state.get("grid_filter_sellers", []),
-                key="grid_filter_sellers",
-            )
-        with c2b:
-            st.button("✖", key="clr_sellers", help="Clear seller filter", on_click=_clear_grid_filter_sellers, disabled=not bool(search_sellers))
-    with c3:
-        c3a, c3b = st.columns([6, 1], vertical_alignment="bottom", gap="small")
-        with c3a:
-            search_categories = st.multiselect(
-                "Filter by Category",
-                options=category_opts,
-                default=st.session_state.get("grid_filter_categories", []),
-                key="grid_filter_categories",
-            )
-        with c3b:
-            st.button("✖", key="clr_categories", help="Clear category filter", on_click=_clear_grid_filter_categories, disabled=not bool(search_categories))
-    with c4:
-        st.session_state.grid_items_per_page = st.select_slider(
-            "Items per page",
-            options=[20, 50, 100, 200],
-            value=st.session_state.get("grid_items_per_page", 50),
-        )
-    if st.button("Close", width='stretch', type="secondary"):
-        st.session_state.show_review_modal = False
-        st.rerun()
 
     if "MAIN_IMAGE" not in data.columns:
         data["MAIN_IMAGE"] = ""
@@ -3066,23 +2994,109 @@ def visual_review_modal(support_files):
                 )
             )
 
+    curr_search_n = st.session_state.get("grid_search_n", "")
+    curr_sellers = st.session_state.get("grid_filter_sellers", [])
+    curr_categories = st.session_state.get("grid_filter_categories", [])
+
+    seller_base_df = review_data
+    if curr_categories and "CATEGORY" in seller_base_df.columns:
+        seller_base_df = seller_base_df[seller_base_df["CATEGORY"].astype(str).isin(curr_categories)]
+    
+    seller_opts = sorted(
+        {
+            str(v).strip()
+            for v in seller_base_df.get("SELLER_NAME", pd.Series(dtype=str)).dropna().astype(str)
+            if str(v).strip() and str(v).strip().lower() != "nan"
+        }
+    )
+
+    category_base_df = review_data
+    if curr_sellers and "SELLER_NAME" in category_base_df.columns:
+        category_base_df = category_base_df[category_base_df["SELLER_NAME"].astype(str).isin(curr_sellers)]
+    
+    category_opts = sorted(
+        {
+            str(v).strip()
+            for v in category_base_df.get("CATEGORY", pd.Series(dtype=str)).dropna().astype(str)
+            if str(v).strip() and str(v).strip().lower() != "nan"
+        }
+    )
+
+    for s in curr_sellers:
+        if s not in seller_opts: seller_opts.append(s)
+    for c in curr_categories:
+        if c not in category_opts: category_opts.append(c)
+    seller_opts.sort()
+    category_opts.sort()
+
+    c1, c2, c3, c4 = st.columns(
+        [1.5, 1.5, 1.5, 0.8], gap="large", vertical_alignment="bottom"
+    )
+    with c1:
+        c1a, c1b = st.columns([6, 1], vertical_alignment="bottom", gap="small")
+        with c1a:
+            search_n = st.text_input(
+                "Search by Name, Brand, or SID", placeholder="Product name, brand, SID…", icon=":material/search:",
+                key="grid_search_n",
+            )
+        with c1b:
+            st.button("✖", key="clr_n", help="Clear search", on_click=_clear_grid_search_n, disabled=not bool(curr_search_n))
+    with c2:
+        c2a, c2b = st.columns([6, 1], vertical_alignment="bottom", gap="small")
+        with c2a:
+            search_sellers = st.multiselect(
+                "Filter by Seller",
+                options=seller_opts,
+                default=curr_sellers,
+                key="grid_filter_sellers",
+            )
+        with c2b:
+            st.button("✖", key="clr_sellers", help="Clear seller filter", on_click=_clear_grid_filter_sellers, disabled=not bool(curr_sellers))
+    with c3:
+        c3a, c3b = st.columns([6, 1], vertical_alignment="bottom", gap="small")
+        with c3a:
+            search_categories = st.multiselect(
+                "Filter by Category",
+                options=category_opts,
+                default=curr_categories,
+                key="grid_filter_categories",
+            )
+        with c3b:
+            st.button("✖", key="clr_categories", help="Clear category filter", on_click=_clear_grid_filter_categories, disabled=not bool(curr_categories))
+
+    curr_flag = st.session_state.get("grid_filter_flag", "")
+    curr_sort = st.session_state.get("grid_sort_issue", "")
+
+    with c4:
+        if st.button("✕ Close", key="close_modal_top", type="secondary", use_container_width=True):
+            st.session_state.show_review_modal = False
+            st.rerun()
+        st.session_state.grid_items_per_page = st.select_slider(
+            "Items per page",
+            options=[20, 50, 100, 200],
+            value=st.session_state.get("grid_items_per_page", 50),
+        )
+
     if "_grid_page_contexts" not in st.session_state:
         st.session_state._grid_page_contexts = {}
     _curr_ctx = (
         search_n or "",
         tuple(sorted(search_sellers)) if search_sellers else (),
         tuple(sorted(search_categories)) if search_categories else (),
+        curr_flag,
+        curr_sort,
     )
-    _prev_ctx = st.session_state.get("_grid_last_ctx", ("", ""))
+    _prev_ctx = st.session_state.get("_grid_last_ctx", ("", "", "", "", ""))
     if _curr_ctx != _prev_ctx:
         st.session_state._grid_page_contexts[_prev_ctx] = st.session_state.get("grid_page", 0)
         st.session_state.grid_page = st.session_state._grid_page_contexts.get(_curr_ctx, 0)
         st.session_state["_grid_last_ctx"] = _curr_ctx
 
     if search_n:
-        review_data = review_data[
-            review_data["NAME"].astype(str).str.contains(search_n, case=False, na=False)
-        ]
+        n_mask = review_data["NAME"].astype(str).str.contains(search_n, case=False, na=False)
+        b_mask = review_data.get("BRAND", pd.Series(dtype=str, index=review_data.index)).astype(str).str.contains(search_n, case=False, na=False)
+        s_mask = review_data.get("ProductSetSid", pd.Series(dtype=str, index=review_data.index)).astype(str).str.contains(search_n, case=False, na=False)
+        review_data = review_data[n_mask | b_mask | s_mask]
     if search_sellers:
         review_data = review_data[
             review_data["SELLER_NAME"].astype(str).isin(search_sellers)
@@ -3092,9 +3106,71 @@ def visual_review_modal(support_files):
             review_data["CATEGORY"].astype(str).isin(search_categories)
         ]
 
-    review_data = review_data.sort_values(
-        by=["SELLER_NAME", "NAME"], na_position="last"
-    ).reset_index(drop=True)
+    if curr_flag or curr_sort:
+        _fr_flag_map = fr.set_index("ProductSetSid")["FLAG"].to_dict() if "FLAG" in fr.columns else {}
+        _fr_comment_map = fr.set_index("ProductSetSid")["Comment"].to_dict() if "Comment" in fr.columns else {}
+        _zip_index = st.session_state.get("_zip_sid_index")
+        _zip_status_cols = st.session_state.get("_zip_status_cols", [])
+        _zip_prefetch_map = st.session_state.get("_zip_prefetch_map", {})
+        _staged_sids = set(st.session_state.get("_stagedRejections", {}).keys())
+        
+        def get_warnings(sid):
+            w = []
+            comment = str(_fr_comment_map.get(sid, "")).lower()
+            if "stretched" in comment or "tall" in comment: w.append("Tall (Screenshot?)")
+            if "stretched" in comment or "wide" in comment: w.append("Wide Aspect")
+            if "blurry" in comment or "low res" in comment or "resolution" in comment or "small" in comment: w.append("Low Resolution")
+            
+            flag = _fr_flag_map.get(sid)
+            if pd.notna(flag) and flag not in ("Approved", "Manual review"):
+                w.append(flag)
+                
+            if _zip_index is not None and sid in _zip_index.index:
+                zrow = _zip_index.loc[sid]
+                if hasattr(zrow, "iloc") and hasattr(zrow, "shape") and len(zrow.shape) == 2:
+                    zrow = zrow.iloc[0]
+                for zcol in _zip_status_cols:
+                    if str(zrow.get(zcol, "")).lower() == "rejected":
+                        zflag = _zip_prefetch_map.get(zcol, zcol.replace("_Status", "").replace("_", " ").title())
+                        if zflag not in w: w.append(zflag)
+            return list(dict.fromkeys(w))
+
+        review_data["_warnings"] = review_data["ProductSetSid"].apply(get_warnings)
+
+    if curr_flag:
+        if curr_flag == "committed":
+            review_data = review_data[review_data["ProductSetSid"].isin(committed_rej_sids)]
+        elif curr_flag == "brand_ocr":
+            review_data = review_data[review_data["ProductSetSid"].isin(committed_rej_sids) & review_data["_warnings"].apply(lambda w: "Brand Image Check" in w)]
+        elif curr_flag == "no_flags":
+            review_data = review_data[(~review_data["ProductSetSid"].isin(committed_rej_sids)) & (~review_data["ProductSetSid"].isin(_staged_sids)) & review_data["_warnings"].apply(lambda w: len(w) == 0)]
+        elif curr_flag == "duplicates":
+            review_data = review_data[review_data.get("is_duplicate", pd.Series(False, index=review_data.index)).astype(bool)]
+        elif curr_flag == "manual_review":
+            review_data = review_data[review_data.get("is_manual_review", pd.Series(False, index=review_data.index)).astype(bool)]
+        elif curr_flag == "color_mismatch":
+            review_data = review_data[review_data.get("color_mismatch", pd.Series(False, index=review_data.index)).astype(bool)]
+        else:
+            def has_flag(sid, w):
+                return curr_flag in w or (sid in committed_rej_sids and str(st.session_state.get(f"quick_rej_reason_{sid}", "")).replace("_", " ").lower() == curr_flag.replace("_", " ").lower())
+            review_data = review_data[review_data.apply(lambda r: has_flag(r["ProductSetSid"], r["_warnings"]), axis=1)]
+
+    if curr_sort:
+        if curr_sort == "most_flagged":
+            review_data["_w_count"] = review_data["_warnings"].apply(len)
+            review_data = review_data.sort_values(by=["_w_count"], ascending=False).drop(columns=["_w_count"])
+        elif curr_sort == "no_issue":
+            review_data["_has_issue"] = review_data["_warnings"].apply(lambda w: 1 if len(w) > 0 else 0)
+            review_data = review_data.sort_values(by=["_has_issue"], ascending=True).drop(columns=["_has_issue"])
+        else:
+            issue_map = {'low_res':'Low Resolution','tall':'Tall (Screenshot?)','wide':'Wide Aspect','broken':'Broken Image'}
+            target = issue_map.get(curr_sort, curr_sort)
+            review_data["_has_target"] = review_data["_warnings"].apply(lambda w: 0 if target in w else 1)
+            review_data = review_data.sort_values(by=["_has_target"], ascending=True).drop(columns=["_has_target"])
+    else:
+        review_data = review_data.sort_values(
+            by=["SELLER_NAME", "NAME"], na_position="last"
+        ).reset_index(drop=True)
 
     ipp = st.session_state.get("grid_items_per_page", 50)
     total_pages = max(1, (len(review_data) + ipp - 1) // ipp)
@@ -3281,7 +3357,7 @@ def visual_review_modal(support_files):
                 else:
                     rejected_state[_sid] = "Poor images"
 
-        cols_per_row = 5
+        cols_per_row = st.session_state.get("grid_cols_per_row", 5)
         skeleton_html = (
             """
     <style>
@@ -3318,6 +3394,8 @@ def visual_review_modal(support_files):
             show_images=st.session_state.get("show_images", True),
             seller_trust=seller_trust,
             support_files=support_files,
+            curr_sort=curr_sort,
+            curr_flag=curr_flag,
         )
 
     placeholder.empty()

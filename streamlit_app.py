@@ -3502,6 +3502,21 @@ def handle_jtbridge():
                     st.session_state.main_bridge_counter += 1
                     st.session_state.do_scroll_top = False
                     st.rerun(scope="fragment")
+            elif _msg.get("action") == "grid_sort_issue":
+                st.session_state.grid_sort_issue = _msg.get("payload", "")
+                st.session_state.main_bridge_counter += 1
+                st.rerun()
+            elif _msg.get("action") == "grid_filter_flag":
+                st.session_state.grid_filter_flag = _msg.get("payload", "")
+                st.session_state.main_bridge_counter += 1
+                st.rerun()
+            elif _msg.get("action") == "grid_cols_per_row":
+                try:
+                    st.session_state.grid_cols_per_row = int(_msg.get("payload", 5))
+                except (ValueError, TypeError):
+                    st.session_state.grid_cols_per_row = 5
+                st.session_state.main_bridge_counter += 1
+                st.rerun()
         except Exception as _e:
             logger.error(f"Bridge parse error: {_e}")
 

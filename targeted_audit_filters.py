@@ -298,9 +298,9 @@ def _verify(check_key: str, rec: dict, rule: dict, weights: set, color_re) -> st
     if check_key == "color":
         req = _clean(rule.get("Color", "Mandatory")).lower()
         color_val = _clean(rec.get("COLOR"))
-        color_family_val = _clean(rec.get("COLOR_FAMILY"))
-        # Color in title alone is NOT sufficient — must be declared in COLOR or COLOR_FAMILY column
-        has_color_in_column = bool(color_val or color_family_val)
+        # Only the COLOR column counts — COLOR_FAMILY alone or color in product name/title
+        # is NOT sufficient. The COLOR column must have a specific color value.
+        has_color_in_column = bool(color_val)
         if req == "no need":
             return "False Rejection"
         return "True Rejection" if not has_color_in_column else "False Rejection"
@@ -336,9 +336,9 @@ def _verify_false_approval(check_key: str, rec: dict, rule: dict, weights: set, 
     elif check_key == "color":
         if _clean(rule.get("Color", "")).lower() == "mandatory":
             color_val = _clean(rec.get("COLOR"))
-            color_family_val = _clean(rec.get("COLOR_FAMILY"))
-            # Color in title alone is NOT sufficient — must be in COLOR or COLOR_FAMILY column
-            if not color_val and not color_family_val:
+            # Only the COLOR column counts — COLOR_FAMILY alone or color mentioned in the
+            # product name/title is NOT sufficient for a valid color declaration.
+            if not color_val:
                 return "Color Missing"
     elif check_key == "warranty":
         if _clean(rule.get("Warranty", "")).lower() == "mandatory" and not _clean(rec.get("PRODUCT_WARRANTY")):
