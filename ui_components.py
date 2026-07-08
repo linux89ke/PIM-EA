@@ -1417,13 +1417,14 @@ def build_fast_grid_html(
   </select>
 '''
     _cols_btns_parts = []
-    for _n in [5, 6, 7, 8]:
+    for _n in [5, 6, 7]:
         _active = _n == cols_per_row
         _border = "var(--accent)" if _active else "var(--border)"
         _bg = "var(--accent)" if _active else "transparent"
         _color = "#fff" if _active else "var(--text)"
+        _title = " title='Wide mode + 500/page'" if _n >= 6 else ""
         _cols_btns_parts.append(
-            f'<button onclick="sendMsg(\'grid_cols_per_row\', {_n})" '
+            f'<button onclick="sendMsg(\'grid_cols_per_row\', {_n})"{_title} '
             f'style="padding:1px 7px;font-size:10px;font-weight:700;border-radius:4px;'
             f'border:1px solid {_border};background:{_bg};color:{_color};'
             f'cursor:pointer;line-height:1.6;">{_n}</button>'
@@ -1903,8 +1904,8 @@ var POOR_IMG_SIDS = new Set({poor_img_sids_json});
 var PREFETCH_URLS = {prefetch_json};
 var PLACEHOLDER = "{_PLACEHOLDER_SVG}";
 var LABELS = {labels_json};
-var DEFAULT_PAGE_SIZE = 50;
-var PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
+var DEFAULT_PAGE_SIZE = CARDS.length || 50;
+var PAGE_SIZE_OPTIONS = [20, 50, 100, 200, 500];
 var PAGE_STATE = {{
   pageSize: DEFAULT_PAGE_SIZE,
   page: 1,
@@ -2919,6 +2920,15 @@ try {{
 def visual_review_modal(support_files):
     scroll_top_flag = st.session_state.get("do_scroll_top", False)
     st.session_state.do_scroll_top = False
+    _wide_cols = st.session_state.get("grid_cols_per_row", 5) >= 6
+    if _wide_cols:
+        st.markdown("""
+        <style>
+        [data-testid="stDialog"] > div > div[role="dialog"] {
+            max-width: 96vw !important;
+            width: 96vw !important;
+        }
+        </style>""", unsafe_allow_html=True)
     def _clear_grid_search_n():
         st.session_state["grid_search_n"] = ""
     def _clear_grid_filter_sellers():
@@ -3071,11 +3081,32 @@ def visual_review_modal(support_files):
         if st.button("✕ Close", key="close_modal_top", type="secondary", use_container_width=True):
             st.session_state.show_review_modal = False
             st.rerun()
-        st.session_state.grid_items_per_page = st.select_slider(
+        _wide = st.session_state.get("grid_cols_per_row", 5) >= 6
+        _ipp_opts = [20, 50, 100, 200, 500] if _wide else [20, 50, 100, 200]
+
+        _current_ipp = st.session_state.get("grid_items_per_page", 50)
+        
+        # Clamp it if options changed (e.g. wide mode turned off and we were at 500)
+        if _current_ipp not in _ipp_opts:
+            _current_ipp = 200 if 200 in _ipp_opts else _ipp_opts[-1]
+            st.session_state.grid_items_per_page = _current_ipp
+            
+        _slider_key = f"grid_ipp_{_wide}"
+        
+        # Seed the widget's state key explicitly for this new key
+        if _slider_key not in st.session_state:
+            st.session_state[_slider_key] = _current_ipp
+
+        def _on_ipp_change():
+            st.session_state.grid_items_per_page = st.session_state[_slider_key]
+
+        st.select_slider(
             "Items per page",
-            options=[20, 50, 100, 200],
-            value=st.session_state.get("grid_items_per_page", 50),
+            options=_ipp_opts,
+            key=_slider_key,
+            on_change=_on_ipp_change,
         )
+        st.session_state.grid_items_per_page = st.session_state[_slider_key]
 
     if "_grid_page_contexts" not in st.session_state:
         st.session_state._grid_page_contexts = {}
@@ -3311,7 +3342,7 @@ def visual_review_modal(support_files):
             if "Rejected" in _stats.columns:
                 seller_trust = (_stats["Rejected"] * 100).round(1).to_dict()
 
-        _prefetch_cache_key = f"prefetch_{st.session_state.grid_page}_{len(review_data)}"
+        _prefetch_cache_key = f"prefetch_{st.session_state.grid_page}_{len(review_data)}_{ipp}"
         if _prefetch_cache_key not in st.session_state:
             prefetch_urls = []
             _already_warm = set(st.session_state.get("_grid_warm_urls", []))
