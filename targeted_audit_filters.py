@@ -250,6 +250,12 @@ def load_colors():
 
 
 @st.cache_data
+def load_color_set() -> set:
+    """Returns colors.txt as a lowercase set for O(1) membership checks."""
+    return set(load_colors())
+
+
+@st.cache_data
 def get_color_regex():
     colors = load_colors()
     if not colors:
@@ -298,18 +304,19 @@ def _verify(check_key: str, rec: dict, rule: dict, weights: set, color_re) -> st
     if check_key == "color":
         req = _clean(rule.get("Color", "Mandatory")).lower()
         color_val = _clean(rec.get("COLOR"))
-        _MULTICOLOR_VARIANTS = {
-            "multicolor", "multicolour", "multicolored", "multicoloured",
-            "multi colour", "multi color", "multi-colour", "multi-color",
-            "multicolors", "multicolours",
-        }
-        # Multicolor variants are explicitly accepted as valid color values
-        if color_val.lower() in _MULTICOLOR_VARIANTS:
-            return "False Rejection"
-        has_color_in_column = bool(color_val)
         if req == "no need":
             return "False Rejection"
-        return "True Rejection" if not has_color_in_column else "False Rejection"
+        # Any value that starts with 'multi' is a valid multicolor declaration
+        if re.match(r"^multi", color_val.lower()):
+            return "False Rejection"
+        # Column must be filled AND the value must be a recognised color
+        if not color_val:
+            return "True Rejection"
+        valid_colors = load_color_set()
+        if valid_colors and color_val.lower() not in valid_colors:
+            # Value present but not a real color (e.g. 'Ascorbic') — rejection was correct
+            return "True Rejection"
+        return "False Rejection"
 
     if check_key == "warranty":
         req = _clean(rule.get("Warranty", "Mandatory")).lower()
@@ -572,6 +579,39 @@ def evaluate_all_checks(data: pd.DataFrame, country_code: str) -> pd.DataFrame:
                                            f"= '{warranty_val}'. Original reason: "
                                            f"{reason or '(none provided)'}"})
                     continue
+
+            # ── Title Language / Volume contradiction check ──────────────────
+            # If the product was rejected for missing volume but the sophisticated
+            # regex extracts volume from the NAME successfully, it's a False Rejection.
+            if check_key == "title_language":
+                is_rejection_like = (
+                    (has_status_col and status in ("rejected", "review", "manual review"))
+                    or (not has_status_col and reason and "error" not in reason.lower())
+                )
+                if is_rejection_like:
+                    name_val = _clean(rec.get("NAME"))
+                    if name_val:
+                        import re
+                        pat = re.compile(
+                            r"\b\d+(?:\.\d+)?\s*(?:[a-z]{1,20}\s*){0,3}"
+                            r"(?:kg|kgs|g|gm|gms|grams|mg|mcg|ml|l|ltr|liter|litres|litre|cl|oz|ounce|ounces|lb|lbs|m"
+                            r"|tablets?|tabs?|capsules?|caps?|sachets?|count|ct|sticks?|iu"
+                            r"|tea\s*bags?|teabags?|bags?|softgels?|lozenges?|gummies|gummy|vials?|ampoules?|tubes?"
+                            r"|pieces?|pcs|pack|packs|pairs?|rolls?|sheets?|wipes?|pods?|units?|serves?|servings?|vegan\s+pieces?"
+                            r"|dozens?|box|boxes|set|sets|bundle|bundles|lot|lots|collection|kit|kits)"
+                            r"|\b\d+[\u0027\u2019]?s\b"
+                            r"|\b(?:a\s+)?dozen\b"
+                            r"|\b(?:pack|box|set|bundle|lot)\s+of\s+\d+\b"
+                            r"|\bper\s+(?:kg|kgs?|g|gm|grams?|mg|mcg|ml|l|ltr|oz|lb)\b"
+                            r"|\d+\s*(?:\xc2\xb5g|\xce\xbcg|\xb5g|\u00b5g|\u03bcg|mcg|µg|μg)",
+                            re.IGNORECASE,
+                        )
+                        if pat.search(name_val):
+                            rows.append({**_base_row(sid, "title_language", rec),
+                                         "Reason Type": "Volume Present But Rejected",
+                                         "Verdict": "False Rejection",
+                                         "Detail": f"Rejected for missing volume/weight in title, but valid volume format detected in NAME: '{name_val}'. Original reason: {reason or '(none provided)'}"})
+                            continue
 
             if has_status_col and status:
                 # ── Driven by an explicit status column ──────────────────

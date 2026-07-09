@@ -94,7 +94,7 @@ from data_utils import (
     validate_input_schema,
     normalize_text,
 )
-from custom_country_rules import check_kenya_book_category
+from custom_country_rules import check_kenya_book_category, check_kebs_banned_products, check_kebs_fda
 from ghana_rules import check_ghana_smart_glasses, load_ghana_qc_rules
 from loaders import compile_regex_patterns, load_support_files_lazy
 from morocco_rules import check_morocco_prohibited_brands, load_morocco_qc_rules
@@ -2008,7 +2008,34 @@ def check_duplicate_products(
         _nn = _nn.str.replace(r"\s+", "", regex=True)
         d["_norm_name"] = _nn
 
-    flagged_indices: dict = {} 
+    # Two model key strategies:
+    # 1. _model_key: used for IMAGE dedup — uses first word when no digits so different-named
+    #    products sharing a stock image are never false-flagged.
+    # 2. _seo_model_key: used for SEO dedup — ONLY returns a key when real digit-based model
+    #    numbers exist. Without digits, returns "" so the SEO check is skipped entirely and
+    #    the text key (full name match) acts as the sole guard.
+    def _extract_model_key(name):
+        words = str(name).split()
+        digit_words = [re.sub(r'[^a-zA-Z0-9]', '', w).lower() for w in words if any(char.isdigit() for char in w)]
+        if digit_words:
+            return "-".join(digit_words)
+        # Fallback: first word only (distinguishes 'vuik ceiling light' from 'vasar ceiling light')
+        if words:
+            return re.sub(r'[^a-zA-Z0-9]', '', words[0]).lower()
+        return ""
+
+    def _extract_seo_model_key(name):
+        """Only returns a model key when explicit digit model numbers are present.
+        Without digits, returns '' so SEO dedup is skipped — preventing false positives
+        where different products share the same first word (e.g. 'Malaika Cream' vs 'Malaika Lotion')."""
+        words = str(name).split()
+        digit_words = [re.sub(r'[^a-zA-Z0-9]', '', w).lower() for w in words if any(char.isdigit() for char in w)]
+        return "-".join(digit_words) if digit_words else ""
+
+    d["_model_key"] = [_extract_model_key(n) for n in d["NAME"].values]
+    d["_seo_model_key"] = [_extract_seo_model_key(n) for n in d["NAME"].values]
+
+    flagged_indices: dict = {}
 
     if "MAIN_IMAGE" in d.columns:
         with _IMAGE_DIM_LOCK:
@@ -2032,6 +2059,8 @@ def check_duplicate_products(
                     + hash_d["_color_key"]
                     + "|"
                     + hash_d["_size_key"]
+                    + "|"
+                    + hash_d["_model_key"]  # Ensures different-named products with same image are not duped
                 )
                 img_dup_mask = hash_d.duplicated(subset=["_img_key"], keep="first")
                 if img_dup_mask.any():
@@ -2061,27 +2090,26 @@ def check_duplicate_products(
             if idx not in flagged_indices: 
                 flagged_indices[idx] = f"Duplicate: '{str(_first_text.get(k, ''))[:40]}'"
 
-    def _extract_model_key(name):
-        words = str(name).split()
-        digit_words = [re.sub(r'[^a-zA-Z0-9]', '', w).lower() for w in words if any(char.isdigit() for char in w)]
-        if digit_words:
-            return "-".join(digit_words)
-        return "".join(re.sub(r'[^a-zA-Z0-9]', '', w).lower() for w in words)
 
-    d["_model_key"] = [_extract_model_key(n) for n in d["NAME"].values]
+    # _seo_model_key already computed above — digits only, empty string when no model number
     d["_seo_key"] = (
         d["_seller_lower"]
         + "|"
         + d["_brand_lower"]
         + "|"
-        + d["_model_key"]
+        + d["_seo_model_key"]
         + "|"
         + d["_color_key"]
         + "|"
         + d["_size_key"]
     )
-    
-    seo_dup_mask = d.duplicated(subset=["_seo_key"], keep="first")
+
+    # SEO dup check only fires when a real digit-based model number was found.
+    # Products without model numbers (e.g. "Ceiling Light") rely on the text key
+    # (full name match) so different products with the same generic title type are safe.
+    has_seo_model = d["_seo_model_key"] != ""
+    seo_dup_mask = d.duplicated(subset=["_seo_key"], keep="first") & has_seo_model
+
     if seo_dup_mask.any():
         _first_seo = d.drop_duplicates(subset=["_seo_key"], keep="first").set_index("_seo_key")["NAME"].to_dict()
         _seo_dups = d[seo_dup_mask]
@@ -2388,6 +2416,9 @@ def validate_products(
         ]
     if country_validator.code in ("KE", "UG", "GH", "SN", "CI", "EG", "MA"):
         validations += [("Powerbank Not Authorized", check_generic_powerbanks, {})]
+    if country_validator.code == "KE":
+        validations.append(("KEBS Banned Products", check_kebs_banned_products, {}))
+        validations.append(("KEBS FDA", check_kebs_fda, {}))
     if country_validator.code == "MA":
         _ma = load_morocco_qc_rules()
         validations = [v for v in validations if v[0] != "Restricted brands"]
@@ -2805,6 +2836,15 @@ except Exception as e:
 
 
 def get_default_country():
+    import os
+    try:
+        if os.path.exists(".country_pref"):
+            with open(".country_pref", "r") as f:
+                saved = f.read().strip()
+                if saved in ["Kenya", "Uganda", "Nigeria", "Ghana", "Morocco", "Egypt", "Senegal", "Ivory Coast"]:
+                    return saved
+    except:
+        pass
     try:
         lang = st.context.headers.get("Accept-Language", "")
         if "KE" in lang: return "Kenya"
@@ -2815,6 +2855,13 @@ def get_default_country():
     except:
         pass
     return "Kenya"
+
+def set_country_pref(c: str):
+    try:
+        with open(".country_pref", "w") as f:
+            f.write(c)
+    except:
+        pass
 
 
 if "selected_country" not in st.session_state:
@@ -2881,9 +2928,10 @@ with st.sidebar:
         st.rerun()
     st.markdown("---")
     st.header(_t("display_settings"))
-    new_mode = ("wide" if "Wide" in st.radio("Layout Mode", ["Centered", "Wide"], index=1 if st.session_state.layout_mode == "wide" else 0) else "centered")
-    if new_mode != st.session_state.layout_mode:
+    new_mode = ("wide" if "Wide" in st.radio("Layout Mode", ["Centered", "Wide"], index=1 if st.session_state.get("layout_mode", "wide") == "wide" else 0) else "centered")
+    if new_mode != st.session_state.get("layout_mode", "wide"):
         st.session_state.layout_mode = new_mode
+
         st.rerun()
 
 st.header(f":material/upload_file: {_t('upload_files')}", anchor=False)
@@ -2969,6 +3017,7 @@ country_choice = _country_bridge.strip() if _country_bridge.strip() in _countrie
 
 if country_choice and country_choice != current_country:
     st.session_state.selected_country = country_choice
+    set_country_pref(country_choice)
     st.session_state.last_processed_files = None
     st.session_state.final_report = pd.DataFrame()
     st.session_state.all_data_map = pd.DataFrame()
@@ -3223,6 +3272,7 @@ if st.session_state.get("last_processed_files") != process_signature:
                             if det_names:
                                 if st.button(f"Switch to {det_names[0]} and Reprocess", type="primary", icon=":material/swap_horiz:"):
                                     st.session_state.selected_country = det_names[0]
+                                    set_country_pref(det_names[0])
                                     st.session_state.country_bridge_counter += 1
                                     st.rerun()
                             st.stop()
@@ -3378,16 +3428,32 @@ if st.session_state.get("last_processed_files") != process_signature:
                                             final_report.at[_fidx, "Comment"] = "Approved by user for Title/Volume"
                                             final_report.at[_fidx, "Reason"] = ""
                                             final_report.at[_fidx, "Is_Zip"] = True
+                                            final_report.at[_fidx, "zip_override"] = "volume"
                                             continue
 
                                     if "color" in _base_key.lower():
                                         missing_col_df = res_zip.get("Missing COLOR") if res_zip else None
-                                        if missing_col_df is None or missing_col_df.empty or _sid not in missing_col_df["PRODUCT_SET_SID"].astype(str).values:
+                                        # To override a color rejection, it must pass the main validation AND actually have
+                                        # a value in the explicit 'COLOR' column (not just inferred from title/color family)
+                                        passed_main_validation = missing_col_df is None or missing_col_df.empty or _sid not in missing_col_df["PRODUCT_SET_SID"].astype(str).values
+                                        
+                                        _has_explicit_color = False
+                                        _temp_grp = _data_by_sid.get(_sid)
+                                        if _temp_grp is not None and not _temp_grp.empty:
+                                            _color_col_name = next((c for c in _temp_grp.columns if str(c).strip().upper() == "COLOR"), None)
+                                            if _color_col_name:
+                                                _c_vals = _temp_grp[_color_col_name].astype(str).str.strip()
+                                                _null_vals = {"nan", "none", "", "n/a", "-", "null"}
+                                                if any(v.lower() not in _null_vals for v in _c_vals):
+                                                    _has_explicit_color = True
+
+                                        if passed_main_validation and _has_explicit_color:
                                             final_report.at[_fidx, "Status"] = "Approved"
                                             final_report.at[_fidx, "FLAG"] = "Approved by User"
                                             final_report.at[_fidx, "Comment"] = "Approved by user for Color"
                                             final_report.at[_fidx, "Reason"] = ""
                                             final_report.at[_fidx, "Is_Zip"] = True
+                                            final_report.at[_fidx, "zip_override"] = "color"
                                             continue
 
                                     final_report.at[_fidx, "Status"] = "Rejected"

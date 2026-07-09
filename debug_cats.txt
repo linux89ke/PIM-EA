@@ -1,0 +1,31 @@
+﻿Hair/Wig categories:
+  1000339: Health & Beauty / Baby & Child Care / Personal Care / Hair Care
+  1000366: Health & Beauty / Baby & Child Care / Personal Care / Hair Care / Conditioners
+  1000374: Health & Beauty / Baby & Child Care / Personal Care / Hair Care / Shampoos
+  1000914: Health & Beauty / Beauty & Personal Care / Hair Care
+  1000932: Health & Beauty / Beauty & Personal Care / Hair Care / Conditioner
+  1000949: Health & Beauty / Beauty & Personal Care / Hair Care / Extensions, Wigs & Accessories
+  1000965: Health & Beauty / Beauty & Personal Care / Hair Care / Extensions, Wigs & Accessories / Adhesive Removers
+  1000989: Health & Beauty / Beauty & Personal Care / Hair Care / Extensions, Wigs & Accessories / Adhesives
+  1001012: Health & Beauty / Beauty & Personal Care / Hair Care / Extensions, Wigs & Accessories / Feather Extensions
+  1001029: Health & Beauty / Beauty & Personal Care / Hair Care / Extensions, Wigs & Accessories / Hair Extensions
+  1001035: Health & Beauty / Beauty & Personal Care / Hair Care / Extensions, Wigs & Accessories / Hairpieces
+  1001054: Health & Beauty / Beauty & Personal Care / Hair Care / Extensions, Wigs & Accessories / Wig Caps
+  1001076: Health & Beauty / Beauty & Personal Care / Hair Care / Extensions, Wigs & Accessories / Wig Heads & Stands
+  1001090: Health & Beauty / Beauty & Personal Care / Hair Care / Extensions, Wigs & Accessories / Wigs
+  1001107: Health & Beauty / Beauty & Personal Care / Hair Care / Hair & Scalp Care
+  1001117: Health & Beauty / Beauty & Personal Care / Hair Care / Hair & Scalp Care / Hair & Scalp Treatments
+  1001132: Health & Beauty / Beauty & Personal Care / Hair Care / Hair & Scalp Care / Hair Masks
+  1001158: Health & Beauty / Beauty & Personal Care / Hair Care / Hair & Scalp Care / Treatment Oils
+  1001175: Health & Beauty / Beauty & Personal Care / Hair Care / Hair Accessories
+  1001196: Health & Beauty / Beauty & Personal Care / Hair Care / Hair Accessories / Barrettes
+  1001217: Health & Beauty / Beauty & Personal Care / Hair Care / Hair Accessories / Bun & Crown Shapers
+  1001226: Health & Beauty / Beauty & Personal Care / Hair Care / Hair Accessories / Clips
+  1001241: Health & Beauty / Beauty & Personal Care / Hair Care / Hair Accessories / Elastics & Ties
+  1001257: Health & Beauty / Beauty & Personal Care / Hair Care / Hair Accessories / Hair Drying Towels
+  1001275: Health & Beauty / Beauty & Personal Care / Hair Care / Hair Accessories / Hair Pins
+  1001287: Health & Beauty / Beauty & Personal Care / Hair Care / Hair Accessories / Headbands
+  1001299: Health & Beauty / Beauty & Personal Care / Hair Care / Hair Accessories / Side Combs
+  1001314: Health & Beauty / Beauty & Personal Care / Hair Care / Hair Coloring Products
+  1001324: Health & Beauty / Beauty & Personal Care / Hair Care / Hair Coloring Products / Color Additives & Fillers
+  1001341: Health & Beauty / Beauty & Personal Care / Hair Care / Hair Coloring Products / Color Correctors

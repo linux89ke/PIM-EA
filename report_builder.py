@@ -36,16 +36,11 @@ _WHITE = RGBColor(0xFF, 0xFF, 0xFF)
 _REPORTABLE_VERDICTS = ["False Approval", "False Rejection", "Needs Manual Review", "AI Error"]
 
 _VERDICT_INTRO = {
-    "False Approval": "were approved by the pipeline, but the file's own mandatory-attribute "
-                       "rule for this category says they should not have been. For color checks, "
-                       "this means the product was approved despite having no value in the COLOR "
-                       "column (COLOR_FAMILY alone or color mentioned only in the product name "
-                       "does not count as a valid color declaration).",
-    "False Rejection": "were rejected, but re-checking against the file's own rule for this "
-                        "category shows the rejection was incorrect. For color checks, this means "
-                        "the product was rejected for missing color, but the COLOR column already "
-                        "had a specific color value declared, or color was not mandatory for this "
-                        "category.",
+    "False Approval": "were approved by the pipeline, but re-checking against the file's own "
+                       "mandatory-attribute rules for this category indicates they should not "
+                       "have been approved.",
+    "False Rejection": "were rejected by the pipeline, but re-checking against the file's own "
+                        "rules for this category shows the rejection was incorrect.",
     "Needs Manual Review": "cannot be resolved automatically from the data alone and require a "
                             "human to review — often because they depend on visual inspection or "
                             "a subjective AI suggestion.",

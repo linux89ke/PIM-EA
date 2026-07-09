@@ -2219,7 +2219,7 @@ function renderCard(card) {{
   var brandDetectedHtml = (isBrandImgRej && card.brand_detected) ? '<div class="co" style="background:#E8F5E9;color:#2E7D32;border:1px solid #C8E6C9;" title="Brand Detected: ' + escapeHtml(card.brand_detected) + '">Detected Brand: ' + escapeHtml(card.brand_detected) + '</div>' : '';
   var zipBadgeHtml = card.is_zip ? '<span style="background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:#fff;font-size:10px;font-weight:900;padding:2px 8px;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.15);margin-left:8px;display:inline-block;">ZIP</span>' : '';
   if (card.zip_override) {{
-    var overrideType = card.zip_override === 'color' ? 'Color' : 'Warranty';
+    var overrideType = card.zip_override === 'color' ? 'Color' : (card.zip_override === 'volume' ? 'Weight/Volume' : 'Warranty');
     zipBadgeHtml += '<span style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;font-size:10px;font-weight:900;padding:2px 8px;border-radius:6px;box-shadow:0 2px 4px rgba(0,0,0,0.15);margin-left:4px;display:inline-block;" title="Auto-approved by main ' + overrideType.toLowerCase() + ' check">🔓 ' + overrideType + ' Overridden</span>';
   }}
 

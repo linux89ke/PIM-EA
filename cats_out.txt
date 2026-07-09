@@ -1,0 +1,596 @@
+﻿
+=== Accessories (4 categories) ===
+  1017261: Health & Beauty / Sports Nutrition / Accessories
+  1017269: Health & Beauty / Sports Nutrition / Accessories / Merchandise
+  1017277: Health & Beauty / Sports Nutrition / Accessories / Mixers
+  ... +1 more
+
+=== Adult Toys & Games (22 categories) ===
+  1016746: Health & Beauty / Sexual Wellness / Adult Toys & Games
+  1016751: Health & Beauty / Sexual Wellness / Adult Toys & Games / Sex Games
+  1016760: Health & Beauty / Sexual Wellness / Adult Toys & Games / Sex Toys
+  ... +19 more
+
+=== Alternative Medicine (9 categories) ===
+  1009205: Health & Beauty / Health Care / Alternative Medicine
+  1009214: Health & Beauty / Health Care / Alternative Medicine / Acupuncture
+  1009226: Health & Beauty / Health Care / Alternative Medicine / Ayurveda
+  ... +6 more
+
+=== Amino Acids (12 categories) ===
+  1017295: Health & Beauty / Sports Nutrition / Amino Acids
+  1017304: Health & Beauty / Sports Nutrition / Amino Acids / Acetyl-L-Carnitine
+  1017312: Health & Beauty / Sports Nutrition / Amino Acids / BCAAs
+  ... +9 more
+
+=== Anti-Ageing (1 categories) ===
+  1013502: Health & Beauty / Men's Grooming / Anti-Ageing
+
+=== App-Enabled Activity Trackers (7 categories) ===
+  1019871: Health & Beauty / Wellness & Relaxation / App-Enabled Activity Trackers
+  1019879: Health & Beauty / Wellness & Relaxation / App-Enabled Activity Trackers / Accessories
+  1019885: Health & Beauty / Wellness & Relaxation / App-Enabled Activity Trackers / Accessories / Arm & Wristband Accessories
+  ... +4 more
+
+=== Aromatherapy (4 categories) ===
+  1019918: Health & Beauty / Wellness & Relaxation / Aromatherapy
+  1019925: Health & Beauty / Wellness & Relaxation / Aromatherapy / Candles
+  1019932: Health & Beauty / Wellness & Relaxation / Aromatherapy / Diffusers
+  ... +1 more
+
+=== Bath & Bathing Accessories (18 categories) ===
+  1013864: Health & Beauty / Personal Care / Bath & Bathing Accessories
+  1013873: Health & Beauty / Personal Care / Bath & Bathing Accessories / Bath
+  1013882: Health & Beauty / Personal Care / Bath & Bathing Accessories / Bath / Bath Bombs
+  ... +15 more
+
+=== Bondage Gear & Accessories (15 categories) ===
+  1016915: Health & Beauty / Sexual Wellness / Bondage Gear & Accessories
+  1016924: Health & Beauty / Sexual Wellness / Bondage Gear & Accessories / Blindfolds
+  1016929: Health & Beauty / Sexual Wellness / Bondage Gear & Accessories / Chastity Devices
+  ... +12 more
+
+=== Braces, Splints & Supports (29 categories) ===
+  1011476: Health & Beauty / Medical Supplies & Equipment / Braces, Splints & Supports
+  1011488: Health & Beauty / Medical Supplies & Equipment / Braces, Splints & Supports / Arm, Hand & Finger Supports
+  1011500: Health & Beauty / Medical Supplies & Equipment / Braces, Splints & Supports / Arm, Hand & Finger Supports / Arm Supports
+  ... +26 more
+
+=== Breath Fresheners (1 categories) ===
+  1013558: Health & Beauty / Oral Care / Breath Fresheners
+
+=== Carb Management Supplements (1 categories) ===
+  1017391: Health & Beauty / Sports Nutrition / Carb Management Supplements
+
+=== Celebrity Fragrances (1 categories) ===
+  1009171: Health & Beauty / Fragrances / Celebrity Fragrances
+
+=== Children's Dental Care (9 categories) ===
+  1013566: Health & Beauty / Oral Care / Children's Dental Care
+  1013577: Health & Beauty / Oral Care / Children's Dental Care / Dental Care Kits
+  1013585: Health & Beauty / Oral Care / Children's Dental Care / Dental Floss & Picks
+  ... +6 more
+
+=== Coffee, Tea & Cocoa (1 categories) ===
+  1028592: Grocery / Drinks / Coffee, Tea & Cocoa / Tea / Healthy & Diet
+
+=== Colic & Gas Relief (1 categories) ===
+  1006341: Baby Products / Health & Baby Care / Colic & Gas Relief
+
+=== Contact Lens Care (6 categories) ===
+  1018117: Health & Beauty / Vision Care / Contact Lens Care
+  1018125: Health & Beauty / Vision Care / Contact Lens Care / Cases
+  1018133: Health & Beauty / Vision Care / Contact Lens Care / Cleaners
+  ... +3 more
+
+=== Daily Living Aids (152 categories) ===
+  1012164: Health & Beauty / Medical Supplies & Equipment / Daily Living Aids
+  1012178: Health & Beauty / Medical Supplies & Equipment / Daily Living Aids / Bathroom Safety, Aids & Accessories
+  1012191: Health & Beauty / Medical Supplies & Equipment / Daily Living Aids / Bathroom Safety, Aids & Accessories / Bath & Shower Aids
+  ... +149 more
+
+=== Dental Care Kits (1 categories) ===
+  1013639: Health & Beauty / Oral Care / Dental Care Kits
+
+=== Dental Floss & Picks (4 categories) ===
+  1013646: Health & Beauty / Oral Care / Dental Floss & Picks
+  1013653: Health & Beauty / Oral Care / Dental Floss & Picks / Dental Floss
+  1013661: Health & Beauty / Oral Care / Dental Floss & Picks / Dental Picks
+  ... +1 more
+
+=== Denture Care (6 categories) ===
+  1013677: Health & Beauty / Oral Care / Denture Care
+  1013687: Health & Beauty / Oral Care / Denture Care / Adhesives
+  1013696: Health & Beauty / Oral Care / Denture Care / Baths
+  ... +3 more
+
+=== Deodorants & Antiperspirants (4 categories) ===
+  1014005: Health & Beauty / Personal Care / Deodorants & Antiperspirants
+  1014015: Health & Beauty / Personal Care / Deodorants & Antiperspirants / Antiperspirants
+  1014026: Health & Beauty / Personal Care / Deodorants & Antiperspirants / Combination Deodorants & Antiperspirants
+  ... +1 more
+
+=== Diabetes Care (10 categories) ===
+  1009311: Health & Beauty / Health Care / Diabetes Care
+  1009320: Health & Beauty / Health Care / Diabetes Care / Blood Glucose Monitors
+  1009329: Health & Beauty / Health Care / Diabetes Care / Insulin Injectors
+  ... +7 more
+
+=== Dry Mouth Relief (1 categories) ===
+  1013730: Health & Beauty / Oral Care / Dry Mouth Relief
+
+=== Ear Care (5 categories) ===
+  1009422: Health & Beauty / Health Care / Ear Care
+  1009437: Health & Beauty / Health Care / Ear Care / Ear Drops
+  1009450: Health & Beauty / Health Care / Ear Care / Ear Syringes
+  ... +2 more
+
+=== Emergency Response Equipment (6 categories) ===
+  1022825: Industrial & Scientific / Occupational Health & Safety Products / Emergency Response Equipment
+  1022828: Industrial & Scientific / Occupational Health & Safety Products / Emergency Response Equipment / Defibrillators
+  1022831: Industrial & Scientific / Occupational Health & Safety Products / Emergency Response Equipment / Eye Wash Units
+  ... +3 more
+
+=== Endurance & Energy (12 categories) ===
+  1017399: Health & Beauty / Sports Nutrition / Endurance & Energy
+  1017408: Health & Beauty / Sports Nutrition / Endurance & Energy / Candy & Mints
+  1017417: Health & Beauty / Sports Nutrition / Endurance & Energy / Chews & Gels
+  ... +9 more
+
+=== Eye Drops, Lubricants & Washes (1 categories) ===
+  1018167: Health & Beauty / Vision Care / Eye Drops, Lubricants & Washes
+
+=== Eyeglass Chains (1 categories) ===
+  1018174: Health & Beauty / Vision Care / Eyeglass Chains
+
+=== Eyeglasses Care (4 categories) ===
+  1018183: Health & Beauty / Vision Care / Eyeglasses Care
+  1018190: Health & Beauty / Vision Care / Eyeglasses Care / Cleaning Fluids
+  1018198: Health & Beauty / Vision Care / Eyeglasses Care / Cleaning Tissues & Cloths
+  ... +1 more
+
+=== Fat Burners & Thermogenics (7 categories) ===
+  1017493: Health & Beauty / Sports Nutrition / Fat Burners & Thermogenics
+  1017502: Health & Beauty / Sports Nutrition / Fat Burners & Thermogenics / 7-Keto
+  1017510: Health & Beauty / Sports Nutrition / Fat Burners & Thermogenics / CLA
+  ... +4 more
+
+=== Feminine Care (13 categories) ===
+  1009484: Health & Beauty / Health Care / Feminine Care
+  1009497: Health & Beauty / Health Care / Feminine Care / Deodorant Sprays
+  1009507: Health & Beauty / Health Care / Feminine Care / Douches
+  ... +10 more
+
+=== Fetish Wear (1 categories) ===
+  1017027: Health & Beauty / Sexual Wellness / Fetish Wear
+
+=== First Aid (38 categories) ===
+  1009646: Health & Beauty / Health Care / First Aid
+  1009654: Health & Beauty / Health Care / First Aid / Antibiotics & Antiseptics
+  1009667: Health & Beauty / Health Care / First Aid / Antibiotics & Antiseptics / Cleansing Cloths, Swabs & Wipes
+  ... +35 more
+
+=== Fitness & Activity Monitors (2 categories) ===
+  1019945: Health & Beauty / Wellness & Relaxation / Fitness & Activity Monitors
+  1019952: Health & Beauty / Wellness & Relaxation / Fitness & Activity Monitors / Activity Trackers
+
+=== Foot Health (15 categories) ===
+  1010095: Health & Beauty / Health Care / Foot Health
+  1010105: Health & Beauty / Health Care / Foot Health / Bunion Pads
+  1010110: Health & Beauty / Health Care / Foot Health / Corn & Callus Remover Cushions
+  ... +12 more
+
+=== Fragrance (24 categories) ===
+  1000521: Health & Beauty / Beauty & Personal Care / Fragrance
+  1000537: Health & Beauty / Beauty & Personal Care / Fragrance / Aromatherapy
+  1000557: Health & Beauty / Beauty & Personal Care / Fragrance / Aromatherapy / Candles
+  ... +21 more
+
+=== Funeral (3 categories) ===
+  1011795: Health & Beauty / Medical Supplies & Equipment / Funeral
+  1011804: Health & Beauty / Medical Supplies & Equipment / Funeral / Caskets
+  1011815: Health & Beauty / Medical Supplies & Equipment / Funeral / Urns
+
+=== Gift Wrapping Supplies (13 categories) ===
+  1017908: Health & Beauty / Stationery & Gift Wrapping Supplies / Gift Wrapping Supplies
+  1017917: Health & Beauty / Stationery & Gift Wrapping Supplies / Gift Wrapping Supplies / Enclosure Cards
+  1017925: Health & Beauty / Stationery & Gift Wrapping Supplies / Gift Wrapping Supplies / Gift Bags
+  ... +10 more
+
+=== Grooming & Healthcare Kits (1 categories) ===
+  1004114: Baby Products / Bathing & Skin Care / Grooming & Healthcare Kits
+
+=== Hair Care (241 categories) ===
+  1000914: Health & Beauty / Beauty & Personal Care / Hair Care
+  1000932: Health & Beauty / Beauty & Personal Care / Hair Care / Conditioner
+  1000949: Health & Beauty / Beauty & Personal Care / Hair Care / Extensions, Wigs & Accessories
+  ... +238 more
+
+=== Hair Treatment (6 categories) ===
+  1029451: Health & Beauty / Dermocosmetics / Hair Treatment
+  1029452: Health & Beauty / Dermocosmetics / Hair Treatment / Dandruff Prone Hair
+  1029456: Health & Beauty / Dermocosmetics / Hair Treatment / Dry & Damaged Hair
+  ... +3 more
+
+=== Hazardous Material Handling (20 categories) ===
+  1022843: Industrial & Scientific / Occupational Health & Safety Products / Hazardous Material Handling
+  1022846: Industrial & Scientific / Occupational Health & Safety Products / Hazardous Material Handling / Biohazard Waste Containers
+  1022849: Industrial & Scientific / Occupational Health & Safety Products / Hazardous Material Handling / Drums
+  ... +17 more
+
+=== Health & Beauty Appliances (43 categories) ===
+  1014910: Electronics / Home Appliances / Health & Beauty Appliances
+  1014918: Electronics / Home Appliances / Health & Beauty Appliances / Body Care & Home Esthetic Products
+  1014926: Electronics / Home Appliances / Health & Beauty Appliances / Facial Care
+  ... +40 more
+
+=== Health & Fitness (2 categories) ===
+  1000935: Books, Movies and Music / Family & Lifestyle / Health & Fitness
+  1001251: Books, Movies and Music / Magazines / Health & Fitness
+
+=== Health Care (12 categories) ===
+  1000046: Health & Beauty / Baby & Child Care / Health Care
+  1000073: Health & Beauty / Baby & Child Care / Health Care / Allergy Medicine
+  1000095: Health & Beauty / Baby & Child Care / Health Care / Baby Thermometers
+  ... +9 more
+
+=== Health Insurance (1 categories) ===
+  1000258: Services / Insurance / Health Insurance
+
+=== Health Monitors (21 categories) ===
+  1011824: Health & Beauty / Medical Supplies & Equipment / Health Monitors
+  1011837: Health & Beauty / Medical Supplies & Equipment / Health Monitors / Basal Thermometers
+  1011845: Health & Beauty / Medical Supplies & Equipment / Health Monitors / Blood Pressure Monitors
+  ... +18 more
+
+=== Health Supplies (61 categories) ===
+  1000425: Pet Supplies / Birds / Health Supplies
+  1001999: Pet Supplies / Cats / Health Supplies
+  1002015: Pet Supplies / Cats / Health Supplies / Dental Care
+  ... +58 more
+
+=== Healthy & Organic (5 categories) ===
+  1028721: Grocery / Food Cupboard / Healthy & Organic
+  1028724: Grocery / Food Cupboard / Healthy & Organic / Gluten Free
+  1028725: Grocery / Food Cupboard / Healthy & Organic / Healthy
+  ... +2 more
+
+=== Healthy Snacks & Beverages (7 categories) ===
+  1017549: Health & Beauty / Sports Nutrition / Healthy Snacks & Beverages
+  1017557: Health & Beauty / Sports Nutrition / Healthy Snacks & Beverages / Cereal
+  1017565: Health & Beauty / Sports Nutrition / Healthy Snacks & Beverages / Chips & Crisps
+  ... +4 more
+
+=== Herbal Supplements (49 categories) ===
+  1018327: Health & Beauty / Vitamins & Dietary Supplements / Herbal Supplements
+  1018336: Health & Beauty / Vitamins & Dietary Supplements / Herbal Supplements / Alfalfa
+  1018344: Health & Beauty / Vitamins & Dietary Supplements / Herbal Supplements / Aloe Vera
+  ... +46 more
+
+=== Home Tests (14 categories) ===
+  1012028: Health & Beauty / Medical Supplies & Equipment / Home Tests
+  1012038: Health & Beauty / Medical Supplies & Equipment / Home Tests / Drug Tests
+  1012047: Health & Beauty / Medical Supplies & Equipment / Home Tests / Drug Tests / Alcohol Tests
+  ... +11 more
+
+=== Humidifiers & Vaporizers (12 categories) ===
+  1006355: Baby Products / Health & Baby Care / Humidifiers & Vaporizers
+  1006368: Baby Products / Health & Baby Care / Humidifiers & Vaporizers / Humidifier Parts & Accessories
+  1006376: Baby Products / Health & Baby Care / Humidifiers & Vaporizers / Humidifier Parts & Accessories / Absorption Sleeves
+  ... +9 more
+
+=== Hydration (3 categories) ===
+  1017607: Health & Beauty / Sports Nutrition / Hydration
+  1017614: Health & Beauty / Sports Nutrition / Hydration / Electrolyte Replacement
+  1017624: Health & Beauty / Sports Nutrition / Hydration / Enhanced Water
+
+=== Incontinence & Ostomy (22 categories) ===
+  1010251: Health & Beauty / Health Care / Incontinence & Ostomy
+  1010269: Health & Beauty / Health Care / Incontinence & Ostomy / Adhesive Removers
+  1010278: Health & Beauty / Health Care / Incontinence & Ostomy / Adhesives & Tapes
+  ... +19 more
+
+=== Infant Dental Care (1 categories) ===
+  1013738: Health & Beauty / Oral Care / Infant Dental Care
+
+=== Jewelry (1 categories) ===
+  1017035: Health & Beauty / Sexual Wellness / Jewelry
+
+=== Lifestyle & Hobbies (3 categories) ===
+  1006124: Computing / Software / Lifestyle & Hobbies / Cooking & Health
+  1006131: Computing / Software / Lifestyle & Hobbies / Cooking & Health / Cooking
+  1006140: Computing / Software / Lifestyle & Hobbies / Cooking & Health / Health
+
+=== Lip Care (9 categories) ===
+  1015008: Health & Beauty / Personal Care / Lip Care
+  1015017: Health & Beauty / Personal Care / Lip Care / Fillers & Plumpers
+  1015024: Health & Beauty / Personal Care / Lip Care / Lip Balms & Treatments
+  ... +6 more
+
+=== Livestock Supplies (1 categories) ===
+  1001882: Garden & Outdoors / Farm & Ranch / Livestock Supplies / Livestock Health Supplies
+
+=== Lockout & Tagout Products (7 categories) ===
+  1022903: Industrial & Scientific / Occupational Health & Safety Products / Lockout & Tagout Products
+  1022906: Industrial & Scientific / Occupational Health & Safety Products / Lockout & Tagout Products / Devices
+  1022909: Industrial & Scientific / Occupational Health & Safety Products / Lockout & Tagout Products / Kits
+  ... +4 more
+
+=== Makeup (53 categories) ===
+  1002826: Health & Beauty / Beauty & Personal Care / Makeup
+  1002839: Health & Beauty / Beauty & Personal Care / Makeup / Body
+  1002854: Health & Beauty / Beauty & Personal Care / Makeup / Body / Body Glitter
+  ... +50 more
+
+=== Massage Tools & Equipment (23 categories) ===
+  1019959: Health & Beauty / Wellness & Relaxation / Massage Tools & Equipment
+  1019966: Health & Beauty / Wellness & Relaxation / Massage Tools & Equipment / Electric Massagers
+  1019973: Health & Beauty / Wellness & Relaxation / Massage Tools & Equipment / Electric Massagers / Back Massagers
+  ... +20 more
+
+=== Medications & Treatments (49 categories) ===
+  1010507: Health & Beauty / Health Care / Medications & Treatments
+  1010519: Health & Beauty / Health Care / Medications & Treatments / Allergy, Sinus & Asthma
+  1010528: Health & Beauty / Health Care / Medications & Treatments / Allergy, Sinus & Asthma / Allergy Medicine
+  ... +46 more
+
+=== Minerals (46 categories) ===
+  1018713: Health & Beauty / Vitamins & Dietary Supplements / Minerals
+  1018720: Health & Beauty / Vitamins & Dietary Supplements / Minerals / Calcium
+  1018727: Health & Beauty / Vitamins & Dietary Supplements / Minerals / Calcium / Calcium Ascorbate
+  ... +43 more
+
+=== Mouthwash (1 categories) ===
+  1013746: Health & Beauty / Oral Care / Mouthwash
+
+=== Multi & Prenatal Vitamins (3 categories) ===
+  1019036: Health & Beauty / Vitamins & Dietary Supplements / Multi & Prenatal Vitamins
+  1019045: Health & Beauty / Vitamins & Dietary Supplements / Multi & Prenatal Vitamins / Multiple Vitamin-Mineral Supplements
+  1019053: Health & Beauty / Vitamins & Dietary Supplements / Multi & Prenatal Vitamins / Multivitamins
+
+=== Multivitamins (1 categories) ===
+  1017630: Health & Beauty / Sports Nutrition / Multivitamins
+
+=== Nail Care (1 categories) ===
+  1006517: Baby Products / Health & Baby Care / Nail Care
+
+=== Nasal Aspirators (1 categories) ===
+  1006532: Baby Products / Health & Baby Care / Nasal Aspirators
+
+=== Novelties (1 categories) ===
+  1017043: Health & Beauty / Sexual Wellness / Novelties
+
+=== Nutrition Bars (5 categories) ===
+  1017638: Health & Beauty / Sports Nutrition / Nutrition Bars
+  1017646: Health & Beauty / Sports Nutrition / Nutrition Bars / Endurance & Energy Bars
+  1017654: Health & Beauty / Sports Nutrition / Nutrition Bars / Food Bars
+  ... +2 more
+
+=== Occupational & Physical Therapy Aids (11 categories) ===
+  1013408: Health & Beauty / Medical Supplies & Equipment / Occupational & Physical Therapy Aids
+  1013416: Health & Beauty / Medical Supplies & Equipment / Occupational & Physical Therapy Aids / Arm Exercisers
+  1013424: Health & Beauty / Medical Supplies & Equipment / Occupational & Physical Therapy Aids / Exercise Balls & Accessories
+  ... +8 more
+
+=== Oral Care (46 categories) ===
+  1003660: Health & Beauty / Beauty & Personal Care / Oral Care
+  1003677: Health & Beauty / Beauty & Personal Care / Oral Care / Breath Fresheners
+  1003692: Health & Beauty / Beauty & Personal Care / Oral Care / Children's Dental Care
+  ... +43 more
+
+=== Pain Relief & Orthodontics (5 categories) ===
+  1013751: Health & Beauty / Oral Care / Pain Relief & Orthodontics
+  1013760: Health & Beauty / Oral Care / Pain Relief & Orthodontics / Gum Stimulators
+  1013769: Health & Beauty / Oral Care / Pain Relief & Orthodontics / Orthodontic Supplies
+  ... +2 more
+
+=== Personal Care (256 categories) ===
+  1000232: Health & Beauty / Baby & Child Care / Personal Care
+  1000245: Health & Beauty / Baby & Child Care / Personal Care / Baby Bath
+  1000253: Health & Beauty / Baby & Child Care / Personal Care / Baby Skin Care
+  ... +253 more
+
+=== Personal Protective Equipment (79 categories) ===
+  1022924: Industrial & Scientific / Occupational Health & Safety Products / Personal Protective Equipment
+  1022927: Industrial & Scientific / Occupational Health & Safety Products / Personal Protective Equipment / Ergonomic Supports
+  1022930: Industrial & Scientific / Occupational Health & Safety Products / Personal Protective Equipment / Ergonomic Supports / Ankle Supports
+  ... +76 more
+
+=== Piercing & Tattoo Supplies (13 categories) ===
+  1015080: Health & Beauty / Personal Care / Piercing & Tattoo Supplies
+  1015087: Health & Beauty / Personal Care / Piercing & Tattoo Supplies / Piercing Supplies
+  1015095: Health & Beauty / Personal Care / Piercing & Tattoo Supplies / Piercing Supplies / Aftercare Products
+  ... +10 more
+
+=== Pleasurable Aids (3 categories) ===
+  1018087: Health & Beauty / Temptations / Pleasurable Aids
+  1018094: Health & Beauty / Temptations / Pleasurable Aids / Enhancements
+  1018103: Health & Beauty / Temptations / Pleasurable Aids / Enhancements / Vaginal Tighteners
+
+=== Post-Workout & Recovery (3 categories) ===
+  1017676: Health & Beauty / Sports Nutrition / Post-Workout & Recovery
+  1017687: Health & Beauty / Sports Nutrition / Post-Workout & Recovery / Powders
+  1017692: Health & Beauty / Sports Nutrition / Post-Workout & Recovery / Supplements
+
+=== Poultry Care (2 categories) ===
+  1003093: Garden & Outdoors / Farm & Ranch / Poultry Care / Poultry Health Supplies
+  1003108: Garden & Outdoors / Farm & Ranch / Poultry Care / Poultry Health Supplies / Pest & Disease Control
+
+=== Pre-Shave (1 categories) ===
+  1013511: Health & Beauty / Men's Grooming / Pre-Shave
+
+=== Pre-Workout (4 categories) ===
+  1017700: Health & Beauty / Sports Nutrition / Pre-Workout
+  1017712: Health & Beauty / Sports Nutrition / Pre-Workout / Nitric Oxide Boosters
+  1017719: Health & Beauty / Sports Nutrition / Pre-Workout / Powders
+  ... +1 more
+
+=== Prescription Contact Lenses (13 categories) ===
+  1018212: Health & Beauty / Vision Care / Prescription Contact Lenses
+  1018221: Health & Beauty / Vision Care / Prescription Contact Lenses / Bifocal & Multifocal Lenses
+  1018229: Health & Beauty / Vision Care / Prescription Contact Lenses / Bifocal & Multifocal Lenses / Bifocal Lenses
+  ... +10 more
+
+=== Protein (15 categories) ===
+  1017734: Health & Beauty / Sports Nutrition / Protein
+  1017742: Health & Beauty / Sports Nutrition / Protein / Powders
+  1017750: Health & Beauty / Sports Nutrition / Protein / Powders / Beef
+  ... +12 more
+
+=== Respiratory Aids & Accessories (19 categories) ===
+  1011051: Health & Beauty / Health Care / Respiratory Aids & Accessories
+  1011060: Health & Beauty / Health Care / Respiratory Aids & Accessories / CPAP Accessories
+  1011070: Health & Beauty / Health Care / Respiratory Aids & Accessories / Home Nebulizer Accessories
+  ... +16 more
+
+=== Safer Sex (9 categories) ===
+  1017051: Health & Beauty / Sexual Wellness / Safer Sex
+  1017059: Health & Beauty / Sexual Wellness / Safer Sex / Condoms
+  1017068: Health & Beauty / Sexual Wellness / Safer Sex / Condoms / Female
+  ... +6 more
+
+=== Safety Signs & Signals (21 categories) ===
+  1023160: Industrial & Scientific / Occupational Health & Safety Products / Safety Signs & Signals
+  1023163: Industrial & Scientific / Occupational Health & Safety Products / Safety Signs & Signals / Flags
+  1023166: Industrial & Scientific / Occupational Health & Safety Products / Safety Signs & Signals / Floor Markers
+  ... +18 more
+
+=== Sensual Delights (8 categories) ===
+  1017123: Health & Beauty / Sexual Wellness / Sensual Delights
+  1017130: Health & Beauty / Sexual Wellness / Sensual Delights / Bath Items
+  1017142: Health & Beauty / Sexual Wellness / Sensual Delights / Edible Items
+  ... +5 more
+
+=== Sex Furniture (6 categories) ===
+  1017190: Health & Beauty / Sexual Wellness / Sex Furniture
+  1017198: Health & Beauty / Sexual Wellness / Sex Furniture / Bedding
+  1017206: Health & Beauty / Sexual Wellness / Sex Furniture / Ramps & Cushions
+  ... +3 more
+
+=== Sexual Enhancers (1 categories) ===
+  1017237: Health & Beauty / Sexual Wellness / Sexual Enhancers
+
+=== Sexual Remedies & Supplements (1 categories) ===
+  1029474: Health & Beauty / Sexual Wellness / Sexual Remedies & Supplements
+
+=== Shave & Hair Removal (88 categories) ===
+  1015182: Health & Beauty / Personal Care / Shave & Hair Removal
+  1015193: Health & Beauty / Personal Care / Shave & Hair Removal / Men's
+  1015199: Health & Beauty / Personal Care / Shave & Hair Removal / Men's / After Shaves
+  ... +85 more
+
+=== Shoes (2 categories) ===
+  1014199: Fashion / Men's Fashion / Shoes / Work & Safety / Health Care & Food Service
+  1016057: Fashion / Uniforms, Work & Safety / Shoes / Women / Health Care & Food Service
+
+=== Skin Care (118 categories) ===
+  1028560: Health & Beauty / Dermocosmetics / Skin Care
+  1029439: Health & Beauty / Dermocosmetics / Skin Care / Acne Prone Skin
+  1029443: Health & Beauty / Dermocosmetics / Skin Care / Anti-Aging
+  ... +115 more
+
+=== Sleep & Snoring (6 categories) ===
+  1011249: Health & Beauty / Health Care / Sleep & Snoring
+  1011261: Health & Beauty / Health Care / Sleep & Snoring / Medicinal Sleep Aids
+  1011270: Health & Beauty / Health Care / Sleep & Snoring / Nasal Strips
+  ... +3 more
+
+=== Smoking Cessation (4 categories) ===
+  1011319: Health & Beauty / Health Care / Smoking Cessation
+  1011334: Health & Beauty / Health Care / Smoking Cessation / Nicotine Gums & Lozenges
+  1011345: Health & Beauty / Health Care / Smoking Cessation / Nicotine Patches
+  ... +1 more
+
+=== Stationery (8 categories) ===
+  1018015: Health & Beauty / Stationery & Gift Wrapping Supplies / Stationery
+  1018024: Health & Beauty / Stationery & Gift Wrapping Supplies / Stationery / Announcements
+  1018032: Health & Beauty / Stationery & Gift Wrapping Supplies / Stationery / Fine Writing Instruments
+  ... +5 more
+
+=== Sun Protection (1 categories) ===
+  1006547: Baby Products / Health & Baby Care / Sun Protection
+
+=== Sunblock (4 categories) ===
+  1013520: Health & Beauty / Men's Grooming / Sunblock
+  1013527: Health & Beauty / Men's Grooming / Sunblock / Body Protection
+  1013535: Health & Beauty / Men's Grooming / Sunblock / Face Protection
+  ... +1 more
+
+=== Supplement Stacks (4 categories) ===
+  1017850: Health & Beauty / Sports Nutrition / Supplement Stacks
+  1017857: Health & Beauty / Sports Nutrition / Supplement Stacks / Endurance
+  1017864: Health & Beauty / Sports Nutrition / Supplement Stacks / Fat Loss
+  ... +1 more
+
+=== Supplements (60 categories) ===
+  1019060: Health & Beauty / Vitamins & Dietary Supplements / Supplements
+  1019067: Health & Beauty / Vitamins & Dietary Supplements / Supplements / 5-HTP
+  1019075: Health & Beauty / Vitamins & Dietary Supplements / Supplements / Antioxidants
+  ... +57 more
+
+=== Teeth Whitening (1 categories) ===
+  1013794: Health & Beauty / Oral Care / Teeth Whitening
+
+=== Teethers & Teething Relief (2 categories) ===
+  1006568: Baby Products / Health & Baby Care / Teethers & Teething Relief
+  1006591: Baby Products / Health & Baby Care / Teethers & Teething Relief / Teething Relief
+
+=== Testosterone Boosters (1 categories) ===
+  1017877: Health & Beauty / Sports Nutrition / Testosterone Boosters
+
+=== Thermometers (1 categories) ===
+  1006610: Baby Products / Health & Baby Care / Thermometers
+
+=== Tins & Cans (1 categories) ===
+  1016809: Grocery / Food Cupboard / Tins & Cans / Soups / Healthy Soups
+
+=== Tongue Cleaners (1 categories) ===
+  1013802: Health & Beauty / Oral Care / Tongue Cleaners
+
+=== Tools & Accessories (104 categories) ===
+  1007791: Health & Beauty / Beauty & Personal Care / Tools & Accessories
+  1007810: Health & Beauty / Beauty & Personal Care / Tools & Accessories / Bags & Cases
+  1007821: Health & Beauty / Beauty & Personal Care / Tools & Accessories / Bags & Cases / Cosmetic Bags
+  ... +101 more
+
+=== Toothbrushes (7 categories) ===
+  1006627: Baby Products / Health & Baby Care / Toothbrushes
+  1013810: Health & Beauty / Oral Care / Toothbrushes
+  1013816: Health & Beauty / Oral Care / Toothbrushes / Battery Powered Toothbrushes
+  ... +4 more
+
+=== Toothpaste (1 categories) ===
+  1013851: Health & Beauty / Oral Care / Toothpaste
+
+=== Training Toothpaste (1 categories) ===
+  1006644: Baby Products / Health & Baby Care / Training Toothpaste
+
+=== Unisex (1 categories) ===
+  1009180: Health & Beauty / Fragrances / Unisex
+
+=== Vitamins (38 categories) ===
+  1019490: Health & Beauty / Vitamins & Dietary Supplements / Vitamins
+  1019497: Health & Beauty / Vitamins & Dietary Supplements / Vitamins / Choline
+  1019505: Health & Beauty / Vitamins & Dietary Supplements / Vitamins / Flavonoids
+  ... +35 more
+
+=== Warning Alarms (1 categories) ===
+  1023223: Industrial & Scientific / Occupational Health & Safety Products / Warning Alarms
+
+=== Weight Gainers (1 categories) ===
+  1017884: Health & Beauty / Sports Nutrition / Weight Gainers
+
+=== Weight Loss (16 categories) ===
+  1019748: Health & Beauty / Vitamins & Dietary Supplements / Weight Loss
+  1019757: Health & Beauty / Vitamins & Dietary Supplements / Weight Loss / Appetite Control & Suppressants
+  1019765: Health & Beauty / Vitamins & Dietary Supplements / Weight Loss / Bars & Snacks
+  ... +13 more
+
+=== Women's Health (8 categories) ===
+  1011368: Health & Beauty / Health Care / Women's Health
+  1011375: Health & Beauty / Health Care / Women's Health / Family Planning Tests
+  1011384: Health & Beauty / Health Care / Women's Health / Family Planning Tests / Fertility Charting
+  ... +5 more
+
+=== ZMA Mineral Supplements (1 categories) ===
+  1017892: Health & Beauty / Sports Nutrition / ZMA Mineral Supplements
