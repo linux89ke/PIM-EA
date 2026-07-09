@@ -1684,6 +1684,14 @@ def build_fast_grid_html(
     box-shadow: 0 12px 30px rgba(0,0,0,0.12);
     z-index: 10;
   }}
+  #zoom-backdrop {{
+    display: none;
+    position: fixed;
+    top: 0; left: 0; width: 100vw; height: 100vh;
+    background: rgba(0,0,0,0.6);
+    z-index: 99999;
+    cursor: pointer;
+  }}
   #zoom-tooltip {{
     display: none;
     position: fixed;
@@ -1863,6 +1871,7 @@ def build_fast_grid_html(
   <button class="desel-btn top-btn" onclick="window.scrollTo(0, 0)">{labels_dict["undo"]}</button>
 </div>
 
+<div id="zoom-backdrop" onclick="closeZoom()"></div>
 <div id="zoom-tooltip">
   <button class="zoom-nav-btn prev" onclick="event.stopPropagation(); window.zoomMove(-1)" title="Previous">&#10094;</button>
   <img id="tooltip-img" alt="Zoomed product" referrerpolicy="no-referrer">
@@ -2324,6 +2333,7 @@ window.showZoom = function(sid, event) {{
   var img = document.getElementById('tooltip-img');
   img.src = card.img || PLACEHOLDER;
   img.onerror = function() {{ img.src = PLACEHOLDER; img.onerror = null; }};
+  document.getElementById('zoom-backdrop').style.display = 'block';
   tooltip.style.display = 'block';
   window.currentZoomSid = sid;
   var tw = 360, th = 360;
@@ -2342,6 +2352,7 @@ window.showZoom = function(sid, event) {{
 
 window.closeZoom = function() {{
   document.getElementById('zoom-tooltip').style.display = 'none';
+  document.getElementById('zoom-backdrop').style.display = 'none';
   window.currentZoomSid = null;
 }};
 
@@ -3265,11 +3276,7 @@ def visual_review_modal(support_files):
     def _jump_from_widget(source_key):
         # Called on_change of whichever number_input the user actually typed into.
         new_page_0idx = st.session_state[source_key] - 1
-        new_page_0idx = max(0, min(total_pages - 1, new_page_0idx))
-        st.session_state.grid_page = new_page_0idx
-        other_key = "jump_bot" if source_key == "jump_top" else "jump_top"
-        st.session_state[other_key] = new_page_0idx + 1
-        st.session_state.do_scroll_top = True
+        _goto_page(new_page_0idx)
 
     # Keep jump_top/jump_bot initialized (only before their widgets exist,
     # i.e. only if this is the very first time we see these keys).
@@ -3450,8 +3457,8 @@ def visual_review_modal(support_files):
         )
 
     placeholder.empty()
-    st.iframe(grid_html, height=750)
-
+    with st.container(key=f"grid_iframe_pg_{st.session_state.get('grid_page', 0)}"):
+        st.iframe(grid_html, height=750)
     st.markdown("---")
 
     pg_cols_bot = st.columns([1, 2, 1], vertical_alignment="bottom", gap="small")
