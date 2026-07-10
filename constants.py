@@ -103,7 +103,7 @@ COUNTRY_VALIDATOR_CONFIG = {
     "Kenya": {"code": "KE", "skip_validations": []},
     "Uganda": {
         "code": "UG",
-        "skip_validations": ["Counterfeit Sneakers", "Product Warranty"],
+        "skip_validations": [],
     },
     "Nigeria":     {"code": "NG", "skip_validations": []},
     "Ghana":       {"code": "GH", "skip_validations": []},
