@@ -1890,7 +1890,7 @@ def build_fast_grid_html(
       var s = par.document.createElement('style');
       s.id = STYLE_ID;
       s.textContent = [
-        'iframe[title="st.iframe"], iframe[title="streamlit.components.v1.html"] {{',
+        '.stAppViewBlock iframe[title="st.iframe"], .stAppViewBlock iframe[title="streamlit.components.v1.html"] {{',
         '  visibility: visible !important;',
         '  opacity: 1 !important;',
         '  transition: opacity 0.2s ease-in-out;',
@@ -1905,6 +1905,10 @@ def build_fast_grid_html(
           if (m.type !== 'attributes' || m.attributeName !== 'style') return;
           var el = m.target;
           if (el.tagName !== 'IFRAME') return;
+          
+          // Let Streamlit hide the iframe if it's being pooled or placed in a hidden container
+          if (el.closest('[style*="display: none"]') || el.closest('[style*="display:none"]') || el.closest('[data-testid="stHidden"]')) return;
+          
           if (el.style.visibility === 'hidden') {{
             el.style.setProperty('visibility', 'visible', 'important');
             el.style.setProperty('opacity', '1', 'important');

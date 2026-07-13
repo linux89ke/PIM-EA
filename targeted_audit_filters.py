@@ -2,7 +2,26 @@ import re
 import pandas as pd
 import streamlit as st
 
-# ── Check taxonomy ────────────────────────────────────────────────────────────
+# ── Shared volume/quantity regex ──────────────────────────────────────────────
+# Used by BOTH the false-rejection check (approved products that had volume in
+# the title and were wrongly rejected) AND the false-approval check (approved
+# products that are missing volume when the category requires it).
+# Keeping one shared pattern guarantees the two checks are always in sync.
+_VOLUME_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:[a-z]{1,20}\s*){0,3}"
+    r"(?:kg|kgs|g|gm|gms|grams|mg|mcg|ml|l|ltr|liter|litres|litre|cl|oz|ounce|ounces|lb|lbs"
+    r"|tablets?|tabs?|capsules?|caps?|sachets?|count|ct|sticks?|iu"
+    r"|tea\s*bags?|teabags?|bags?|softgels?|lozenges?|gummies|gummy|vials?|ampoules?|tubes?"
+    r"|pieces?|pcs|pack|packs|pairs?|rolls?|sheets?|wipes?|pods?|units?|serves?|servings?|vegan\s+pieces?"
+    r"|dozens?|box|boxes|set|sets|bundle|bundles|lot|lots|collection|kit|kits)\b"
+    r"|\b\d+[\u0027\u2019]?s\b"
+    r"|\b(?:a\s+)?dozen\b"
+    r"|\b(?:pack|box|set|bundle|lot)\s+of\s+\d+\b"
+    r"|\bper\s+(?:kg|kgs?|g|gm|grams?|mg|mcg|ml|l|ltr|oz|lb)\b"
+    r"|\d+\s*(?:\xc2\xb5g|\xce\xbcg|\xb5g|\u00b5g|\u03bcg|mcg|\u00b5g|\u03bcg)",
+    re.IGNORECASE,
+)
+
 # Every check is read directly from the file's own Status/Reason column pair.
 # "Prohibited" is no longer its own check — the file itself reports it as a
 # reason *type* under Category (or under the pre-QC Skip step), so it lives
@@ -255,6 +274,43 @@ def load_color_set() -> set:
     return set(load_colors())
 
 
+_MULTICOLOR_VARIANTS_AUDIT = {
+    "multicolor", "multicolour", "multicolored", "multicoloured",
+    "multi colour", "multi color", "multi-colour", "multi-color",
+    "multicolors", "multicolours",
+}
+
+
+def _color_recognised(color_val: str, valid_set: set) -> bool:
+    """Return True if color_val is a recognised color according to colors.txt.
+
+    Supports composite values like 'Red/Blue', 'Black & Gold', 'Dark Navy'.
+    At least one split-part (or token within a part) must match the valid set.
+    Multicolor variants (e.g. 'Multicolour') are always accepted.
+    If valid_set is empty (colors.txt missing), returns False to be safe.
+    """
+    c = color_val.strip().lower()
+    if not c:
+        return False
+    if c in _MULTICOLOR_VARIANTS_AUDIT or re.match(r"^multi", c):
+        return True
+    if not valid_set:
+        return False
+    # Split composite: 'Red/Blue', 'Black & Gold', 'Dark Red, White'
+    parts = re.split(r"[,/&|]|\s+and\s+|\s+or\s+|\s+with\s+", c)
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if part in valid_set or part in _MULTICOLOR_VARIANTS_AUDIT:
+            return True
+        # Allow modifier + base: 'dark blue' -> token 'blue'
+        for token in part.split():
+            if token in valid_set:
+                return True
+    return False
+
+
 @st.cache_data
 def get_color_regex():
     colors = load_colors()
@@ -309,12 +365,12 @@ def _verify(check_key: str, rec: dict, rule: dict, weights: set, color_re) -> st
         # Any value that starts with 'multi' is a valid multicolor declaration
         if re.match(r"^multi", color_val.lower()):
             return "False Rejection"
-        # Column must be filled AND the value must be a recognised color
+        # Column must be filled AND the value must be a recognised color in colors.txt
         if not color_val:
             return "True Rejection"
         valid_colors = load_color_set()
-        if valid_colors and color_val.lower() not in valid_colors:
-            # Value present but not a real color (e.g. 'Ascorbic') — rejection was correct
+        if not _color_recognised(color_val, valid_colors):
+            # Value present but not a real color (e.g. 'Random', 'YMCK') — rejection was correct
             return "True Rejection"
         return "False Rejection"
 
@@ -353,6 +409,11 @@ def _verify_false_approval(check_key: str, rec: dict, rule: dict, weights: set, 
             # product name/title is NOT sufficient for a valid color declaration.
             if not color_val:
                 return "Color Missing"
+            # A non-empty color is still invalid if it's not in colors.txt
+            # (e.g. 'Random', 'YMCK', 'Assorted') — those are junk values.
+            valid_colors = load_color_set()
+            if not _color_recognised(color_val, valid_colors):
+                return "Color Invalid (Not In colors.txt)"
     elif check_key == "warranty":
         if _clean(rule.get("Warranty", "")).lower() == "mandatory" and not _clean(rec.get("PRODUCT_WARRANTY")):
             return "Warranty Field Empty"
@@ -363,7 +424,7 @@ def _verify_false_approval(check_key: str, rec: dict, rule: dict, weights: set, 
             if not var_val and (not var_count or var_count == "0"):
                 return "Variation Field Empty"
     elif check_key == "title_language":
-        if cat_code in weights and not re.search(r"\d+\s*(g|kg|ml|l|oz|lb|pcs|pieces)\b", name, re.IGNORECASE):
+        if cat_code in weights and not _VOLUME_RE.search(name):
             return "Missing Quantity/Weight In Title"
     return ""
 
@@ -590,28 +651,12 @@ def evaluate_all_checks(data: pd.DataFrame, country_code: str) -> pd.DataFrame:
                 )
                 if is_rejection_like:
                     name_val = _clean(rec.get("NAME"))
-                    if name_val:
-                        import re
-                        pat = re.compile(
-                            r"\b\d+(?:\.\d+)?\s*(?:[a-z]{1,20}\s*){0,3}"
-                            r"(?:kg|kgs|g|gm|gms|grams|mg|mcg|ml|l|ltr|liter|litres|litre|cl|oz|ounce|ounces|lb|lbs|m"
-                            r"|tablets?|tabs?|capsules?|caps?|sachets?|count|ct|sticks?|iu"
-                            r"|tea\s*bags?|teabags?|bags?|softgels?|lozenges?|gummies|gummy|vials?|ampoules?|tubes?"
-                            r"|pieces?|pcs|pack|packs|pairs?|rolls?|sheets?|wipes?|pods?|units?|serves?|servings?|vegan\s+pieces?"
-                            r"|dozens?|box|boxes|set|sets|bundle|bundles|lot|lots|collection|kit|kits)"
-                            r"|\b\d+[\u0027\u2019]?s\b"
-                            r"|\b(?:a\s+)?dozen\b"
-                            r"|\b(?:pack|box|set|bundle|lot)\s+of\s+\d+\b"
-                            r"|\bper\s+(?:kg|kgs?|g|gm|grams?|mg|mcg|ml|l|ltr|oz|lb)\b"
-                            r"|\d+\s*(?:\xc2\xb5g|\xce\xbcg|\xb5g|\u00b5g|\u03bcg|mcg|µg|μg)",
-                            re.IGNORECASE,
-                        )
-                        if pat.search(name_val):
-                            rows.append({**_base_row(sid, "title_language", rec),
-                                         "Reason Type": "Volume Present But Rejected",
-                                         "Verdict": "False Rejection",
-                                         "Detail": f"Rejected for missing volume/weight in title, but valid volume format detected in NAME: '{name_val}'. Original reason: {reason or '(none provided)'}"})
-                            continue
+                    if name_val and _VOLUME_RE.search(name_val):
+                        rows.append({**_base_row(sid, "title_language", rec),
+                                     "Reason Type": "Volume Present But Rejected",
+                                     "Verdict": "False Rejection",
+                                     "Detail": f"Rejected for missing volume/weight in title, but valid volume format detected in NAME: '{name_val}'. Original reason: {reason or '(none provided)'}"})
+                        continue
 
             if has_status_col and status:
                 # ── Driven by an explicit status column ──────────────────

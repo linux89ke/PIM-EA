@@ -907,8 +907,12 @@ def check_restricted_brands(
         brand_names_only.add(rule["brand"])
 
     _name_pattern = "(?i)" + "|".join(re.escape(k) for k in brand_names_only if k)
+    # Also match brands whose _brand_norm CONTAINS the brand keyword as a substring
+    # (catches accent-obfuscation like 'CeraVeé' -> 'ceravee' which contains 'cerave')
+    _brand_substr_pattern = "(?i)" + "|".join(re.escape(k) for k in brand_names_only if k)
     candidate_ldf = ldf.filter(
         pl.col("_brand_norm").is_in(list(all_keywords))
+        | pl.col("_brand_norm").str.contains(_brand_substr_pattern)
         | pl.col("_name_norm").str.contains(_name_pattern)
     )
 
@@ -923,7 +927,14 @@ def check_restricted_brands(
     for rule in country_rules:
         brand_name = rule["brand"]
         brand_raw = rule["brand_raw"]
-        main_brand_matches = d["_brand_norm"] == brand_name
+        # Exact match: brand column exactly equals the normalised brand
+        main_brand_matches_exact = d["_brand_norm"] == brand_name
+        # Substring match: brand column CONTAINS the brand keyword
+        # (catches accent-obfuscations like 'CeraVeé' -> 'ceravee' which contains 'cerave')
+        main_brand_matches_substr = d["_brand_norm"].str.contains(
+            re.escape(brand_name), regex=True, na=False
+        )
+        main_brand_matches = main_brand_matches_exact | main_brand_matches_substr
         main_name_matches = d["_name_norm"].str.contains(re.escape(brand_name), regex=True, na=False)
         current_match_mask = main_brand_matches | main_name_matches
         for idx in d[main_brand_matches].index:
@@ -1719,6 +1730,8 @@ def check_missing_color(
         "as shown", "see image", "see photo", "all color available",
         "all color availble", "all colors available",
         "mult", "multic",
+        # Printer/technical color model acronyms — not real product colors
+        "cmyk", "ymck", "ycmk", "rgb", "rgba", "hsb", "hsl", "hex",
     }
     _MODIFIER_WORDS = {
         "dark", "light", "bright", "deep", "pale", "soft", "matte", "matt",
@@ -3433,21 +3446,63 @@ if st.session_state.get("last_processed_files") != process_signature:
 
                                     if "color" in _base_key.lower():
                                         missing_col_df = res_zip.get("Missing COLOR") if res_zip else None
-                                        # To override a color rejection, it must pass the main validation AND actually have
-                                        # a value in the explicit 'COLOR' column (not just inferred from title/color family)
+                                        # To override a color rejection, the product must pass the main
+                                        # validation AND have a COLOR value that is recognised in colors.txt.
                                         passed_main_validation = missing_col_df is None or missing_col_df.empty or _sid not in missing_col_df["PRODUCT_SET_SID"].astype(str).values
-                                        
+
                                         _has_explicit_color = False
+                                        _explicit_color_value = ""
                                         _temp_grp = _data_by_sid.get(_sid)
                                         if _temp_grp is not None and not _temp_grp.empty:
                                             _color_col_name = next((c for c in _temp_grp.columns if str(c).strip().upper() == "COLOR"), None)
                                             if _color_col_name:
                                                 _c_vals = _temp_grp[_color_col_name].astype(str).str.strip()
                                                 _null_vals = {"nan", "none", "", "n/a", "-", "null"}
-                                                if any(v.lower() not in _null_vals for v in _c_vals):
+                                                _non_null = [v for v in _c_vals if v.lower() not in _null_vals]
+                                                if _non_null:
+                                                    _explicit_color_value = _non_null[0].lower()
                                                     _has_explicit_color = True
 
-                                        if passed_main_validation and _has_explicit_color:
+                                        # Validate against colors.txt — the single source of truth for
+                                        # recognised colors. A color must appear in colors.txt (supports
+                                        # multi-part values like "Red/Blue" — at least one part must match).
+                                        # If colors.txt is empty/missing, fall back to the junk-list check.
+                                        _zip_valid_colors = load_valid_colors()
+                                        _MULTICOLOR_VARIANTS_ZIP = {
+                                            "multicolor", "multicolour", "multicolored", "multicoloured",
+                                            "multi colour", "multi color", "multi-colour", "multi-color",
+                                            "multicolors", "multicolours",
+                                        }
+
+                                        def _zip_color_recognised(color_val: str, valid_set: set) -> bool:
+                                            """Return True only if color_val is in colors.txt (or a multicolor variant)."""
+                                            c = color_val.strip().lower()
+                                            if c in _MULTICOLOR_VARIANTS_ZIP:
+                                                return True
+                                            if not valid_set:
+                                                # colors.txt unavailable — reject ambiguous values to be safe
+                                                return False
+                                            # Split composite values: "Red/Blue", "Black & Gold", etc.
+                                            parts = re.split(r"[,/&|]|\s+and\s+|\s+or\s+|\s+with\s+", c)
+                                            for part in parts:
+                                                part = part.strip()
+                                                if not part:
+                                                    continue
+                                                if part in valid_set or part in _MULTICOLOR_VARIANTS_ZIP:
+                                                    return True
+                                                # Allow modifier + base color: "dark blue", "light grey"
+                                                tokens = part.split()
+                                                for token in tokens:
+                                                    if token in valid_set:
+                                                        return True
+                                            return False
+
+                                        _color_is_valid = (
+                                            _has_explicit_color
+                                            and _zip_color_recognised(_explicit_color_value, _zip_valid_colors)
+                                        )
+
+                                        if passed_main_validation and _color_is_valid:
                                             final_report.at[_fidx, "Status"] = "Approved"
                                             final_report.at[_fidx, "FLAG"] = "Approved by User"
                                             final_report.at[_fidx, "Comment"] = "Approved by user for Color"
@@ -3599,7 +3654,7 @@ def handle_jtbridge():
                     st.session_state.main_toasts.append(f"Rejected {_total} product(s)")
                     st.session_state.main_bridge_counter += 1
                     st.session_state.do_scroll_top = False
-                    st.rerun(scope="fragment")
+                    st.rerun()
             elif _msg.get("action") == "undo":
                 _payload = _msg.get("payload", {})
                 _total_restored = 0
@@ -3610,7 +3665,7 @@ def handle_jtbridge():
                 if _total_restored > 0:
                     st.session_state.main_bridge_counter += 1
                     st.session_state.do_scroll_top = False
-                    st.rerun(scope="fragment")
+                    st.rerun()
             elif _msg.get("action") == "grid_sort_issue":
                 st.session_state.grid_sort_issue = _msg.get("payload", "")
                 st.session_state.main_bridge_counter += 1

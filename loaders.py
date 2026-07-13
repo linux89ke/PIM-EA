@@ -182,21 +182,19 @@ def load_restricted_brands_from_local() -> Dict[str, List[Dict]]:
 
             def _split_set(series, sep=","):
                 return series.astype(str).str.strip().apply(
-                    lambda x: set() if not x or x.lower() == "nan"
+                    lambda x: set() if not x or x.lower() in ("nan", "none")
                     else {v.strip().lower() for v in x.split(sep) if v.strip()}
                 )
 
             def _split_cats(series):
                 return series.astype(str).str.strip().apply(
-                    lambda x: None if (not x or x.lower() == "nan")
+                    lambda x: None if (not x or x.lower() in ("nan", "none"))
                     else {clean_category_code(c.strip()) for c in x.split(",") if c.strip()}
                 )
 
             sellers_s = _split_set(df.get("approved sellers", pd.Series([""] * len(df), index=df.index)), ",")
             cats_s = _split_cats(df.get("categories", pd.Series([""] * len(df), index=df.index)))
             vars_s = _split_set(df.get("variations", pd.Series([""] * len(df), index=df.index)), ",")
-
-            # Parse "Expanded Variations" — stored as Python list strings e.g. "['axiz-y', ...]"
             def _parse_expanded(val):
                 s = str(val).strip()
                 if not s or s.lower() == "nan":
