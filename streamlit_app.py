@@ -317,75 +317,110 @@ def _derive_prefetched_skip_list(qc_df: pd.DataFrame) -> List[str]:
     return sorted(skip)
 
 
-def restore_single_item(sid):
+def restore_items(sids):
+    """Batched undo/restore.
+
+    Same per-sid semantics as the old restore_single_item (a sid is
+    re-rejected if the zip QC results still show it failing a check that
+    hasn't already been undone for that sid, otherwise it's approved), but
+    the expensive lookups (final_report mask, zip_qc_results mask) and the
+    manual_undone_tracker pruning are all done ONCE for the whole batch
+    instead of once per sid. apply_status_change calls are grouped so a
+    50-item undo click does a small handful of calls instead of 50.
+    """
+    sid_list = [str(s).strip() for s in sids if str(s).strip()]
+    if not sid_list:
+        return 0
+    sid_set = set(sid_list)
+
     fr = st.session_state.final_report
-    sid_str = str(sid).strip()
-    mask = fr["ProductSetSid"].astype(str).str.strip() == sid_str
-    if not mask.any():
-        return
+    fr_sid_norm = fr["ProductSetSid"].astype(str).str.strip()
+    fr_mask = fr_sid_norm.isin(sid_set)
+    if not fr_mask.any():
+        return 0
+    flag_by_sid = dict(zip(fr_sid_norm[fr_mask], fr.loc[fr_mask, "FLAG"]))
 
     if "manual_undone_tracker" not in st.session_state:
         st.session_state.manual_undone_tracker = {}
-
-    if len(st.session_state.manual_undone_tracker) > 200:
-        keys = list(st.session_state.manual_undone_tracker.keys())
+    tracker = st.session_state.manual_undone_tracker
+    if len(tracker) > 200:
+        keys = list(tracker.keys())
         for k in keys[:100]:
-            del st.session_state.manual_undone_tracker[k]
+            del tracker[k]
 
-    current_flag = fr.loc[mask, "FLAG"].iloc[0]
-    st.session_state.manual_undone_tracker.setdefault(sid_str, set()).add(current_flag)
+    valid_sids = [s for s in sid_list if s in flag_by_sid]
+    for sid_str in valid_sids:
+        tracker.setdefault(sid_str, set()).add(flag_by_sid[sid_str])
 
+    # One vectorized lookup into zip_qc_results for the whole batch, instead
+    # of a fresh full-column scan per sid.
+    zip_row_by_sid = {}
     qc_zip = st.session_state.get("zip_qc_results", pd.DataFrame())
+    status_cols = []
+    fmap = st.session_state.support_files.get("flags_mapping", {})
     if not qc_zip.empty:
         sid_col = None
         for possible in ["PRODUCT_SET_SID", "ProductSetSid", "Product Set SID", "cod_productset_sid", "SID"]:
             if possible in qc_zip.columns:
                 sid_col = possible
                 break
-
         if sid_col:
-            zip_row = qc_zip[qc_zip[sid_col].astype(str).str.strip() == sid_str]
-            if not zip_row.empty:
-                r = zip_row.iloc[0]
+            zip_sid_norm = qc_zip[sid_col].astype(str).str.strip()
+            zip_mask = zip_sid_norm.isin(sid_set)
+            if zip_mask.any():
                 status_cols = [c for c in qc_zip.columns if "status" in c.lower()]
-                fmap = st.session_state.support_files.get("flags_mapping", {})
+                for norm_sid, (_, row) in zip(zip_sid_norm[zip_mask], qc_zip.loc[zip_mask].iterrows()):
+                    # keep first match per sid, same as the old .iloc[0] behaviour
+                    zip_row_by_sid.setdefault(norm_sid, row)
 
-                for col in status_cols:
-                    if str(r[col]).lower() in ("rejected", "1", "yes", "true"):
-                        col_key = _prefetch_key_from_status_col(col)
-                        flag = PREFETCH_MAP.get(col_key, col_key.replace("_", " ").title())
-                        flag_prefetched = f"{flag} (Prefetched)"
+    approve_sids = []
+    rereject_groups = {}  # (reason_code, comment, flag_prefetched) -> [sids]
 
-                        if flag_prefetched not in st.session_state.manual_undone_tracker[sid_str]:
-                            mapped_info = fmap.get(flag, {})
-                            reason_code = mapped_info.get("reason", "1000007 - Other Reason")
-                            default_cmt = mapped_info.get("comment", "Rejected")
+    for sid_str in valid_sids:
+        r = zip_row_by_sid.get(sid_str)
+        rerejected = False
+        if r is not None:
+            for col in status_cols:
+                if str(r[col]).lower() in ("rejected", "1", "yes", "true"):
+                    col_key = _prefetch_key_from_status_col(col)
+                    flag = PREFETCH_MAP.get(col_key, col_key.replace("_", " ").title())
+                    flag_prefetched = f"{flag} (Prefetched)"
+                    if flag_prefetched not in tracker.get(sid_str, set()):
+                        mapped_info = fmap.get(flag, {})
+                        reason_code = mapped_info.get("reason", "1000007 - Other Reason")
+                        default_cmt = mapped_info.get("comment", "Rejected")
+                        zip_cmt = _prefetch_reason_from_row(r, col, qc_zip.columns)
+                        final_comment = zip_cmt if (zip_cmt and zip_cmt.lower() not in ("rejected", "nan")) else default_cmt
+                        key = (reason_code, final_comment, flag_prefetched, flag)
+                        rereject_groups.setdefault(key, []).append(sid_str)
+                        rerejected = True
+                        break
+        if not rerejected:
+            approve_sids.append(sid_str)
 
-                            zip_cmt = _prefetch_reason_from_row(r, col, qc_zip.columns)
-                            final_comment = zip_cmt if (zip_cmt and zip_cmt.lower() not in ("rejected", "nan")) else default_cmt
+    restored = 0
+    for (reason_code, final_comment, flag_prefetched, flag), group_sids in rereject_groups.items():
+        n = apply_status_change(
+            group_sids, status="Rejected", reason=reason_code, comment=final_comment,
+            flag=flag_prefetched, is_manual=True, is_zip=True,
+        )
+        restored += n
+        st.session_state.main_toasts.append(f"Product still rejected for: {flag}" if n == 1 else f"{n} products still rejected for: {flag}")
 
-                            apply_status_change(
-                                [sid_str],
-                                status="Rejected",
-                                reason=reason_code,
-                                comment=final_comment,
-                                flag=flag_prefetched,
-                                is_manual=True,
-                                is_zip=True,
-                            )
-                            st.session_state.main_toasts.append(f"Product still rejected for: {flag}")
-                            return
+    if approve_sids:
+        n = apply_status_change(
+            approve_sids, status="Approved", reason="", comment="",
+            flag="Approved by User", is_manual=True, is_zip=False,
+        )
+        restored += n
+        st.session_state.main_toasts.append("Product Approved." if n == 1 else f"{n} products Approved.")
 
-    apply_status_change(
-        [sid_str],
-        status="Approved",
-        reason="",
-        comment="",
-        flag="Approved by User",
-        is_manual=True,
-        is_zip=False,
-    )
-    st.session_state.main_toasts.append("Product Approved.")
+    return restored
+
+
+def restore_single_item(sid):
+    """Kept for backwards compatibility - prefer restore_items() for batches."""
+    restore_items([sid])
 
 
 try:
@@ -3647,9 +3682,17 @@ def handle_jtbridge():
                             _code = _rinfo["reason"]
                             _cmt_lang = "fr" if st.session_state.selected_country == "Morocco" else "en"
                             _cmt = _rinfo.get(_cmt_lang, _rinfo.get("en"))
+                        # Most sids in a batch share the same auto-comment (or have none),
+                        # so group by the effective comment and make ONE apply_status_change
+                        # call per group instead of one call per sid. apply_status_change does
+                        # full-column scans + a full final_report.copy() internally, so calling
+                        # it per-sid turned an O(1) batch update into an O(N) one.
+                        _by_comment = {}
                         for _sid in _sids:
                             _sid_cmt = _auto_comments.get(_sid, _cmt)
-                            apply_status_change([_sid], status="Rejected", reason=_code, comment=_sid_cmt, flag=_flag, is_manual=True, is_zip=False)
+                            _by_comment.setdefault(_sid_cmt, []).append(_sid)
+                        for _cmt_val, _sid_group in _by_comment.items():
+                            apply_status_change(_sid_group, status="Rejected", reason=_code, comment=_cmt_val, flag=_flag, is_manual=True, is_zip=False)
                         _total += len(_sids)
                     st.session_state.main_toasts.append(f"Rejected {_total} product(s)")
                     st.session_state.main_bridge_counter += 1
@@ -3658,10 +3701,8 @@ def handle_jtbridge():
             elif _msg.get("action") == "undo":
                 _payload = _msg.get("payload", {})
                 _total_restored = 0
-                if isinstance(_payload, dict):
-                    for _sid in _payload.keys():
-                        restore_single_item(_sid)
-                        _total_restored += 1
+                if isinstance(_payload, dict) and _payload:
+                    _total_restored = restore_items(list(_payload.keys()))
                 if _total_restored > 0:
                     st.session_state.main_bridge_counter += 1
                     st.session_state.do_scroll_top = False

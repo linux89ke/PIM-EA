@@ -325,12 +325,18 @@ def _normalize_sid_set(sids) -> set:
     return {str(s).strip() for s in sids if str(s).strip()}
 
 
-def _clear_result_caches() -> None:
+def _clear_result_caches(force_gc: bool = False) -> None:
     st.session_state.exports_cache.clear()
     st.session_state.display_df_cache.clear()
     st.session_state.pop("_grid_review_data_cache", None)
     st.session_state.pop("_grid_warm_urls", None)
-    gc.collect()
+    # gc.collect() walks the whole object graph - it's expensive and was
+    # previously called on *every* approve/reject/undo, including inside
+    # per-sid loops (N rejects == N full GC passes). Only force it when the
+    # caller explicitly asks (e.g. after a big batch or full re-process);
+    # Python's normal generational GC handles the rest.
+    if force_gc:
+        gc.collect()
 
 
 def _drop_sids_from_post_qc_results(sid_set: set) -> None:
@@ -448,7 +454,7 @@ def apply_status_change(
                 st.session_state.pop(f"quick_rej_reason_{sid}", None)
 
     st.session_state.data_version = st.session_state.get("data_version", 0) + 1
-    _clear_result_caches()
+    _clear_result_caches(force_gc=len(sid_set) > 200)
 
     if len(sid_set) > 1:
         st.session_state["show_undo_toast"] = {
@@ -2155,7 +2161,7 @@ window.rejectAllFromSeller = function(seller) {{
   updateSelCount();
 }};
 
-function renderCard(card) {{
+function renderCard(card, pageIdx) {{
   var sid = card.sid;
   var safeSid = sid.replace(/'/g, "\\\\'");
   var isCommitted = sid in COMMITTED;
@@ -2202,7 +2208,12 @@ function renderCard(card) {{
       <line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
     </svg></button>`;
 
-  var imgIdx = CARDS.indexOf(card);
+  // NOTE: previously this was `CARDS.indexOf(card)` - an O(totalCards) linear
+  // scan run for every single card on every render. At large page sizes that
+  // made rendering effectively O(pageSize * totalCards), which is what was
+  // freezing the iframe at 500 items/page. pageIdx (position within the
+  // current page) is passed in directly from renderAll() below - O(1).
+  var imgIdx = (typeof pageIdx === 'number') ? pageIdx : 0;
   var isEager = imgIdx < {cols_per_row * 2};
   var loadingAttr = isEager ? 'eager' : 'lazy';
   var priorityAttr = isEager ? 'fetchpriority="high"' : 'fetchpriority="low"';
@@ -2513,12 +2524,48 @@ window.applyFilter = function(val) {{
   renderAll();
 }};
 
+var _renderToken = 0;
 function renderAll() {{
   var cards = getDisplayCards();
-  document.getElementById('card-grid').innerHTML = cards.map(renderCard).join('');
   var countEl = document.getElementById('grid-count');
   if (countEl) countEl.textContent = cards.length + ' products' + (window._currentFilter ? ' (filtered)' : '');
-  updateSelCount(); activateLazyImages();
+
+  var grid = document.getElementById('card-grid');
+  var myToken = ++_renderToken;
+
+  // Normal page sizes: render synchronously, exactly as before.
+  if (cards.length <= 150) {{
+    grid.innerHTML = cards.map(renderCard).join('');
+    updateSelCount(); activateLazyImages();
+    return;
+  }}
+
+  // Large page sizes (e.g. 500/page): building + inserting hundreds of
+  // cards' worth of HTML in one synchronous innerHTML write can block the
+  // main thread long enough for the browser to consider the tab
+  // unresponsive. Insert in small chunks across animation frames instead,
+  // so the UI stays interactive and images can start loading progressively.
+  grid.innerHTML = '';
+  var CHUNK = 60;
+  var i = 0;
+  function renderChunk() {{
+    if (myToken !== _renderToken) return; // superseded by a newer render (filter/sort/page changed mid-flight)
+    var frag = document.createDocumentFragment();
+    var end = Math.min(i + CHUNK, cards.length);
+    for (; i < end; i++) {{
+      var wrap = document.createElement('div');
+      wrap.innerHTML = renderCard(cards[i], i);
+      frag.appendChild(wrap.firstElementChild);
+    }}
+    grid.appendChild(frag);
+    activateLazyImages();
+    if (i < cards.length) {{
+      requestAnimationFrame(renderChunk);
+    }} else {{
+      updateSelCount();
+    }}
+  }}
+  requestAnimationFrame(renderChunk);
 }}
 
 function replaceCard(sid) {{
