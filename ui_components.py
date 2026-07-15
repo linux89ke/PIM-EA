@@ -103,6 +103,98 @@ PREFETCH_DISPLAY_COLUMNS = {
         "Category_Match_Score",
         "Top1_Score",
     ],
+    # ── Category Check sub-buckets (all inherit same display columns) ─────────
+    "Category Check – Prohibited Category": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "Top1_Category",
+        "AI_Product_Caption", "Category_Match_Score", "Top1_Score",
+    ],
+    "Category Check – Inactive Category": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "Top1_Category",
+        "AI_Product_Caption", "Category_Match_Score", "Top1_Score",
+    ],
+    "Category Check – Replica Jersey / IP Violation": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Adult product listed under Baby category": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Baby/toddler listed under non-baby category": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Pet product listed under non-pet category": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Sexual Wellness Miscategory": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Fragrance/Perfume Mismatch": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Clothing Subcategory Mismatch": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Books Wrong Subcategory": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Electronics / Accessories Mismatch": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Hair / Grooming Appliance Mismatch": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Kitchen / Home Appliance Mismatch": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Health / Supplement Mismatch": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Food / Beverage Mismatch": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Skincare Subcategory Mismatch": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Lighting Mismatch": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Bedding / Linen Mismatch": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Tools / Hardware Mismatch": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Medical Device Mismatch": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    "Category Check – Other Mismatch": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "Suggested_Categories", "AI_Product_Caption",
+    ],
+    # ── AI API Errors bucket ─────────────────────────────────────────────────
+    "Category Check – AI API Errors": [
+        "Category_Check_Status", "Category_Check_Rejection_Reason",
+        "Initial_Category_Path", "AI_Product_Caption",
+    ],
     "Warranty Check": [
         "Warranty_Check_Status",
         "Warranty_Rejection_Reason",
@@ -130,12 +222,36 @@ PREFETCH_DISPLAY_COLUMNS = {
         "Brand_Image_Check_Reason",
         "Brand_Detected_On_Product",
     ],
-    "Product Name Brand Name": [
+    "Product Name Brand Name – Brand Repeated In Title": [
         "Product Name_Brand Name_Status",
         "Product name_Brand name_rejection reason",
         "Product Name_Brand Name_Rejection_Reason",
     ],
-    "Title Language Check": [
+    "Product Name Brand Name – Inspired/Alternative Perfume Brand": [
+        "Product Name_Brand Name_Status",
+        "Product name_Brand name_rejection reason",
+        "Product Name_Brand Name_Rejection_Reason",
+    ],
+    "Product Name Brand Name – Generic/Placeholder Brand": [
+        "Product Name_Brand Name_Status",
+        "Product name_Brand name_rejection reason",
+        "Product Name_Brand Name_Rejection_Reason",
+    ],
+    "Product Name Brand Name – High-End Brand Counterfeit Suspected": [
+        "Product Name_Brand Name_Status",
+        "Product name_Brand name_rejection reason",
+        "Product Name_Brand Name_Rejection_Reason",
+    ],
+    "Product Name Brand Name – Other": [
+        "Product Name_Brand Name_Status",
+        "Product name_Brand name_rejection reason",
+        "Product Name_Brand Name_Rejection_Reason",
+    ],
+    "Title Language Check - Not In English": [
+        "Title_Language_Check_Status",
+        "Title_Language_Check_Reason",
+    ],
+    "Title Language Check - Other": [
         "Title_Language_Check_Status",
         "Title_Language_Check_Reason",
     ],
@@ -154,6 +270,13 @@ def flag_pill_header(flag_name: str, count: int, is_zip: bool = False) -> str:
         "Restricted brands": ("#fee2e2", "#dc2626"),
         "Suspected Fake product": ("#fee2e2", "#b91c1c"),
         "BRAND name repeated in NAME": ("#ede9fe", "#7c3aed"),
+        "Product Name Brand Name – Brand Repeated In Title": ("#ede9fe", "#7c3aed"),
+        "Product Name Brand Name – Inspired/Alternative Perfume Brand": ("#ede9fe", "#6d28d9"),
+        "Product Name Brand Name – Generic/Placeholder Brand": ("#ede9fe", "#5b21b6"),
+        "Product Name Brand Name – High-End Brand Counterfeit Suspected": ("#fee2e2", "#b91c1c"),
+        "Product Name Brand Name – Other": ("#f3f4f6", "#4b5563"),
+        "Title Language Check - Not In English": ("#e0f2fe", "#0369a1"),
+        "Title Language Check - Other": ("#f1f5f9", "#475569"),
         "Duplicate product": ("#dcfce7", "#15803d"),
     }
     bg, fg = color_map.get(flag_name, ("#f3f4f6", "#374151"))
@@ -282,7 +405,13 @@ def render_rejection_donut(final_report: pd.DataFrame):
 
 
 def _base_prefetched_title(title: str) -> str:
-    return str(title).replace("(Prefetched)", "").strip()
+    # Strip (Prefetched) and then also strip known sub-bucket suffixes so that
+    # sub-buckets like "Category Check – Prohibited Category" still resolve to
+    # their exact key in PREFETCH_DISPLAY_COLUMNS (which is registered fully).
+    t = str(title).replace("(Prefetched)", "").strip()
+    # Remove trailing " ➡ ZIP" marker if present
+    t = t.replace("\u26a1 ZIP", "").strip()
+    return t
 
 
 def _clean_reason_value(value) -> str:
@@ -325,18 +454,41 @@ def _normalize_sid_set(sids) -> set:
     return {str(s).strip() for s in sids if str(s).strip()}
 
 
-def _clear_result_caches(force_gc: bool = False) -> None:
+# Counter for deferred GC — only force-collect every N cache clears (or explicitly)
+_cache_clear_count: int = 0
+_GC_COLLECT_INTERVAL: int = 50  # run gc.collect() at most once per 50 status changes
+
+
+def _clear_result_caches(*, batch_gc: bool = False) -> None:
+    """Clear display/export caches after a status change.
+
+    ``gc.collect()`` is intentionally NOT called on every invocation — doing so
+    forces Python to walk the entire object graph on every single row-level edit,
+    which is expensive and blocks the event loop.  Instead we either:
+    * Call it once per ``_GC_COLLECT_INTERVAL`` routine clears, OR
+    * Call it immediately when ``batch_gc=True`` (e.g. after a large batch op).
+    """
+    global _cache_clear_count
     st.session_state.exports_cache.clear()
     st.session_state.display_df_cache.clear()
     st.session_state.pop("_grid_review_data_cache", None)
     st.session_state.pop("_grid_warm_urls", None)
-    # gc.collect() walks the whole object graph - it's expensive and was
-    # previously called on *every* approve/reject/undo, including inside
-    # per-sid loops (N rejects == N full GC passes). Only force it when the
-    # caller explicitly asks (e.g. after a big batch or full re-process);
-    # Python's normal generational GC handles the rest.
-    if force_gc:
+    _cache_clear_count += 1
+    if batch_gc or (_cache_clear_count % _GC_COLLECT_INTERVAL == 0):
         gc.collect()
+
+
+def _get_norm_col(df: pd.DataFrame, col: str) -> pd.Series:
+    """Return a cached normalized (str-stripped) Series for *col* on *df*.
+
+    The result is stored in a hidden column ``_norm_<col>`` so the expensive
+    ``.astype(str).str.strip()`` scan is done at most once per unique DataFrame
+    object, saving O(N × B) work in tight batch loops.
+    """
+    cache_col = f"_norm_{col}"
+    if cache_col not in df.columns:
+        df[cache_col] = df[col].astype(str).str.strip()
+    return df[cache_col]
 
 
 def _drop_sids_from_post_qc_results(sid_set: set) -> None:
@@ -350,7 +502,7 @@ def _drop_sids_from_post_qc_results(sid_set: set) -> None:
             or "PRODUCT_SET_SID" not in df.columns
         ):
             continue
-        mask = df["PRODUCT_SET_SID"].astype(str).str.strip().isin(sid_set)
+        mask = _get_norm_col(df, "PRODUCT_SET_SID").isin(sid_set)
         if mask.any():
             results[flag] = df.loc[~mask].copy()
 
@@ -367,7 +519,7 @@ def _add_sids_to_post_qc_results(sid_set: set, flag: str, comment: str = "") -> 
     ):
         return
     base_rows = data[
-        data["PRODUCT_SET_SID"].astype(str).str.strip().isin(sid_set)
+        _get_norm_col(data, "PRODUCT_SET_SID").isin(sid_set)
     ].copy()
     if base_rows.empty:
         return
@@ -399,15 +551,14 @@ def apply_status_change(
     if is_image_rej:
         all_data = st.session_state.get("all_data_map")
         if all_data is not None and "PRODUCT_SET_SID" in all_data.columns and "IMAGE1" in all_data.columns:
-            _input_sids_clean = list(sid_set)
+            _norm_pss = _get_norm_col(all_data, "PRODUCT_SET_SID")
             _target_images = set(
-                all_data[all_data["PRODUCT_SET_SID"].astype(str).str.strip().isin(_input_sids_clean)]["IMAGE1"]
+                all_data[_norm_pss.isin(sid_set)]["IMAGE1"]
                 .dropna().unique()
             )
             if _target_images:
                 _global_similar_sids = set(
-                    all_data[all_data["IMAGE1"].isin(_target_images)]["PRODUCT_SET_SID"]
-                    .astype(str).str.strip().unique()
+                    _norm_pss[all_data["IMAGE1"].isin(_target_images)].unique()
                 )
                 sid_set.update(_global_similar_sids)
 
@@ -420,7 +571,7 @@ def apply_status_change(
     ):
         return 0
 
-    mask = fr["ProductSetSid"].astype(str).str.strip().isin(sid_set)
+    mask = _get_norm_col(fr, "ProductSetSid").isin(sid_set)
     if not mask.any():
         return 0
 
@@ -454,7 +605,7 @@ def apply_status_change(
                 st.session_state.pop(f"quick_rej_reason_{sid}", None)
 
     st.session_state.data_version = st.session_state.get("data_version", 0) + 1
-    _clear_result_caches(force_gc=len(sid_set) > 200)
+    _clear_result_caches(batch_gc=len(sid_set) >= 20)
 
     if len(sid_set) > 1:
         st.session_state["show_undo_toast"] = {
@@ -927,7 +1078,14 @@ def render_flag_expander(
         "NG - Xmas Tree Seller", "NG - Rice Brand Seller", "NG - Powerbank Capacity", "Discount too high",
         "Category Max Price Exceeded", "Suspicious Discount", "Color Mismatch", "FDA", "Category Check", "Warranty Check",
         "Color Check", "Variation Check", "Brand Image Check", "Title Language Check", "Image Quality Check",
-        "Product Name Brand Name", "Other Reason (Custom)",
+        "Product Name Brand Name – Brand Repeated In Title",
+        "Product Name Brand Name – Inspired/Alternative Perfume Brand",
+        "Product Name Brand Name – Generic/Placeholder Brand",
+        "Product Name Brand Name – High-End Brand Counterfeit Suspected",
+        "Product Name Brand Name – Other",
+        "Title Language Check - Not In English",
+        "Title Language Check - Other",
+        "Other Reason (Custom)",
     ]
 
     btn_col1, btn_col2 = st.columns(2)
@@ -1435,7 +1593,13 @@ def build_fast_grid_html(
     <option value="Brand Image Check" {_sel('Brand Image Check', curr_flag)}>Brand Image Check</option>
     <option value="Title Language Check" {_sel('Title Language Check', curr_flag)}>Title Language Check</option>
     <option value="Image Quality Check" {_sel('Image Quality Check', curr_flag)}>Image Quality Check</option>
-    <option value="Product Name Brand Name" {_sel('Product Name Brand Name', curr_flag)}>Name/Brand Check</option>
+    <option value="Product Name Brand Name – Brand Repeated In Title" {_sel('Product Name Brand Name – Brand Repeated In Title', curr_flag)}>Name/Brand: Brand Repeated</option>
+    <option value="Product Name Brand Name – Inspired/Alternative Perfume Brand" {_sel('Product Name Brand Name – Inspired/Alternative Perfume Brand', curr_flag)}>Name/Brand: Perfume Brand</option>
+    <option value="Product Name Brand Name – Generic/Placeholder Brand" {_sel('Product Name Brand Name – Generic/Placeholder Brand', curr_flag)}>Name/Brand: Generic Brand</option>
+    <option value="Product Name Brand Name – High-End Brand Counterfeit Suspected" {_sel('Product Name Brand Name – High-End Brand Counterfeit Suspected', curr_flag)}>
+    <option value="Product Name Brand Name – Other" {_sel('Product Name Brand Name – Other', curr_flag)}>Name/Brand: Other</option>
+    <option value="Title Language Check - Not In English" {_sel('Title Language Check - Not In English', curr_flag)}>Title: Not in English</option>
+    <option value="Title Language Check - Other" {_sel('Title Language Check - Other', curr_flag)}>Title: Language Other</option>
   </select>
 '''
     _cols_btns_parts = []
@@ -1453,7 +1617,8 @@ def build_fast_grid_html(
         )
     _cols_btns = "".join(_cols_btns_parts)
 
-    return f"""<!DOCTYPE html>
+    _grid_sync_data = (committed_json, poor_img_sids_json, prefetch_json)
+    _html_str = f"""<!DOCTYPE html>
 <html dir="{html_dir}">
 <head>
 <meta charset="utf-8">
@@ -1893,11 +2058,25 @@ def build_fast_grid_html(
 // and the capture listeners were preventing Streamlit buttons from firing
 
 function escapeHtml(u){{return(u||"").toString().replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");}}
+window.__IS_GRID_IFRAME__ = true;
 var CARDS = {cards_json};
-var COMMITTED = {committed_json};
-var POOR_IMG_SIDS = new Set({poor_img_sids_json});
-var PREFETCH_URLS = {prefetch_json};
+var COMMITTED = {{}};
+var POOR_IMG_SIDS = new Set();
+var PREFETCH_URLS = {{}};
 var PLACEHOLDER = "{_PLACEHOLDER_SVG}";
+
+window.addEventListener('message', function(e) {{
+  if (e.data && e.data.type === 'SYNC_STATE') {{
+    if (e.data.committed) COMMITTED = e.data.committed;
+    if (e.data.poor_img_sids) POOR_IMG_SIDS = new Set(e.data.poor_img_sids);
+    if (e.data.prefetch) PREFETCH_URLS = e.data.prefetch;
+    closeGhostOverlay();
+    
+    var oldScroll = window.scrollY;
+    renderAll();
+    window.scrollTo(0, oldScroll);
+  }}
+}});
 var LABELS = {labels_json};
 var DEFAULT_PAGE_SIZE = CARDS.length || 50;
 var PAGE_SIZE_OPTIONS = [20, 50, 100, 200, 500];
@@ -1927,7 +2106,7 @@ window._undoTimer = null;
 var selected = window._gridSelected;
 var staged = window._stagedRejections;
 
-function showGhostOverlay(msgText) {{
+function showGhostOverlay(msgText, autoHideMs) {{
   var ghost = document.createElement('div');
   ghost.id = '__grid_ghost__';
   ghost.style.cssText = 'position:fixed;z-index:99999;inset:0;background:rgba(255,255,255,0.85);display:flex;align-items:center;justify-content:center;font-family:sans-serif;color:#FF8800;transition:opacity 0.4s ease;';
@@ -1935,10 +2114,18 @@ function showGhostOverlay(msgText) {{
   var existing = document.getElementById('__grid_ghost__');
   if (existing) existing.remove();
   document.body.appendChild(ghost);
+  // Default auto-hide: short overlays (notifications) use 4s, long ops use the caller's value.
+  // For batch ops we use a long timeout so the overlay stays until Streamlit reloads the page.
+  var hideDelay = (typeof autoHideMs === 'number') ? autoHideMs : 4000;
   setTimeout(function() {{
     var g = document.getElementById('__grid_ghost__');
     if (g) {{ g.style.opacity = '0'; setTimeout(function() {{ if(g && g.parentNode) g.remove(); }}, 400); }}
-  }}, 4000);
+  }}, hideDelay);
+}}
+
+function closeGhostOverlay() {{
+  var g = document.getElementById('__grid_ghost__');
+  if (g) {{ g.style.opacity = '0'; setTimeout(function() {{ if(g && g.parentNode) g.remove(); }}, 400); }}
 }}
 
 function sendMsg(type, payload) {{
@@ -2073,8 +2260,13 @@ function buildCardActionsHtml(safeSid, warnings, cardData) {{
     'Wrong Variation':        ['REJECT_VARIATION',      'Wrong Variation'],
     'Variation Check':        ['REJECT_VARIATION',      'Wrong Variation'],
     'BRAND name repeated in NAME': ['REJECT_BRAND_IN_NAME', 'Brand in Name'],
-    'Product Name Brand Name':     ['REJECT_BRAND_IN_NAME', 'Brand in Name'],
-    'Title Language Check':   ['REJECT_TITLE_LANG',    'Title Language'],
+    'Product Name Brand Name – Brand Repeated In Title':                  ['REJECT_BRAND_IN_NAME', 'Brand Repeated In Title'],
+    'Product Name Brand Name – Inspired/Alternative Perfume Brand':       ['REJECT_BRAND_IN_NAME', 'Inspired/Alternative Perfume'],
+    'Product Name Brand Name – Generic/Placeholder Brand':                ['REJECT_BRAND_IN_NAME', 'Generic/Placeholder Brand'],
+    'Product Name Brand Name – High-End Brand Counterfeit Suspected':     ['REJECT_BRAND_IN_NAME', 'High-End Brand Counterfeit'],
+    'Product Name Brand Name – Other':                                    ['REJECT_BRAND_IN_NAME', 'Brand in Name (Other)'],
+    'Title Language Check - Not In English':                              ['REJECT_TITLE_LANG',    'Title Language'],
+    'Title Language Check - Other':                                       ['REJECT_TITLE_LANG',    'Title Language (Other)'],
   }};
   var defaultCode  = 'REJECT_POOR_IMAGE';
   var defaultLabel = LABELS.poor_img;
@@ -2161,7 +2353,7 @@ window.rejectAllFromSeller = function(seller) {{
   updateSelCount();
 }};
 
-function renderCard(card, pageIdx) {{
+function renderCard(card) {{
   var sid = card.sid;
   var safeSid = sid.replace(/'/g, "\\\\'");
   var isCommitted = sid in COMMITTED;
@@ -2208,12 +2400,7 @@ function renderCard(card, pageIdx) {{
       <line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
     </svg></button>`;
 
-  // NOTE: previously this was `CARDS.indexOf(card)` - an O(totalCards) linear
-  // scan run for every single card on every render. At large page sizes that
-  // made rendering effectively O(pageSize * totalCards), which is what was
-  // freezing the iframe at 500 items/page. pageIdx (position within the
-  // current page) is passed in directly from renderAll() below - O(1).
-  var imgIdx = (typeof pageIdx === 'number') ? pageIdx : 0;
+  var imgIdx = CARDS.indexOf(card);
   var isEager = imgIdx < {cols_per_row * 2};
   var loadingAttr = isEager ? 'eager' : 'lazy';
   var priorityAttr = isEager ? 'fetchpriority="high"' : 'fetchpriority="low"';
@@ -2524,48 +2711,12 @@ window.applyFilter = function(val) {{
   renderAll();
 }};
 
-var _renderToken = 0;
 function renderAll() {{
   var cards = getDisplayCards();
+  document.getElementById('card-grid').innerHTML = cards.map(renderCard).join('');
   var countEl = document.getElementById('grid-count');
   if (countEl) countEl.textContent = cards.length + ' products' + (window._currentFilter ? ' (filtered)' : '');
-
-  var grid = document.getElementById('card-grid');
-  var myToken = ++_renderToken;
-
-  // Normal page sizes: render synchronously, exactly as before.
-  if (cards.length <= 150) {{
-    grid.innerHTML = cards.map(renderCard).join('');
-    updateSelCount(); activateLazyImages();
-    return;
-  }}
-
-  // Large page sizes (e.g. 500/page): building + inserting hundreds of
-  // cards' worth of HTML in one synchronous innerHTML write can block the
-  // main thread long enough for the browser to consider the tab
-  // unresponsive. Insert in small chunks across animation frames instead,
-  // so the UI stays interactive and images can start loading progressively.
-  grid.innerHTML = '';
-  var CHUNK = 60;
-  var i = 0;
-  function renderChunk() {{
-    if (myToken !== _renderToken) return; // superseded by a newer render (filter/sort/page changed mid-flight)
-    var frag = document.createDocumentFragment();
-    var end = Math.min(i + CHUNK, cards.length);
-    for (; i < end; i++) {{
-      var wrap = document.createElement('div');
-      wrap.innerHTML = renderCard(cards[i], i);
-      frag.appendChild(wrap.firstElementChild);
-    }}
-    grid.appendChild(frag);
-    activateLazyImages();
-    if (i < cards.length) {{
-      requestAnimationFrame(renderChunk);
-    }} else {{
-      updateSelCount();
-    }}
-  }}
-  requestAnimationFrame(renderChunk);
+  updateSelCount(); activateLazyImages();
 }}
 
 function replaceCard(sid) {{
@@ -2576,8 +2727,16 @@ function replaceCard(sid) {{
 }}
 
 window.doSelectAll = function() {{
-  CARDS.forEach(c => {{ if (!(c.sid in staged)) selected[c.sid] = true; }});
-  renderAll();
+  // Mark all non-staged cards as selected without a full renderAll().
+  // renderAll() rebuilds ALL card HTML which blocks the main thread for 500+ cards.
+  // Instead we just flip the CSS class on existing DOM nodes — O(n) DOM attr set vs O(n) innerHTML rebuild.
+  var grid = document.getElementById('card-grid');
+  CARDS.forEach(function(c) {{
+    if (c.sid in staged) return;
+    selected[c.sid] = true;
+    var el = grid ? grid.querySelector('#card-' + escapeHtml(c.sid)) : null;
+    if (el && !el.classList.contains('selected')) el.classList.add('selected');
+  }});
   updateSelCount();
 }};
 
@@ -2762,8 +2921,20 @@ function _applyBatchReject(br) {{
   var allSids = Object.assign({{}}, selected, staged);
   for (var s in payload) {{ COMMITTED[s] = payload[s]; }}
   for (var s in allSids) {{ delete selected[s]; delete staged[s]; }}
-  showGhostOverlay('Applying rejections...');
-  renderAll();
+  // Show overlay — keep it up for 90 s so it stays visible while Streamlit processes.
+  // The page will reload (st.rerun) when done, which naturally removes the overlay.
+  showGhostOverlay('Applying rejections…', 90000);
+  // Update card classes directly instead of full renderAll() to avoid blocking the
+  // main thread for 500 cards. Streamlit will do a full page reload after processing.
+  var grid = document.getElementById('card-grid');
+  for (var s in payload) {{
+    var el = grid ? grid.querySelector('#card-' + escapeHtml(s)) : null;
+    if (!el) continue;
+    el.classList.remove('selected', 'staged-rej');
+    el.classList.add('committed-rej');
+    // Dim the card visually so the user gets instant feedback
+    el.style.opacity = '0.55';
+  }}
   updateSelCount();
   sendMsg('reject', payload);
 }}
@@ -2954,6 +3125,7 @@ try {{
 
 </body>
 </html>"""
+    return _html_str, *_grid_sync_data
 
 
 @st.dialog(
@@ -3468,8 +3640,41 @@ def visual_review_modal(support_files):
         )
 
     placeholder.empty()
+    # Unpack the grid html and its sync data (committed, poor_img_sids, prefetch)
+    _grid_html_str, _committed_json, _poor_img_sids_json, _prefetch_json = grid_html
     with st.container(key="grid_iframe_container"):
-        st.iframe(grid_html, height=750)
+        st.iframe(_grid_html_str, height=750)
+        # Inject a zero-height broadcaster that pushes the latest Python state
+        # down into the existing static iframe via postMessage.
+        # This runs on EVERY rerun and keeps the iframe perfectly in sync
+        # WITHOUT destroying/recreating it, eliminating the white flash.
+        _sync_html = f"""
+        <script>
+        (function() {{
+          // The iframe may not be ready yet if this is the first load.
+          // We retry until the contentWindow is accessible, then send once.
+          function trySend(attemptsLeft) {{
+            try {{
+              for (var i = 0; i < window.parent.frames.length; i++) {{
+                try {{
+                  window.parent.frames[i].postMessage({{
+                    type: 'SYNC_STATE',
+                    committed: {_committed_json},
+                    poor_img_sids: {_poor_img_sids_json},
+                    prefetch: {_prefetch_json}
+                  }}, '*');
+                }} catch(e2) {{}}
+              }}
+            }} catch(e) {{}}
+            if (attemptsLeft > 0) {{
+              setTimeout(function() {{ trySend(attemptsLeft - 1); }}, 200);
+            }}
+          }}
+          trySend(5);
+        }})();
+        </script>
+        """
+        components.html(_sync_html, height=0)
     st.markdown("---")
 
     pg_cols_bot = st.columns([1, 2, 1], vertical_alignment="bottom", gap="small")

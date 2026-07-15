@@ -28,7 +28,7 @@ _VOLUME_RE = re.compile(
 # there instead of being guessed at via a keyword list.
 CHECK_ORDER = [
     "skip", "duplicate", "category", "color", "warranty", "variation", "fda",
-    "title_language", "name_brand", "image_quality", "image_extraction",
+    "title_weight", "title_english", "name_brand", "image_quality", "image_extraction",
     "ai_caption", "brand_image",
 ]
 
@@ -40,7 +40,8 @@ CHECK_LABELS = {
     "warranty": "Warranty",
     "variation": "Variation",
     "fda": "FDA / Regulatory Documents",
-    "title_language": "Title Language / Weight",
+    "title_weight": "Title Missing Weight/Volume",
+    "title_english": "Title Not In English",
     "name_brand": "Product Name ↔ Brand Name",
     "image_quality": "Image Quality",
     "image_extraction": "Image Extraction Errors",
@@ -60,7 +61,8 @@ _CHECK_COLUMNS = {
     "warranty": ("Warranty_Check_Status", "Warranty_Rejection_Reason"),
     "variation": ("Variation_Check_Status", "Variation_Rejection_Reason"),
     "fda": ("FDA_Check_Status", "FDA_Rejection_Reason"),
-    "title_language": ("Title_Language_Check_Status", "Title_Language_Check_Reason"),
+    "title_weight": ("Title_Language_Check_Status", "Title_Language_Check_Reason"),
+    "title_english": ("Title_Language_Check_Status", "Title_Language_Check_Reason"),
     "name_brand": ("Product Name_Brand Name_Status", "Product name_Brand name_rejection reason"),
     "image_quality": ("Image_Quality_Check_Status", "Image_Quality_Check_Reason"),
     "brand_image": ("Brand_Image_Check_Status", "Brand_Image_Check_Reason"),
@@ -113,6 +115,23 @@ _REASON_PATTERNS = {
         ("rejects with", "Overlapping Category Path"),
         ("suggests a different category", "AI Suggests Different Category"),
         ("suggests a better category", "AI Suggests Different Category"),
+        # Sub-validation labels (match against the AI's own rejection reason text)
+        ("replica jersey", "Replica Jersey / IP Violation"),
+        ("sexual wellness", "Sexual Wellness Miscategory"),
+        ("intimate product", "Sexual Wellness Miscategory"),
+        ("pet product", "Pet Product Listed Under Non-Pet Category"),
+        ("non-baby", "Baby/Toddler Listed Under Non-Baby Category"),
+        ("adult footwear", "Adult Product Listed Under Baby Category"),
+        ("adult hosiery", "Adult Product Listed Under Baby Category"),
+        ("baby category", "Adult Product Listed Under Baby Category"),
+        ("fragrance", "Fragrance / Perfume Mismatch"),
+        ("perfume", "Fragrance / Perfume Mismatch"),
+        ("book", "Books – Wrong Subcategory"),
+        ("hair clipper", "Hair / Grooming Appliance Mismatch"),
+        ("hair dryer", "Hair / Grooming Appliance Mismatch"),
+        ("hair trimmer", "Hair / Grooming Appliance Mismatch"),
+        ("earphone", "Electronics / Accessories Mismatch"),
+        ("headphone", "Electronics / Accessories Mismatch"),
     ],
     "fda": [
         ("therapeutic/medical device", "Medical Device Requires FDA Registration"),
@@ -135,8 +154,10 @@ _REASON_PATTERNS = {
         ("repeated in product name", "Brand Name Repeated In Title"),
         ("inspired/alternative perfume", "Inspired/Alternative Perfume Brand Not Accepted"),
     ],
-    "title_language": [
+    "title_weight": [
         ("must include quantity", "Missing Quantity/Weight In Title"),
+    ],
+    "title_english": [
         ("not in english", "Title Not In English"),
     ],
     "brand_image": [
@@ -195,10 +216,31 @@ def _clean(val) -> str:
 def _match(check_key: str, reason_text: str):
     """Returns (reason_type_label, is_error). Any reason mentioning 'error'
     is pulled out as an AI Error rather than treated as a genuine finding —
-    it means the check itself failed, not that it found something."""
+    it means the check itself failed, not that it found something.
+
+    For the category check, API error strings are split into specific
+    sub-types (quota-429, connection, timeout) so they appear as separate
+    DataFrames in the Targeted Audit instead of one generic bucket.
+    """
     r = _clean(reason_text)
     if not r:
         return "Reason Not Provided", False
+
+    # ── Category check: detect specific API error sub-types first ────────────
+    if check_key == "category":
+        r_low = r.lower()
+        if ("ai error" in r_low or "error code" in r_low or "is_gateway_error" in r_low
+                or "insufficient_quota" in r_low or "openai.com" in r_low):
+            if "429" in r or "insufficient_quota" in r_low or "quota" in r_low:
+                return "API Error – Rate-limit / Quota Exceeded (429)", True
+            if "connection error" in r_low:
+                return "API Error – Connection Error", True
+            if "timed out" in r_low or "timeout" in r_low or "readtimeout" in r_low:
+                return "API Error – Request Timed Out", True
+            if "400" in r or "failed to make http" in r_low:
+                return "API Error – Provider HTTP Error (400)", True
+            return "API Error – Other", True
+
     if "error" in r.lower():
         return "AI Error", True
     for substr, label in _REASON_PATTERNS.get(check_key, []):
@@ -365,11 +407,22 @@ def _verify(check_key: str, rec: dict, rule: dict, weights: set, color_re) -> st
         # Any value that starts with 'multi' is a valid multicolor declaration
         if re.match(r"^multi", color_val.lower()):
             return "False Rejection"
+            
+        ai_color = _clean(rec.get("Color_AI_Normalized"))
+        valid_colors = load_color_set()
+        
+        def _ai_rescued():
+            return ai_color and ai_color.lower() not in ("nan", "none", "not found") and _color_recognised(ai_color, valid_colors)
+            
         # Column must be filled AND the value must be a recognised color in colors.txt
         if not color_val:
+            if _ai_rescued():
+                return "False Rejection"
             return "True Rejection"
-        valid_colors = load_color_set()
+            
         if not _color_recognised(color_val, valid_colors):
+            if _ai_rescued():
+                return "False Rejection"
             # Value present but not a real color (e.g. 'Random', 'YMCK') — rejection was correct
             return "True Rejection"
         return "False Rejection"
@@ -387,8 +440,11 @@ def _verify(check_key: str, rec: dict, rule: dict, weights: set, color_re) -> st
             return "False Rejection"
         return "True Rejection" if req != "no need" else "False Rejection"
 
-    if check_key == "title_language":
+    if check_key == "title_weight":
         return "True Rejection" if cat_code in weights else "False Rejection"
+    
+    if check_key == "title_english":
+        return "Needs Manual Review"
 
     return "Needs Manual Review"
 
@@ -405,14 +461,21 @@ def _verify_false_approval(check_key: str, rec: dict, rule: dict, weights: set, 
     elif check_key == "color":
         if _clean(rule.get("Color", "")).lower() == "mandatory":
             color_val = _clean(rec.get("COLOR"))
-            # Only the COLOR column counts — COLOR_FAMILY alone or color mentioned in the
-            # product name/title is NOT sufficient for a valid color declaration.
-            if not color_val:
-                return "Color Missing"
-            # A non-empty color is still invalid if it's not in colors.txt
-            # (e.g. 'Random', 'YMCK', 'Assorted') — those are junk values.
+            ai_color = _clean(rec.get("Color_AI_Normalized"))
             valid_colors = load_color_set()
+            
+            # Check if AI rescued it
+            def _ai_rescued():
+                return ai_color and ai_color.lower() not in ("nan", "none", "not found") and _color_recognised(ai_color, valid_colors)
+
+            if not color_val:
+                if _ai_rescued():
+                    return ""
+                return "Color Missing"
+                
             if not _color_recognised(color_val, valid_colors):
+                if _ai_rescued():
+                    return ""
                 return "Color Invalid (Not In colors.txt)"
     elif check_key == "warranty":
         if _clean(rule.get("Warranty", "")).lower() == "mandatory" and not _clean(rec.get("PRODUCT_WARRANTY")):
@@ -423,9 +486,11 @@ def _verify_false_approval(check_key: str, rec: dict, rule: dict, weights: set, 
             var_count = _clean(rec.get("COUNT_OF_EXISTING_VARIATIONS")) or _clean(rec.get("COUNT_VARIATIONS"))
             if not var_val and (not var_count or var_count == "0"):
                 return "Variation Field Empty"
-    elif check_key == "title_language":
+    elif check_key == "title_weight":
         if cat_code in weights and not _VOLUME_RE.search(name):
             return "Missing Quantity/Weight In Title"
+    elif check_key == "title_english":
+        pass
     return ""
 
 
@@ -457,7 +522,7 @@ def _context_columns(check_key: str, rec: dict) -> dict:
         ctx["Existing Variation Count"] = _clean(rec.get("COUNT_OF_EXISTING_VARIATIONS")) or _clean(rec.get("COUNT_VARIATIONS"))
     elif check_key == "fda":
         ctx["FDA"] = _clean(rec.get("FDA"))
-    elif check_key == "title_language":
+    elif check_key in ("title_weight", "title_english"):
         pass  # Product Name (already in base row) is the whole subject of this check
     elif check_key == "name_brand":
         ctx["Brand"] = _clean(rec.get("BRAND"))
@@ -644,7 +709,7 @@ def evaluate_all_checks(data: pd.DataFrame, country_code: str) -> pd.DataFrame:
             # ── Title Language / Volume contradiction check ──────────────────
             # If the product was rejected for missing volume but the sophisticated
             # regex extracts volume from the NAME successfully, it's a False Rejection.
-            if check_key == "title_language":
+            if check_key == "title_weight":
                 is_rejection_like = (
                     (has_status_col and status in ("rejected", "review", "manual review"))
                     or (not has_status_col and reason and "error" not in reason.lower())
@@ -652,7 +717,7 @@ def evaluate_all_checks(data: pd.DataFrame, country_code: str) -> pd.DataFrame:
                 if is_rejection_like:
                     name_val = _clean(rec.get("NAME"))
                     if name_val and _VOLUME_RE.search(name_val):
-                        rows.append({**_base_row(sid, "title_language", rec),
+                        rows.append({**_base_row(sid, "title_weight", rec),
                                      "Reason Type": "Volume Present But Rejected",
                                      "Verdict": "False Rejection",
                                      "Detail": f"Rejected for missing volume/weight in title, but valid volume format detected in NAME: '{name_val}'. Original reason: {reason or '(none provided)'}"})
@@ -665,6 +730,13 @@ def evaluate_all_checks(data: pd.DataFrame, country_code: str) -> pd.DataFrame:
 
                 if status == "rejected":
                     label, is_error = _match(check_key, reason)
+                    
+                    if label == "Other / Unclassified Reason":
+                        if check_key == "title_weight" and _match("title_english", reason)[0] != "Other / Unclassified Reason":
+                            continue
+                        elif check_key == "title_english":
+                            continue
+
                     if is_error:
                         verdict = "AI Error"
                     else:
@@ -676,6 +748,13 @@ def evaluate_all_checks(data: pd.DataFrame, country_code: str) -> pd.DataFrame:
 
                 elif status in ("review", "manual review"):
                     label, is_error = _match(check_key, reason) if reason else ("Flagged For Manual Review", False)
+                    
+                    if label == "Other / Unclassified Reason" or label == "Flagged For Manual Review":
+                        if check_key == "title_weight" and _match("title_english", reason)[0] not in ("Other / Unclassified Reason", "Flagged For Manual Review"):
+                            continue
+                        elif check_key == "title_english":
+                            continue
+
                     rows.append({**_base_row(sid, check_key, rec), "Reason Type": label,
                                  "Verdict": "AI Error" if is_error else "Needs Manual Review",
                                  "Detail": reason or "Flagged for manual review by the pipeline."})
@@ -710,6 +789,13 @@ def evaluate_all_checks(data: pd.DataFrame, country_code: str) -> pd.DataFrame:
                     continue
 
                 label, is_error = _match(check_key, reason)
+                
+                if label == "Other / Unclassified Reason" or label == "Flagged For Manual Review":
+                    if check_key == "title_weight" and _match("title_english", reason)[0] not in ("Other / Unclassified Reason", "Flagged For Manual Review"):
+                        continue
+                    elif check_key == "title_english" and label == "Other / Unclassified Reason":
+                        continue
+
                 if is_error:
                     verdict = "AI Error"
                 elif "manual review" in reason.lower() or label == "Flagged For Manual Review":

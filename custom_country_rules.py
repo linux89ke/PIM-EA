@@ -208,9 +208,11 @@ def load_kebs_hb_codes() -> set:
 @st.cache_data(ttl=3600)
 def load_kebs_banned_products():
     """
-    Returns a dict of:
-      brand_lower -> {"reason": str, "product_types": [str], "products": [str]}
-    where product_types are the known product type words from the KEBS list for that brand.
+    Returns two structures:
+    1. full_products: list of dicts with {full_name_lower, brand_lower, reason}
+       for entries where the Product Name is more than just the brand name.
+    2. brand_only: list of dicts with {brand_lower, reason}
+       for entries where Product Name == Brand (brand-only entries like 'Elegance').
     """
     xlsx_path = "kebs_banned_products (1).xlsx"
     csv_path = "kebs_banned_products (1).csv"
@@ -220,25 +222,39 @@ def load_kebs_banned_products():
         elif os.path.exists(csv_path):
             df = pd.read_csv(csv_path, encoding="cp1252", dtype=str)
         else:
-            return {}
+            return [], []
 
         df = df.fillna('')
-        brand_map = {}  # brand_lower -> {reason, product_names_lower}
+        full_products = []  # entries with a full product name (longer than just brand)
+        brand_only = []     # entries where product name == brand or is very short
+
         for _, row in df.iterrows():
             reason = str(row.get('Reason for Ban', '')).strip()
             brand = str(row.get('Brand', '')).strip()
             product = str(row.get('Product Name', '')).strip()
             if not brand or brand.lower() in ('nan', 'none', ''):
                 continue
-            bl = brand.lower()
-            if bl not in brand_map:
-                brand_map[bl] = {"reason": reason, "products": []}
-            if product and product.lower() not in ('nan', 'none', ''):
-                brand_map[bl]["products"].append(product.lower())
 
-        return brand_map
+            brand_l = brand.lower()
+            product_l = product.lower() if product and product.lower() not in ('nan', 'none', '') else ''
+
+            # If the product name is essentially just the brand name or empty,
+            # store as brand-only (requires skin-type word in name to match).
+            # If it has meaningful words beyond just the brand, store as full product.
+            if not product_l or product_l == brand_l or product_l.strip() == brand_l.strip():
+                brand_only.append({"brand_lower": brand_l, "reason": reason})
+            else:
+                full_products.append({
+                    "full_name_lower": product_l,
+                    "brand_lower": brand_l,
+                    "reason": reason,
+                })
+                # Also add a brand-only entry so brand alone can still match
+                brand_only.append({"brand_lower": brand_l, "reason": reason})
+
+        return full_products, brand_only
     except Exception:
-        return {}
+        return [], []
 
 
 # Skin-lightening product type indicators — if a product name contains any of these
@@ -253,18 +269,35 @@ _SKIN_PRODUCT_TYPES = re.compile(
 
 def check_kebs_banned_products(data: pd.DataFrame) -> pd.DataFrame:
     """
-    Two-step check:
-    1. Check if the product's BRAND (or first word of NAME) matches a brand in the KEBS banned list.
-    2. If brand matches, confirm the product NAME contains a skin-product type word
-       (cream, lotion, gel, soap, etc.) to ensure it is actually the type of product that is banned.
-    Only flag when BOTH conditions are met.
+    Checks uploaded products against the KEBS banned products list.
+
+    Matching strategy (all three common upload patterns are covered):
+      Case A - Generic brand / full product name:
+        BRAND='Generic', NAME='Elegance Skin Lightening Cream'
+        → BRAND+NAME = 'generic elegance skin lightening cream'
+        → Full product name 'elegance skin lightening cream' found as substring → MATCH
+
+      Case B - Brand in BRAND, product type only in NAME:
+        BRAND='Elegance', NAME='Skin Lightening Cream'
+        → Combined = 'elegance skin lightening cream'
+        → Full product name found → MATCH
+
+      Case C - Brand repeated in both:
+        BRAND='Elegance', NAME='Elegance Skin Lightening Cream'
+        → Combined = 'elegance elegance skin lightening cream'
+        → Full product name found → MATCH
+
+      Brand-only entries (e.g., 'Elegance' with Product Name == 'Elegance'):
+        → BRAND matches AND NAME contains a skin-product type word → MATCH
+
+    Only applies to Health & Beauty category codes.
     """
     required = {"PRODUCT_SET_SID", "NAME", "BRAND", "CATEGORY_CODE"}
     if data.empty or not required.issubset(data.columns):
         return pd.DataFrame(columns=data.columns)
 
-    brand_map = load_kebs_banned_products()
-    if not brand_map:
+    full_products, brand_only = load_kebs_banned_products()
+    if not full_products and not brand_only:
         return pd.DataFrame(columns=data.columns)
 
     hb_codes = load_kebs_hb_codes()
@@ -279,63 +312,82 @@ def check_kebs_banned_products(data: pd.DataFrame) -> pd.DataFrame:
     if target.empty:
         return pd.DataFrame(columns=data.columns)
 
+    # Build combined text: "brand name" for matching
     target["_brand_l"] = target["BRAND"].fillna("").str.strip().str.lower()
-    target["_name_l"] = target["NAME"].fillna("").str.strip().str.lower()
-    # First word of NAME as secondary brand identifier
-    target["_name_first_word"] = target["_name_l"].str.split().str[0].fillna("")
+    target["_name_l"]  = target["NAME"].fillna("").str.strip().str.lower()
+    # Combined = brand + " " + name (handles Case A, B, C)
+    target["_combined"] = (target["_brand_l"] + " " + target["_name_l"]).str.strip()
 
-    # Build a sorted list of KEBS brands, longest first, for pattern matching
-    all_brands = sorted(brand_map.keys(), key=len, reverse=True)
-    # Only match brands that are meaningful (>=4 chars) to avoid generic single words
-    # BUT for multi-word brands always include them
-    meaningful_brands = [b for b in all_brands if len(b) >= 4 or " " in b]
-    if not meaningful_brands:
-        return pd.DataFrame(columns=data.columns)
+    # Deduplicated brand-only lookup: brand_lower -> reason
+    brand_only_map = {}
+    for entry in brand_only:
+        b = entry["brand_lower"]
+        if b not in brand_only_map:
+            brand_only_map[b] = entry["reason"]
 
-    brand_pattern = re.compile(
-        r"(?<![\\w])(?:" + "|".join(re.escape(b) for b in meaningful_brands) + r")(?![\\w])",
-        re.IGNORECASE,
+    # Sort full products longest name first so the most specific match wins
+    full_products_sorted = sorted(full_products, key=lambda e: len(e["full_name_lower"]), reverse=True)
+    meaningful_brands = sorted(
+        {e["brand_lower"] for e in brand_only if len(e["brand_lower"]) >= 4},
+        key=len, reverse=True
     )
 
     results = []
+    seen_sids = set()
+
     for idx, row in target.iterrows():
-        brand_val = row["_brand_l"]
-        name_val = row["_name_l"]
-        first_word = row["_name_first_word"]
+        sid = str(row.get("PRODUCT_SET_SID", "")).strip()
+        if sid in seen_sids:
+            continue
 
-        # --- Step 1: Does BRAND or first word of NAME match a KEBS brand? ---
-        matched_brand = None
+        brand_val  = row["_brand_l"]
+        name_val   = row["_name_l"]
+        combined   = row["_combined"]
 
-        # Check product BRAND field first (exact or contained)
-        for b in meaningful_brands:
-            pat = re.compile(r"(?<!\w)" + re.escape(b) + r"(?!\w)", re.IGNORECASE)
-            if pat.search(brand_val):
-                matched_brand = b
+        matched_reason = None
+
+        # ── Step 1: Full product name match ──────────────────────────────────
+        # Check if any full KEBS product name is a substring of the combined text.
+        for entry in full_products_sorted:
+            kebs_name = entry["full_name_lower"]  # e.g. 'elegance skin lightening cream'
+            if len(kebs_name) < 5:
+                continue
+            if kebs_name in combined:
+                matched_reason = entry["reason"]
+                break
+            # Also check name alone (in case brand was in BRAND field)
+            if kebs_name in name_val:
+                matched_reason = entry["reason"]
                 break
 
-        # If no match in BRAND, check first word of NAME
-        if not matched_brand and first_word and len(first_word) >= 4:
+        # ── Step 2: Brand-only match + skin-product type check ───────────────
+        # Only runs if Step 1 didn't already match.
+        if not matched_reason:
             for b in meaningful_brands:
-                if first_word == b:
-                    matched_brand = b
-                    break
+                # BRAND field must start with or equal the banned brand
+                pat = re.compile(r'^' + re.escape(b) + r'(\b|$)', re.IGNORECASE)
+                brand_match = pat.match(brand_val)
 
-        if not matched_brand:
+                # OR the name starts with the banned brand word
+                name_brand_match = False
+                if not brand_match and len(b) >= 4:
+                    name_pat = re.compile(r'^' + re.escape(b) + r'\b', re.IGNORECASE)
+                    name_brand_match = bool(name_pat.match(name_val))
+
+                if brand_match or name_brand_match:
+                    # Confirm it looks like a skin product
+                    if _SKIN_PRODUCT_TYPES.search(name_val):
+                        matched_reason = brand_only_map.get(b, "Banned by KEBS.")
+                        break
+
+        if not matched_reason:
             continue
 
-        # --- Step 2: Does the product NAME contain a skin-product type word? ---
-        if not _SKIN_PRODUCT_TYPES.search(name_val):
-            # The brand matched but the product doesn't look like a skin product — skip
-            continue
-
-        # Build the rejection comment
-        entry = brand_map.get(matched_brand, {})
-        reason = entry.get("reason", "Banned substance.")
+        seen_sids.add(sid)
         comment = (
-            f"{reason} Please contact Jumia Seller Support and raise a claim to confirm "
+            f"{matched_reason} Please contact Jumia Seller Support and raise a claim to confirm "
             f"whether this product is eligible for listing. See https://www.kebs.org/banned-products/"
         )
-
         result_row = row.copy()
         result_row["FLAG"] = "1000033 - Keywords in your content/ Product name / description has been blacklisted"
         result_row["Comment_Detail"] = comment
@@ -344,8 +396,7 @@ def check_kebs_banned_products(data: pd.DataFrame) -> pd.DataFrame:
     if not results:
         return pd.DataFrame(columns=data.columns)
 
-    flagged = pd.DataFrame(results)
-    return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
+    return pd.DataFrame(results)
 
 
 
@@ -355,12 +406,12 @@ def apply_kebs_banned_rule(sid: str, rec: dict, has_status_col: bool, status: st
         (has_status_col and status in ("rejected", "review", "manual review"))
         or (not has_status_col and reason and "error" not in reason.lower())
     )
-    
+
     if is_rejection_like:
         return None
 
-    brand_map = load_kebs_banned_products()
-    if not brand_map:
+    full_products, brand_only = load_kebs_banned_products()
+    if not full_products and not brand_only:
         return None
 
     hb_codes = load_kebs_hb_codes()
@@ -372,37 +423,47 @@ def apply_kebs_banned_rule(sid: str, rec: dict, has_status_col: bool, status: st
         return None
 
     brand_val = str(rec.get("BRAND", "")).strip().lower()
-    name_val = str(rec.get("NAME", "")).strip().lower()
-    first_word = name_val.split()[0] if name_val.split() else ""
+    name_val  = str(rec.get("NAME", "")).strip().lower()
+    combined  = (brand_val + " " + name_val).strip()
 
-    # --- Step 1: Does BRAND or first word of NAME match a KEBS brand? ---
-    all_brands = sorted(brand_map.keys(), key=len, reverse=True)
-    meaningful_brands = [b for b in all_brands if len(b) >= 4 or " " in b]
-    matched_brand = None
+    brand_only_map = {}
+    for entry in brand_only:
+        b = entry["brand_lower"]
+        if b not in brand_only_map:
+            brand_only_map[b] = entry["reason"]
 
-    for b in meaningful_brands:
-        pat = re.compile(r"(?<!\w)" + re.escape(b) + r"(?!\w)", re.IGNORECASE)
-        if pat.search(brand_val):
-            matched_brand = b
+    full_products_sorted = sorted(full_products, key=lambda e: len(e["full_name_lower"]), reverse=True)
+    meaningful_brands = sorted(
+        {e["brand_lower"] for e in brand_only if len(e["brand_lower"]) >= 4},
+        key=len, reverse=True
+    )
+
+    matched_reason = None
+
+    # Step 1: full product name substring match
+    for entry in full_products_sorted:
+        kebs_name = entry["full_name_lower"]
+        if len(kebs_name) < 5:
+            continue
+        if kebs_name in combined or kebs_name in name_val:
+            matched_reason = entry["reason"]
             break
 
-    if not matched_brand and first_word and len(first_word) >= 4:
+    # Step 2: brand-only match + skin-type word
+    if not matched_reason:
         for b in meaningful_brands:
-            if first_word == b:
-                matched_brand = b
-                break
+            pat = re.compile(r'^' + re.escape(b) + r'(\b|$)', re.IGNORECASE)
+            name_pat = re.compile(r'^' + re.escape(b) + r'\b', re.IGNORECASE)
+            if pat.match(brand_val) or name_pat.match(name_val):
+                if _SKIN_PRODUCT_TYPES.search(name_val):
+                    matched_reason = brand_only_map.get(b, "Banned by KEBS.")
+                    break
 
-    if not matched_brand:
+    if not matched_reason:
         return None
 
-    # --- Step 2: Does the product NAME contain a skin-product type word? ---
-    if not _SKIN_PRODUCT_TYPES.search(name_val):
-        return None
-
-    entry = brand_map.get(matched_brand, {})
-    ban_reason = entry.get("reason", "Banned substance.")
     detail = (
-        f"{ban_reason} Please contact Jumia Seller Support and raise a claim to confirm "
+        f"{matched_reason} Please contact Jumia Seller Support and raise a claim to confirm "
         f"whether this product is eligible for listing. See https://www.kebs.org/banned-products/"
     )
     row = base_row_fn(sid, "kebs", rec)
@@ -412,6 +473,7 @@ def apply_kebs_banned_rule(sid: str, rec: dict, has_status_col: bool, status: st
         "Detail": detail
     })
     return row
+
 
 
 @st.cache_data(ttl=3600)

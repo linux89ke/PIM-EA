@@ -94,7 +94,7 @@ from data_utils import (
     validate_input_schema,
     normalize_text,
 )
-from custom_country_rules import check_kenya_book_category, check_kebs_banned_products, check_kebs_fda
+from custom_country_rules import check_kenya_book_category, check_kebs_banned_products, load_kebs_hb_codes, check_kebs_fda
 from ghana_rules import check_ghana_smart_glasses, load_ghana_qc_rules
 from loaders import compile_regex_patterns, load_support_files_lazy
 from morocco_rules import check_morocco_prohibited_brands, load_morocco_qc_rules
@@ -219,6 +219,23 @@ PREFETCH_MAP = {
     "brand_image_check": "Brand Image Check",
 }
 
+# The single "Product Name Brand Name" validation is split into these
+# sub-validations based on the reason text (see _classify_name_brand_sub_bucket).
+# "Other" exists so any future/unrecognized reason still gets its own flag
+# instead of being silently dropped or lumped into an existing bucket.
+NAME_BRAND_SUB_FLAGS = [
+    "Product Name Brand Name \u2013 Brand Repeated In Title",
+    "Product Name Brand Name \u2013 Inspired/Alternative Perfume Brand",
+    "Product Name Brand Name \u2013 Generic/Placeholder Brand",
+    "Product Name Brand Name \u2013 High-End Brand Counterfeit Suspected",
+    "Product Name Brand Name \u2013 Other",
+]
+
+TITLE_LANGUAGE_SUB_FLAGS = [
+    "Title Language Check \u2013 Not In English",
+    "Title Language Check \u2013 Other",
+]
+
 PREFETCH_REASON_COLUMNS = {
     "category_check": ["Category_Check_Rejection_Reason"],
     "warranty_check": ["Warranty_Rejection_Reason"],
@@ -240,9 +257,15 @@ PREFETCH_VALIDATOR_SKIP_MAP = {
     "fda_check": ["FDA"],
     "color_check": ["Missing COLOR", "Color Check"],
     "variation_check": ["Wrong Variation", "Variation Check"],
-    "product_name_brand_name": ["BRAND name repeated in NAME", "Product Name Brand Name"],
+    "product_name_brand_name": [
+        "BRAND name repeated in NAME", "Product Name Brand Name",
+        *NAME_BRAND_SUB_FLAGS,
+    ],
     "brand_image_check": ["Brand Image Check"],
-    "title_language_check": ["Missing Weight/Volume", "Title Language Check"],
+    "title_language_check": [
+        "Missing Weight/Volume", "Title Language Check",
+        *TITLE_LANGUAGE_SUB_FLAGS,
+    ],
     "image_quality_check": [
         "Poor images",
         "Image Quality Check",
@@ -303,6 +326,157 @@ def _prefetch_reason_from_row(row, status_col: str, qc_columns) -> str:
     return ""
 
 
+
+import re as _re_cat
+
+# ── Category-Check reason → sub-bucket key ───────────────────────────────────
+_CAT_API_ERROR_RE = _re_cat.compile(
+    r'AI error\s*:|Error code\s*:\s*\d+|insufficient_quota|Connection error|'
+    r'Request timed out|timed_out|rate.?limit|api.?error|openai\.com|'
+    r'is_gateway_error|ReadTimeoutError|ConnectTimeout|ServiceUnavailable',
+    _re_cat.IGNORECASE,
+)
+
+def _classify_name_brand_sub_bucket(reason: str) -> str:
+    """Map Product name_Brand name_rejection reason to its sub-validation flag.
+
+    Splits the single 'Product Name Brand Name' validation into its distinct
+    underlying issue types, plus an 'Other' bucket so any future/unrecognized
+    reason text still gets surfaced under its own flag instead of silently
+    lumping into the parent flag or getting dropped.
+    """
+    r = str(reason).strip()
+    low = r.lower()
+    if not r or low == "nan":
+        return "Product Name Brand Name \u2013 Other"
+
+    if "repeated in product name" in low or "brand name is not repeated" in low:
+        return "Product Name Brand Name \u2013 Brand Repeated In Title"
+
+    if "inspired" in low and "perfume" in low:
+        return "Product Name Brand Name \u2013 Inspired/Alternative Perfume Brand"
+
+    if ("placeholder" in low and "brand" in low) or "brand field is 'generic'" in low or "generic brand is not allowed" in low:
+        return "Product Name Brand Name \u2013 Generic/Placeholder Brand"
+
+    if "high-end brand" in low or "counterfeit" in low:
+        return "Product Name Brand Name \u2013 High-End Brand Counterfeit Suspected"
+
+    return "Product Name Brand Name \u2013 Other"
+
+
+def _classify_title_language_sub_bucket(reason: str) -> str:
+    r = str(reason).strip()
+    low = r.lower()
+    if not r or low == "nan":
+        return "Title Language Check \u2013 Other"
+
+    if "not in english" in low:
+        return "Title Language Check \u2013 Not In English"
+
+    return "Title Language Check \u2013 Other"
+
+
+def _classify_category_check_sub_bucket(reason: str) -> str:
+    """Map Category_Check_Rejection_Reason to its sub-bucket key.
+
+    Returns one of the keys registered in PREFETCH_DISPLAY_COLUMNS that starts
+    with 'Category Check \u2013 '.  Defaults to 'Category Check \u2013 Other Mismatch'.
+    """
+    r = str(reason).strip()
+
+    # 1. Literal API / network error strings
+    if _CAT_API_ERROR_RE.search(r):
+        return "Category Check \u2013 AI API Errors"
+
+    low = r.lower()
+    if not r or low == 'nan':
+        return "Category Check \u2013 Other Mismatch"
+
+    # 2. Prohibited
+    if 'prohibited' in low:
+        return "Category Check \u2013 Prohibited Category"
+
+    # 2b. Inactive
+    if 'inactive' in low:
+        return "Category Check \u2013 Inactive Category"
+
+    # 3. Jersey / IP
+    if 'replica jersey' in low or ('jersey' in low and any(x in low for x in ('licensed', 'protected', 'brand', 'team'))):
+        return "Category Check \u2013 Replica Jersey / IP Violation"
+
+    # 4. Sexual wellness
+    if 'sexual wellness' in low or 'intimate product' in low:
+        return "Category Check \u2013 Sexual Wellness Miscategory"
+
+    # 5. Pet
+    if 'pet product' in low:
+        return "Category Check \u2013 Pet product listed under non-pet category"
+
+    # 6. Adult in Baby category
+    if 'baby' in low and any(x in low for x in ('adult', 'women', "women's", 'men', 'hosiery', 'socks', 'footwear', 'eu 3', 'eu 4')):
+        return "Category Check \u2013 Adult product listed under Baby category"
+
+    # 7. Baby/toddler in non-baby
+    if ('baby' in low or 'toddler' in low) and ('non-baby' in low or 'non baby' in low):
+        return "Category Check \u2013 Baby/toddler listed under non-baby category"
+
+    # 8. Fragrance / perfume
+    if any(x in low for x in ('fragrance', 'perfume', 'deodorant body spray')) and \
+       any(x in low for x in ('unisex', "men's", "women's", 'decorative', 'grooming', 'oral care', 'lotion', 'skin care')):
+        return "Category Check \u2013 Fragrance/Perfume Mismatch"
+
+    # 9. Books
+    if 'book' in low:
+        return "Category Check \u2013 Books Wrong Subcategory"
+
+    # 10. Clothing / fashion
+    if any(x in low for x in ('t-shirt', 'jeans', 'trousers', 'vest', 'thobe', 'satin shirt', 'button-down', 'boot', 'oxford', 'derby', 'outerwear', 'climbing gear', 'hosiery', 'socks')):
+        return "Category Check \u2013 Clothing Subcategory Mismatch"
+
+    # 11. Hair & grooming
+    if any(x in low for x in ('hair clipper', 'hair dryer', 'hair trimmer', 'hair darkening', 'hair coloring', 'hair cut', 'balding')):
+        return "Category Check \u2013 Hair / Grooming Appliance Mismatch"
+
+    # 12. Electronics / audio
+    if any(x in low for x in ('earphone', 'headphone', 'keyboard', 'mouse combo', 'laptop', 'dome camera', 'bullet camera', 'sports camera')):
+        return "Category Check \u2013 Electronics / Accessories Mismatch"
+
+    # 13. Kitchen / home appliances
+    if any(x in low for x in ('toaster', 'kitchen appliance', 'electric coil cooker', 'hotplate', 'insect killer')):
+        return "Category Check \u2013 Kitchen / Home Appliance Mismatch"
+
+    # 14. Health & supplements
+    if any(x in low for x in ('dietary supplement', 'weight management', 'energy chew', 'ashwagandha', 'herbal supplement')):
+        return "Category Check \u2013 Health / Supplement Mismatch"
+
+    # 15. Food & beverage
+    if any(x in low for x in ('wine', 'stout beer', 'tonic water', 'cocktail mixer')):
+        return "Category Check \u2013 Food / Beverage Mismatch"
+
+    # 16. Skincare
+    if any(x in low for x in ('face cream', 'facial', 'serum', 'kaolin clay', 'body moisturizer')):
+        return "Category Check \u2013 Skincare Subcategory Mismatch"
+
+    # 17. Lighting
+    if any(x in low for x in ('emergency lamp', 'outdoor light', 'garden light', 'heat bulb', 'solar light', 'specialty bulb', 'agricultural machinery')):
+        return "Category Check \u2013 Lighting Mismatch"
+
+    # 18. Bedding
+    if any(x in low for x in ('duvet', 'comforter', 'mosquito net')):
+        return "Category Check \u2013 Bedding / Linen Mismatch"
+
+    # 19. Tools / hardware
+    if any(x in low for x in ('hacksaw', 'router bit', 'woodworking', 'agricultural')):
+        return "Category Check \u2013 Tools / Hardware Mismatch"
+
+    # 20. Medical
+    if any(x in low for x in ('diagnostic medical', 'support hose', 'compression category')):
+        return "Category Check \u2013 Medical Device Mismatch"
+
+    return "Category Check \u2013 Other Mismatch"
+
+
 def _derive_prefetched_skip_list(qc_df: pd.DataFrame) -> List[str]:
     skip = set()
     if qc_df.empty:
@@ -317,110 +491,75 @@ def _derive_prefetched_skip_list(qc_df: pd.DataFrame) -> List[str]:
     return sorted(skip)
 
 
-def restore_items(sids):
-    """Batched undo/restore.
-
-    Same per-sid semantics as the old restore_single_item (a sid is
-    re-rejected if the zip QC results still show it failing a check that
-    hasn't already been undone for that sid, otherwise it's approved), but
-    the expensive lookups (final_report mask, zip_qc_results mask) and the
-    manual_undone_tracker pruning are all done ONCE for the whole batch
-    instead of once per sid. apply_status_change calls are grouped so a
-    50-item undo click does a small handful of calls instead of 50.
-    """
-    sid_list = [str(s).strip() for s in sids if str(s).strip()]
-    if not sid_list:
-        return 0
-    sid_set = set(sid_list)
-
+def restore_single_item(sid):
     fr = st.session_state.final_report
-    fr_sid_norm = fr["ProductSetSid"].astype(str).str.strip()
-    fr_mask = fr_sid_norm.isin(sid_set)
-    if not fr_mask.any():
-        return 0
-    flag_by_sid = dict(zip(fr_sid_norm[fr_mask], fr.loc[fr_mask, "FLAG"]))
+    sid_str = str(sid).strip()
+    mask = fr["ProductSetSid"].astype(str).str.strip() == sid_str
+    if not mask.any():
+        return
 
     if "manual_undone_tracker" not in st.session_state:
         st.session_state.manual_undone_tracker = {}
-    tracker = st.session_state.manual_undone_tracker
-    if len(tracker) > 200:
-        keys = list(tracker.keys())
+
+    if len(st.session_state.manual_undone_tracker) > 200:
+        keys = list(st.session_state.manual_undone_tracker.keys())
         for k in keys[:100]:
-            del tracker[k]
+            del st.session_state.manual_undone_tracker[k]
 
-    valid_sids = [s for s in sid_list if s in flag_by_sid]
-    for sid_str in valid_sids:
-        tracker.setdefault(sid_str, set()).add(flag_by_sid[sid_str])
+    current_flag = fr.loc[mask, "FLAG"].iloc[0]
+    st.session_state.manual_undone_tracker.setdefault(sid_str, set()).add(current_flag)
 
-    # One vectorized lookup into zip_qc_results for the whole batch, instead
-    # of a fresh full-column scan per sid.
-    zip_row_by_sid = {}
     qc_zip = st.session_state.get("zip_qc_results", pd.DataFrame())
-    status_cols = []
-    fmap = st.session_state.support_files.get("flags_mapping", {})
     if not qc_zip.empty:
         sid_col = None
         for possible in ["PRODUCT_SET_SID", "ProductSetSid", "Product Set SID", "cod_productset_sid", "SID"]:
             if possible in qc_zip.columns:
                 sid_col = possible
                 break
+
         if sid_col:
-            zip_sid_norm = qc_zip[sid_col].astype(str).str.strip()
-            zip_mask = zip_sid_norm.isin(sid_set)
-            if zip_mask.any():
+            zip_row = qc_zip[qc_zip[sid_col].astype(str).str.strip() == sid_str]
+            if not zip_row.empty:
+                r = zip_row.iloc[0]
                 status_cols = [c for c in qc_zip.columns if "status" in c.lower()]
-                for norm_sid, (_, row) in zip(zip_sid_norm[zip_mask], qc_zip.loc[zip_mask].iterrows()):
-                    # keep first match per sid, same as the old .iloc[0] behaviour
-                    zip_row_by_sid.setdefault(norm_sid, row)
+                fmap = st.session_state.support_files.get("flags_mapping", {})
 
-    approve_sids = []
-    rereject_groups = {}  # (reason_code, comment, flag_prefetched) -> [sids]
+                for col in status_cols:
+                    if str(r[col]).lower() in ("rejected", "1", "yes", "true"):
+                        col_key = _prefetch_key_from_status_col(col)
+                        flag = PREFETCH_MAP.get(col_key, col_key.replace("_", " ").title())
+                        flag_prefetched = f"{flag} (Prefetched)"
 
-    for sid_str in valid_sids:
-        r = zip_row_by_sid.get(sid_str)
-        rerejected = False
-        if r is not None:
-            for col in status_cols:
-                if str(r[col]).lower() in ("rejected", "1", "yes", "true"):
-                    col_key = _prefetch_key_from_status_col(col)
-                    flag = PREFETCH_MAP.get(col_key, col_key.replace("_", " ").title())
-                    flag_prefetched = f"{flag} (Prefetched)"
-                    if flag_prefetched not in tracker.get(sid_str, set()):
-                        mapped_info = fmap.get(flag, {})
-                        reason_code = mapped_info.get("reason", "1000007 - Other Reason")
-                        default_cmt = mapped_info.get("comment", "Rejected")
-                        zip_cmt = _prefetch_reason_from_row(r, col, qc_zip.columns)
-                        final_comment = zip_cmt if (zip_cmt and zip_cmt.lower() not in ("rejected", "nan")) else default_cmt
-                        key = (reason_code, final_comment, flag_prefetched, flag)
-                        rereject_groups.setdefault(key, []).append(sid_str)
-                        rerejected = True
-                        break
-        if not rerejected:
-            approve_sids.append(sid_str)
+                        if flag_prefetched not in st.session_state.manual_undone_tracker[sid_str]:
+                            mapped_info = fmap.get(flag, {})
+                            reason_code = mapped_info.get("reason", "1000007 - Other Reason")
+                            default_cmt = mapped_info.get("comment", "Rejected")
 
-    restored = 0
-    for (reason_code, final_comment, flag_prefetched, flag), group_sids in rereject_groups.items():
-        n = apply_status_change(
-            group_sids, status="Rejected", reason=reason_code, comment=final_comment,
-            flag=flag_prefetched, is_manual=True, is_zip=True,
-        )
-        restored += n
-        st.session_state.main_toasts.append(f"Product still rejected for: {flag}" if n == 1 else f"{n} products still rejected for: {flag}")
+                            zip_cmt = _prefetch_reason_from_row(r, col, qc_zip.columns)
+                            final_comment = zip_cmt if (zip_cmt and zip_cmt.lower() not in ("rejected", "nan")) else default_cmt
 
-    if approve_sids:
-        n = apply_status_change(
-            approve_sids, status="Approved", reason="", comment="",
-            flag="Approved by User", is_manual=True, is_zip=False,
-        )
-        restored += n
-        st.session_state.main_toasts.append("Product Approved." if n == 1 else f"{n} products Approved.")
+                            apply_status_change(
+                                [sid_str],
+                                status="Rejected",
+                                reason=reason_code,
+                                comment=final_comment,
+                                flag=flag_prefetched,
+                                is_manual=True,
+                                is_zip=True,
+                            )
+                            st.session_state.main_toasts.append(f"Product still rejected for: {flag}")
+                            return
 
-    return restored
-
-
-def restore_single_item(sid):
-    """Kept for backwards compatibility - prefer restore_items() for batches."""
-    restore_items([sid])
+    apply_status_change(
+        [sid_str],
+        status="Approved",
+        reason="",
+        comment="",
+        flag="Approved by User",
+        is_manual=True,
+        is_zip=False,
+    )
+    st.session_state.main_toasts.append("Product Approved.")
 
 
 try:
@@ -541,7 +680,11 @@ FLAG_RELEVANT_COLS = {
     "Fashion brand issues": ["CATEGORY_CODE", "BRAND"],
     "BRAND name repeated in NAME": ["BRAND", "NAME"],
     "Brand Image Check": ["BRAND", "NAME", "Brand_Image_Check_Reason", "Brand_Detected_On_Product"],
-    "Product Name Brand Name": ["BRAND", "NAME", "Product name_Brand name_rejection reason"],
+    "Product Name Brand Name – Brand Repeated In Title": ["BRAND", "NAME", "Product name_Brand name_rejection reason"],
+    "Product Name Brand Name – Inspired/Alternative Perfume Brand": ["BRAND", "NAME", "Product name_Brand name_rejection reason"],
+    "Product Name Brand Name – Generic/Placeholder Brand": ["BRAND", "NAME", "Product name_Brand name_rejection reason"],
+    "Product Name Brand Name – High-End Brand Counterfeit Suspected": ["BRAND", "NAME", "Product name_Brand name_rejection reason"],
+    "Product Name Brand Name – Other": ["BRAND", "NAME", "Product name_Brand name_rejection reason"],
     "Wrong Variation": ["COUNT_VARIATIONS", "CATEGORY_CODE"],
     "Generic branded products with genuine brands": ["NAME", "BRAND", "CATEGORY"],
     "Missing COLOR": ["CATEGORY_CODE", "NAME", "COLOR"],
@@ -932,23 +1075,37 @@ def check_restricted_brands(
     if "_seller_norm" not in d.columns:
         d["_seller_norm"] = _normalize_series(d.get("SELLER_NAME", pd.Series("", index=d.index)))
 
+    if "_name_lower" not in d.columns:
+        d["_name_lower"] = d.get("NAME", pd.Series("", index=d.index)).astype(str).str.lower()
+
     ldf = _to_polars_cached(df_hash(d), d)
 
     all_keywords = set()
     brand_names_only = set()
+    brand_raw_lower_only = set()
     for rule in country_rules:
         all_keywords.add(rule["brand"])
-        all_keywords.update(rule.get("variations", []))
+        valid_vars = [v for v in rule.get("variations", []) if str(v).strip()]
+        all_keywords.update(valid_vars)
         brand_names_only.add(rule["brand"])
+        if rule.get("brand_raw"):
+            brand_raw_lower_only.add(rule["brand_raw"].lower())
 
-    _name_pattern = "(?i)" + "|".join(re.escape(k) for k in brand_names_only if k)
-    # Also match brands whose _brand_norm CONTAINS the brand keyword as a substring
-    # (catches accent-obfuscation like 'CeraVeé' -> 'ceravee' which contains 'cerave')
-    _brand_substr_pattern = "(?i)" + "|".join(re.escape(k) for k in brand_names_only if k)
+    _name_pattern = "(?i)" + "|".join(r"\b" + re.escape(k) + r"\b" for k in brand_names_only if k)
+    # The raw lowercase names preserve punctuation, so \b works on them in _name_lower
+    _name_raw_pattern = "(?i)" + "|".join(r"\b" + re.escape(k) + r"\b" for k in brand_raw_lower_only if k)
+    # Use simple substring (no boundaries) for _name_norm since it strips punctuation
+    _name_norm_pattern = "(?i)" + "|".join(re.escape(k) for k in brand_names_only if k)
+
+    # Also match brands whose _brand_norm CONTAINS the brand keyword as a distinct word
+    # (catches accent-obfuscation like 'CeraVeé' -> 'ceravee' but avoids 'mac' matching 'machine')
+    _brand_substr_pattern = "(?i)" + "|".join(r"\b" + re.escape(k) + r"\b" for k in brand_names_only if k)
+    
     candidate_ldf = ldf.filter(
         pl.col("_brand_norm").is_in(list(all_keywords))
         | pl.col("_brand_norm").str.contains(_brand_substr_pattern)
-        | pl.col("_name_norm").str.contains(_name_pattern)
+        | pl.col("_name_norm").str.contains(_name_norm_pattern)
+        | pl.col("_name_lower").str.contains(_name_raw_pattern)
     )
 
     if candidate_ldf.is_empty():
@@ -964,35 +1121,50 @@ def check_restricted_brands(
         brand_raw = rule["brand_raw"]
         # Exact match: brand column exactly equals the normalised brand
         main_brand_matches_exact = d["_brand_norm"] == brand_name
-        # Substring match: brand column CONTAINS the brand keyword
-        # (catches accent-obfuscations like 'CeraVeé' -> 'ceravee' which contains 'cerave')
+        # Substring match: brand column CONTAINS the brand keyword as a distinct word
         main_brand_matches_substr = d["_brand_norm"].str.contains(
-            re.escape(brand_name), regex=True, na=False
+            r"\b" + re.escape(brand_name) + r"\b", regex=True, na=False
         )
         main_brand_matches = main_brand_matches_exact | main_brand_matches_substr
-        main_name_matches = d["_name_norm"].str.contains(re.escape(brand_name), regex=True, na=False)
+        # Match brand name in product NAME:
+        # 1. Use _name_lower with \b (punctuation preserved, word boundaries work for most brands)
+        # 2. Also check if _name_norm STARTS WITH the brand (catches La Roche-Posay -> larocheposay
+        #    at start of name, where the normalized string has no trailing word boundary)
+        main_name_lower_matches = d["_name_lower"].str.contains(
+            r"\b" + re.escape(brand_raw.lower()) + r"\b", regex=True, na=False, flags=re.IGNORECASE
+        )
+        main_name_norm_starts = d["_name_norm"].str.startswith(brand_name, na=False)
+        main_name_matches = main_name_lower_matches | main_name_norm_starts
         current_match_mask = main_brand_matches | main_name_matches
         for idx in d[main_brand_matches].index:
             match_details[idx] = ("main_brand", brand_raw)
         for idx in d[main_name_matches & ~main_brand_matches].index:
             match_details[idx] = ("main_name", brand_raw)
-        if rule["variations"]:
-            sorted_vars = sorted(rule["variations"], key=len, reverse=True)
+        valid_vars = [v for v in rule.get("variations", []) if str(v).strip()]
+        if valid_vars:
+            sorted_vars = sorted(valid_vars, key=len, reverse=True)
             var_pattern = (
-                r"(?:" + "|".join([re.escape(v) for v in sorted_vars]) + r")"
+                r"(?:\b" + r"\b|\b".join([re.escape(v) for v in sorted_vars]) + r"\b)"
             )
             var_brand_matches = d["_brand_norm"].str.contains(
                 var_pattern, regex=True, na=False
             )
-            var_name_matches = d["_name_norm"].str.contains(
+            # Check _name_lower (word-boundary, preserves punctuation)
+            # and _name_norm startswith each variation (normalized brand at start of product name)
+            var_name_lower_matches = d["_name_lower"].str.contains(
                 var_pattern, regex=True, na=False
             )
+            # For _name_norm: match if name STARTS WITH any variation (no trailing \b needed)
+            var_name_norm_starts = pd.Series(False, index=d.index)
+            for var in sorted_vars:
+                var_name_norm_starts = var_name_norm_starts | d["_name_norm"].str.startswith(var, na=False)
+            var_name_matches = var_name_lower_matches | var_name_norm_starts
             for idx in d[var_brand_matches | var_name_matches].index:
                 if idx not in match_details:
                     text_to_check = (
-                        d.loc[idx, "_brand_lower"]
+                        d.loc[idx, "_brand_norm"]
                         if var_brand_matches[idx]
-                        else d.loc[idx, "_name_lower"]
+                        else (d.loc[idx, "_name_lower"] + " " + d.loc[idx, "_name_norm"])
                     )
                     for var in sorted_vars:
                         if var in text_to_check:
@@ -1011,6 +1183,17 @@ def check_restricted_brands(
             current_match = current_match[
                 current_match["_cat_clean"].isin(rule["categories"])
             ]
+            
+        # Hardcoded rule: 'Simple' is a restricted beauty brand, limit it to Health & Beauty
+        if brand_name.lower() == "simple":
+            try:
+                hb_codes = load_kebs_hb_codes()
+                if hb_codes:
+                    current_match = current_match[
+                        current_match["_cat_clean"].isin(hb_codes)
+                    ]
+            except Exception:
+                pass
         if current_match.empty:
             continue
         rejected = current_match[~current_match["_seller_norm"].isin(rule["sellers"])]
@@ -1410,6 +1593,16 @@ def check_counterfeit_jerseys(
     categories = jerseys_data.get("categories", set())
     keywords = jerseys_data.get("keywords", {}).get(country_code, set())
     exempted = jerseys_data.get("exempted", {}).get(country_code, set())
+    
+    # Fallback: if this country has no specific keywords defined in the Excel sheet
+    # (e.g., Egypt might be missing a tab), union all keywords globally to ensure
+    # the counterfeit check still runs using known global brand keywords.
+    if not keywords:
+        global_kws = set()
+        for kw_set in jerseys_data.get("keywords", {}).values():
+            global_kws.update(kw_set)
+        keywords = global_kws
+
     if not categories or not keywords:
         return pd.DataFrame(columns=data.columns)
     kw_pattern = re.compile(
@@ -3452,9 +3645,33 @@ if st.session_state.get("last_processed_files") != process_signature:
                                 _reason_code = _mapped.get("reason", "1000007 - Other Reason")
                                 _default_cmt = _mapped.get("comment", "Rejected")
                                 _final_cmt = _comment if (_comment and _comment.lower() != "rejected") else _default_cmt
-                                if _flag == "Wrong Category" and "Category_Check_Rejection_Reason" in qc_zip.columns:
+                                if _flag in ("Wrong Category", "Category Check") and "Category_Check_Rejection_Reason" in qc_zip.columns:
                                     _cr = str(_r["Category_Check_Rejection_Reason"]).strip()
-                                    if _cr and _cr.lower() not in ("nan", "rejected"): _final_cmt = _cr
+                                    if _cr and _cr.lower() not in ("nan", "rejected"):
+                                        _final_cmt = _cr
+                                    # Resolve to the specific sub-bucket (e.g. "Category Check – Prohibited Category")
+                                    _cat_sub_bucket = _classify_category_check_sub_bucket(_cr)
+                                    
+                                    # If it's an API error, skip rejecting it in the main UI
+                                    # (it will still be visible in the Targeted Audit).
+                                    if _cat_sub_bucket == "Category Check \u2013 AI API Errors":
+                                        continue
+
+                                    # Override flag + prefetched label to use the sub-bucket
+                                    _flag = _cat_sub_bucket
+                                    _flag_pf = f"{_cat_sub_bucket} (Prefetched)"
+
+                                if _flag in ("Product Name Brand Name", "BRAND name repeated in NAME"):
+                                    _nb_reason = _comment
+                                    _nb_sub_bucket = _classify_name_brand_sub_bucket(_nb_reason)
+                                    _flag = _nb_sub_bucket
+                                    _flag_pf = f"{_nb_sub_bucket} (Prefetched)"
+                                
+                                if _flag == "Title Language Check":
+                                    _tl_reason = _comment
+                                    _tl_sub_bucket = _classify_title_language_sub_bucket(_tl_reason)
+                                    _flag = _tl_sub_bucket
+                                    _flag_pf = f"{_tl_sub_bucket} (Prefetched)"
                                 _fidx = _fr_sid_to_idx.get(_sid)
                                 if _fidx is not None:
                                     if "warranty" in _base_key.lower():
@@ -3651,7 +3868,7 @@ def handle_jtbridge():
         "jtbridge",
         value="",
         placeholder="JTBRIDGE_UNIQUE_DO_NOT_USE",
-        key=f"main_bridge_{st.session_state.main_bridge_counter}",
+        key=f"main_bridge_{st.session_state.get('main_bridge_counter', 0)}",
         label_visibility="collapsed",
     )
 
@@ -3682,45 +3899,45 @@ def handle_jtbridge():
                             _code = _rinfo["reason"]
                             _cmt_lang = "fr" if st.session_state.selected_country == "Morocco" else "en"
                             _cmt = _rinfo.get(_cmt_lang, _rinfo.get("en"))
-                        # Most sids in a batch share the same auto-comment (or have none),
-                        # so group by the effective comment and make ONE apply_status_change
-                        # call per group instead of one call per sid. apply_status_change does
-                        # full-column scans + a full final_report.copy() internally, so calling
-                        # it per-sid turned an O(1) batch update into an O(N) one.
-                        _by_comment = {}
+                        # --- Performance fix: group by comment so we call apply_status_change
+                        #     once per unique (reason, comment) pair instead of once per SID.
+                        #     This eliminates the N+1 DataFrame-copy / GC / column-scan pattern.
+                        _sids_by_comment: dict = {}
                         for _sid in _sids:
                             _sid_cmt = _auto_comments.get(_sid, _cmt)
-                            _by_comment.setdefault(_sid_cmt, []).append(_sid)
-                        for _cmt_val, _sid_group in _by_comment.items():
+                            _sids_by_comment.setdefault(_sid_cmt, []).append(_sid)
+                        for _cmt_val, _sid_group in _sids_by_comment.items():
                             apply_status_change(_sid_group, status="Rejected", reason=_code, comment=_cmt_val, flag=_flag, is_manual=True, is_zip=False)
                         _total += len(_sids)
                     st.session_state.main_toasts.append(f"Rejected {_total} product(s)")
-                    st.session_state.main_bridge_counter += 1
+                    st.session_state["main_bridge_counter"] = st.session_state.get("main_bridge_counter", 0) + 1
                     st.session_state.do_scroll_top = False
                     st.rerun()
             elif _msg.get("action") == "undo":
                 _payload = _msg.get("payload", {})
                 _total_restored = 0
-                if isinstance(_payload, dict) and _payload:
-                    _total_restored = restore_items(list(_payload.keys()))
+                if isinstance(_payload, dict):
+                    for _sid in _payload.keys():
+                        restore_single_item(_sid)
+                        _total_restored += 1
                 if _total_restored > 0:
-                    st.session_state.main_bridge_counter += 1
+                    st.session_state["main_bridge_counter"] = st.session_state.get("main_bridge_counter", 0) + 1
                     st.session_state.do_scroll_top = False
                     st.rerun()
             elif _msg.get("action") == "grid_sort_issue":
                 st.session_state.grid_sort_issue = _msg.get("payload", "")
-                st.session_state.main_bridge_counter += 1
+                st.session_state["main_bridge_counter"] = st.session_state.get("main_bridge_counter", 0) + 1
                 st.rerun()
             elif _msg.get("action") == "grid_filter_flag":
                 st.session_state.grid_filter_flag = _msg.get("payload", "")
-                st.session_state.main_bridge_counter += 1
+                st.session_state["main_bridge_counter"] = st.session_state.get("main_bridge_counter", 0) + 1
                 st.rerun()
             elif _msg.get("action") == "grid_cols_per_row":
                 try:
                     st.session_state.grid_cols_per_row = int(_msg.get("payload", 5))
                 except (ValueError, TypeError):
                     st.session_state.grid_cols_per_row = 5
-                st.session_state.main_bridge_counter += 1
+                st.session_state["main_bridge_counter"] = st.session_state.get("main_bridge_counter", 0) + 1
                 st.rerun()
         except Exception as _e:
             logger.error(f"Bridge parse error: {_e}")
@@ -3862,7 +4079,13 @@ def render_main_results():
                             st.rerun()
                     render_flag_expander(f"Seller: {seller}", df_seller, data, all(c in data.columns for c in ["PRODUCT_WARRANTY", "WARRANTY_DURATION"]), support_files, country_validator, cached_validate_products)
         else:
-            for title in rej_df["FLAG"].unique():
+            _flags_list = list(rej_df["FLAG"].unique())
+            # Sort so "Category Check" and its sub-buckets group together consecutively
+            _flags_list.sort(key=lambda x: (
+                0 if x.startswith("Category Check") else 1,
+                x
+            ))
+            for title in _flags_list:
                 df_flagged = rej_df[rej_df["FLAG"] == title]
                 is_zip = "(Prefetched)" in title
                 exp_label = f"[{len(df_flagged)}] {title}"
