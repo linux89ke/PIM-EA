@@ -5,7 +5,6 @@ ui_components.py - All Streamlit UI rendering components, dialogs, and the image
 import base64
 import concurrent.futures
 import gc
-import hashlib
 import html as html_lib
 import json
 import logging
@@ -1516,35 +1515,17 @@ def build_fast_grid_html(
         )
 
     cards_json = orjson.dumps(cards_data).decode("utf-8").replace("</", "<\\/")
-    seller_opts = sorted(
-        {
-            str(card.get("seller", "")).strip()
-            for card in cards_data
-            if str(card.get("seller", "")).strip()
-        }
-    )
-    category_opts = sorted(
-        {
-            str(card.get("cat", "")).strip()
-            for card in cards_data
-            if str(card.get("cat", "")).strip()
-        }
-    )
-    seller_opts_json = _js_json(seller_opts)
-    category_opts_json = _js_json(category_opts)
 
-    scroll_js = ""
-    if scroll_to_top:
-        scroll_js = "sessionStorage.removeItem('__inner_iframe_scroll__'); window.scrollTo(0, 0);"
-    else:
-        scroll_js = """
-        var savedInnerScroll = sessionStorage.getItem('__inner_iframe_scroll__');
-        if (savedInnerScroll) {
-            setTimeout(function() {
-                window.scrollTo({top: parseInt(savedInnerScroll, 10), behavior: 'instant'});
-            }, 50);
-        }
-        """
+    scroll_js = """
+        window.addEventListener('DOMContentLoaded', function() {
+            var savedInnerScroll = sessionStorage.getItem('__inner_iframe_scroll__');
+            if (savedInnerScroll) {
+                setTimeout(function() {
+                    window.scrollTo({top: parseInt(savedInnerScroll, 10), behavior: 'instant'});
+                }, 50);
+            }
+        });
+    """
 
 
     def _sel(val, curr): return "selected" if val == curr else ""
@@ -2017,7 +1998,19 @@ def build_fast_grid_html(
   </div>
 </div>
 
-<div class="grid" id="card-grid"></div>
+<div class="grid" id="card-grid">
+  <style>
+    .sk-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;width:100%;}}
+    .sk-card{{border-radius:12px;overflow:hidden;background:#f3f4f6;height:260px;animation:pulse 1.4s ease-in-out infinite}}
+    @keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.4}}}}
+  </style>
+  <div style="font-family: sans-serif; color: #f97316; font-size: 14px; font-weight: bold; margin-bottom: 5px; padding-top: 10px;">Loading Page...</div>
+  <div class="sk-grid">
+    <div class="sk-card"></div><div class="sk-card"></div><div class="sk-card"></div><div class="sk-card"></div>
+    <div class="sk-card"></div><div class="sk-card"></div><div class="sk-card"></div><div class="sk-card"></div>
+    <div class="sk-card"></div><div class="sk-card"></div><div class="sk-card"></div><div class="sk-card"></div>
+  </div>
+</div>
 
 <div class="ctrl-bar bottom-bar">
   <span class="sel-count-text" style="font-weight:700; color:var(--accent); font-size:13px;">0 {labels_dict["items_pending"]}</span>
@@ -2062,7 +2055,7 @@ def build_fast_grid_html(
 
 function escapeHtml(u){{return(u||"").toString().replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");}}
 window.__IS_GRID_IFRAME__ = true;
-var CARDS = {cards_json};
+var CARDS = [];
 var COMMITTED = {{}};
 var POOR_IMG_SIDS = new Set();
 var PREFETCH_URLS = {{}};
@@ -3363,8 +3356,8 @@ def visual_review_modal(support_files):
     # could silently drift out of sync, and the page-display version did
     # an O(n) DataFrame scan (`fr[fr["ProductSetSid"] == sid]`) per row
     # instead of a dict lookup.
-    _fr_flag_map = fr.set_index("ProductSetSid")["FLAG"].to_dict() if "FLAG" in fr.columns else {}
-    _fr_comment_map = fr.set_index("ProductSetSid")["Comment"].to_dict() if "Comment" in fr.columns else {}
+    _fr_flag_map = dict(zip(fr["ProductSetSid"].astype(str), fr["FLAG"])) if "FLAG" in fr.columns else {}
+    _fr_comment_map = dict(zip(fr["ProductSetSid"].astype(str), fr["Comment"])) if "Comment" in fr.columns else {}
     _zip_index = st.session_state.get("_zip_sid_index")
     _zip_status_cols = st.session_state.get("_zip_status_cols", [])
     _zip_prefetch_map = st.session_state.get("_zip_prefetch_map", {})
@@ -3389,7 +3382,16 @@ def visual_review_modal(support_files):
                 if str(zrow.get(zcol, "")).lower() == "rejected":
                     zflag = _zip_prefetch_map.get(zcol, zcol.replace("_Status", "").replace("_", " ").title())
                     if zflag not in w: w.append(zflag)
-        return list(dict.fromkeys(w))
+        
+        # Robust deduplication (ignoring trailing spaces)
+        unique_w = []
+        seen = set()
+        for flag in w:
+            cleaned = str(flag).strip()
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                unique_w.append(cleaned)
+        return unique_w
 
     if curr_flag or curr_sort:
         review_data["_warnings"] = review_data["ProductSetSid"].apply(_compute_warnings)
@@ -3590,40 +3592,6 @@ def visual_review_modal(support_files):
 
         cols_per_row = st.session_state.get("grid_cols_per_row", 5)
 
-        # --- Skeleton placeholder ------------------------------------
-        # IMPORTANT: st.iframe()/components.html() remount their iframe
-        # element on every Streamlit rerun that reaches this line — this
-        # happens at the frontend level regardless of whether the Python
-        # string passed in is byte-identical to the previous rerun. The
-        # shell-signature caching below therefore does NOT prevent a
-        # reload; it only avoids rebuilding the *string* in Python. The
-        # actual DOM remount (and the associated image re-fetch/re-decode)
-        # still happens on every page/filter/sort change, same as before.
-        # So the skeleton has to cover every rerun that touches the grid,
-        # not just "structural" ones — this is what actually hides the
-        # flicker, exactly as it did before the skeleton was dropped.
-        _skel_placeholder = st.empty()
-        skeleton_html = (
-            """
-    <style>
-      .sk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
-      .sk-card{border-radius:12px;overflow:hidden;background:#f3f4f6;height:260px;
-               animation:pulse 1.4s ease-in-out infinite}
-      @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-      progress { width: 100%; height: 6px; border: none; border-radius: 4px; margin-bottom: 15px; }
-      progress::-webkit-progress-bar { background-color: #ffe5cc; border-radius: 4px; }
-      progress::-webkit-progress-value { background-color: #f97316; border-radius: 4px; }
-      progress::-moz-progress-bar { background-color: #f97316; border-radius: 4px; }
-    </style>
-    <div style="font-family: sans-serif; color: #f97316; font-size: 14px; font-weight: bold; margin-bottom: 5px;">Loading Page...</div>
-    <progress></progress>
-    <div class="sk-grid">
-    """
-            + "".join(['<div class="sk-card"></div>'] * 12)
-            + "</div>"
-        )
-        _skel_placeholder.html(skeleton_html)
-
         grid_html = build_fast_grid_html(
             page_data=page_data,
             flags_mapping=support_files.get("flags_mapping", {}),
@@ -3640,27 +3608,17 @@ def visual_review_modal(support_files):
             curr_flag=curr_flag,
         )
 
-        _skel_placeholder.empty()
-
-    # Unpack the grid html and its sync data (committed, poor_img_sids, prefetch, cards)
+    # Unpack the grid html and its sync data
     _grid_html_str, _committed_json, _poor_img_sids_json, _prefetch_json, _cards_json = grid_html
 
     with st.container(key="grid_iframe_container"):
         st.iframe(_grid_html_str, height=750)
-        # Inject a zero-height broadcaster that pushes the latest Python state
-        # down into the existing static iframe via postMessage.
-        # This runs on EVERY rerun and keeps the iframe perfectly in sync
-        # WITHOUT destroying/recreating it, eliminating the white flash.
-        # cards_sig lets the iframe-side listener skip a redundant
-        # re-render if the same page's data arrives twice (e.g. from a
-        # retried send).
-        _cards_sig = int(hashlib.md5(_cards_json.encode("utf-8")).hexdigest()[:12], 16)
-        _scroll_top_js = "true" if scroll_top_flag else "false"
+        # Inject a zero-height broadcaster that pushes state into the iframe via postMessage.
+        # Sending cards via postMessage prevents the entire iframe DOM from being torn down
+        # and rebuilt (which causes severe flickering) when changing pages.
         _sync_html = f"""
         <script>
         (function() {{
-          // The iframe may not be ready yet if this is the first load.
-          // We retry until the contentWindow is accessible, then send once.
           function trySend(attemptsLeft) {{
             try {{
               for (var i = 0; i < window.parent.frames.length; i++) {{
@@ -3671,8 +3629,7 @@ def visual_review_modal(support_files):
                     poor_img_sids: {_poor_img_sids_json},
                     prefetch: {_prefetch_json},
                     cards: {_cards_json},
-                    cards_sig: {_cards_sig},
-                    scroll_to_top: {_scroll_top_js}
+                    scroll_to_top: {'true' if scroll_top_flag else 'false'}
                   }}, '*');
                 }} catch(e2) {{}}
               }}
@@ -3681,7 +3638,7 @@ def visual_review_modal(support_files):
               setTimeout(function() {{ trySend(attemptsLeft - 1); }}, 200);
             }}
           }}
-          trySend(5);
+          trySend(3);
         }})();
         </script>
         """
