@@ -3591,22 +3591,20 @@ def visual_review_modal(support_files):
         cols_per_row = st.session_state.get("grid_cols_per_row", 5)
 
         # --- Skeleton placeholder ------------------------------------
-        # Masks whatever reload/paint work still has to happen (either a
-        # genuine srcdoc rebuild on a structural change, or just the
-        # brief gap while build_fast_grid_html/prefetch computations run)
-        # so any flicker happens behind a pulsing skeleton instead of
-        # being visible on the actual product images. This mirrors the
-        # skeleton step that existed before it was dropped; combined with
-        # the shell-reuse/postMessage-cards mechanism below, the skeleton
-        # should now only need to appear on genuine structural changes,
-        # not on every page turn.
-        _will_reload_shell = (cols_per_row, st.session_state.get("selected_country", "Kenya"),
-                               st.session_state.get("ui_lang", "en"), st.session_state.get("show_images", True),
-                               st.session_state.get("dark_mode", False)) != st.session_state.get("_grid_shell_sig")
-        _skel_placeholder = None
-        if _will_reload_shell:
-            skeleton_html = (
-                """
+        # IMPORTANT: st.iframe()/components.html() remount their iframe
+        # element on every Streamlit rerun that reaches this line — this
+        # happens at the frontend level regardless of whether the Python
+        # string passed in is byte-identical to the previous rerun. The
+        # shell-signature caching below therefore does NOT prevent a
+        # reload; it only avoids rebuilding the *string* in Python. The
+        # actual DOM remount (and the associated image re-fetch/re-decode)
+        # still happens on every page/filter/sort change, same as before.
+        # So the skeleton has to cover every rerun that touches the grid,
+        # not just "structural" ones — this is what actually hides the
+        # flicker, exactly as it did before the skeleton was dropped.
+        _skel_placeholder = st.empty()
+        skeleton_html = (
+            """
     <style>
       .sk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
       .sk-card{border-radius:12px;overflow:hidden;background:#f3f4f6;height:260px;
@@ -3621,11 +3619,10 @@ def visual_review_modal(support_files):
     <progress></progress>
     <div class="sk-grid">
     """
-                + "".join(['<div class="sk-card"></div>'] * 12)
-                + "</div>"
-            )
-            _skel_placeholder = st.empty()
-            _skel_placeholder.html(skeleton_html)
+            + "".join(['<div class="sk-card"></div>'] * 12)
+            + "</div>"
+        )
+        _skel_placeholder.html(skeleton_html)
 
         grid_html = build_fast_grid_html(
             page_data=page_data,
@@ -3643,41 +3640,10 @@ def visual_review_modal(support_files):
             curr_flag=curr_flag,
         )
 
-        if _skel_placeholder is not None:
-            _skel_placeholder.empty()
+        _skel_placeholder.empty()
 
     # Unpack the grid html and its sync data (committed, poor_img_sids, prefetch, cards)
     _grid_html_str, _committed_json, _poor_img_sids_json, _prefetch_json, _cards_json = grid_html
-
-    # --- Avoid full iframe reload on page/filter/sort changes ------------
-    # Previously every page turn passed a brand-new srcdoc to st.iframe()
-    # (each with the new page's CARDS baked in), which forced the browser
-    # to tear down and rebuild the entire iframe document — reloading and
-    # re-decoding every image on the page, sometimes visibly more than
-    # once as the follow-up SYNC_STATE postMessage also triggered a
-    # re-render. Instead: only give st.iframe() a new srcdoc when
-    # something *structural* changes (columns per row, country, language,
-    # show/hide images, dark mode) — page/filter/sort changes reuse the
-    # existing iframe document and push the new CARDS through the same
-    # postMessage bridge already used for committed/poor_img/prefetch.
-    # (_will_reload_shell / the shell-signature tuple was already computed
-    # above, before build_fast_grid_html ran, to decide on the skeleton.)
-    _shell_sig = (
-        cols_per_row,
-        st.session_state.get("selected_country", "Kenya"),
-        st.session_state.get("ui_lang", "en"),
-        st.session_state.get("show_images", True),
-        st.session_state.get("dark_mode", False),
-    )
-    _shell_changed = _will_reload_shell
-
-    if _shell_changed:
-        st.session_state._grid_shell_sig = _shell_sig
-        st.session_state._grid_shell_html = _grid_html_str
-    else:
-        # Reuse the previously-rendered shell; only the page's CARDS
-        # (plus committed/poor_img/prefetch) travel via postMessage below.
-        _grid_html_str = st.session_state.get("_grid_shell_html", _grid_html_str)
 
     with st.container(key="grid_iframe_container"):
         st.iframe(_grid_html_str, height=750)
