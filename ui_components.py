@@ -3590,6 +3590,43 @@ def visual_review_modal(support_files):
 
         cols_per_row = st.session_state.get("grid_cols_per_row", 5)
 
+        # --- Skeleton placeholder ------------------------------------
+        # Masks whatever reload/paint work still has to happen (either a
+        # genuine srcdoc rebuild on a structural change, or just the
+        # brief gap while build_fast_grid_html/prefetch computations run)
+        # so any flicker happens behind a pulsing skeleton instead of
+        # being visible on the actual product images. This mirrors the
+        # skeleton step that existed before it was dropped; combined with
+        # the shell-reuse/postMessage-cards mechanism below, the skeleton
+        # should now only need to appear on genuine structural changes,
+        # not on every page turn.
+        _will_reload_shell = (cols_per_row, st.session_state.get("selected_country", "Kenya"),
+                               st.session_state.get("ui_lang", "en"), st.session_state.get("show_images", True),
+                               st.session_state.get("dark_mode", False)) != st.session_state.get("_grid_shell_sig")
+        _skel_placeholder = None
+        if _will_reload_shell:
+            skeleton_html = (
+                """
+    <style>
+      .sk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
+      .sk-card{border-radius:12px;overflow:hidden;background:#f3f4f6;height:260px;
+               animation:pulse 1.4s ease-in-out infinite}
+      @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+      progress { width: 100%; height: 6px; border: none; border-radius: 4px; margin-bottom: 15px; }
+      progress::-webkit-progress-bar { background-color: #ffe5cc; border-radius: 4px; }
+      progress::-webkit-progress-value { background-color: #f97316; border-radius: 4px; }
+      progress::-moz-progress-bar { background-color: #f97316; border-radius: 4px; }
+    </style>
+    <div style="font-family: sans-serif; color: #f97316; font-size: 14px; font-weight: bold; margin-bottom: 5px;">Loading Page...</div>
+    <progress></progress>
+    <div class="sk-grid">
+    """
+                + "".join(['<div class="sk-card"></div>'] * 12)
+                + "</div>"
+            )
+            _skel_placeholder = st.empty()
+            _skel_placeholder.html(skeleton_html)
+
         grid_html = build_fast_grid_html(
             page_data=page_data,
             flags_mapping=support_files.get("flags_mapping", {}),
@@ -3606,6 +3643,8 @@ def visual_review_modal(support_files):
             curr_flag=curr_flag,
         )
 
+        if _skel_placeholder is not None:
+            _skel_placeholder.empty()
 
     # Unpack the grid html and its sync data (committed, poor_img_sids, prefetch, cards)
     _grid_html_str, _committed_json, _poor_img_sids_json, _prefetch_json, _cards_json = grid_html
@@ -3621,6 +3660,8 @@ def visual_review_modal(support_files):
     # show/hide images, dark mode) — page/filter/sort changes reuse the
     # existing iframe document and push the new CARDS through the same
     # postMessage bridge already used for committed/poor_img/prefetch.
+    # (_will_reload_shell / the shell-signature tuple was already computed
+    # above, before build_fast_grid_html ran, to decide on the skeleton.)
     _shell_sig = (
         cols_per_row,
         st.session_state.get("selected_country", "Kenya"),
@@ -3628,8 +3669,7 @@ def visual_review_modal(support_files):
         st.session_state.get("show_images", True),
         st.session_state.get("dark_mode", False),
     )
-    _prev_shell_sig = st.session_state.get("_grid_shell_sig")
-    _shell_changed = _shell_sig != _prev_shell_sig
+    _shell_changed = _will_reload_shell
 
     if _shell_changed:
         st.session_state._grid_shell_sig = _shell_sig
