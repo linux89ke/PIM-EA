@@ -5,11 +5,13 @@ ui_components.py - All Streamlit UI rendering components, dialogs, and the image
 import base64
 import concurrent.futures
 import gc
+import hashlib
 import html as html_lib
 import json
 import logging
 import re
 import zipfile
+from collections import OrderedDict
 from io import BytesIO
 
 import orjson
@@ -946,25 +948,30 @@ def render_flag_expander(
         )
 
     def get_img(row):
-        if not img_col or img_col not in row:
-            return None
         sid = row.get("PRODUCT_SET_SID")
         name = row.get("NAME", "")
         brand = row.get("BRAND", "")
-        img_val = row.get(img_col, "")
+        
+        img_val = ""
+        if img_col and img_col in row:
+            img_val = row.get(img_col, "")
+            
+        if pd.isna(img_val) or not str(img_val).strip():
+            for fallback in ["MainImage", "Image", "IMAGE1_ZIP", "Url", "url", "main_image", "MAIN_IMAGE"]:
+                if fallback in row and pd.notna(row[fallback]) and str(row[fallback]).strip():
+                    img_val = row[fallback]
+                    break
+
         if pd.isna(img_val):
             img_val = ""
+            
         zip_img = _get_image_from_zip(name, brand, img_val)
         if zip_img:
             return zip_img
-        if (
-            "IMAGE1_ZIP" in row
-            and pd.notna(row["IMAGE1_ZIP"])
-            and str(row["IMAGE1_ZIP"]).startswith("http")
-        ):
-            return str(row["IMAGE1_ZIP"])
+            
         if str(img_val).startswith("http"):
             return str(img_val).replace("http://", "https://", 1)
+            
         return None
     if "GLOBAL_PRICE" in df_view.columns and "GLOBAL_SALE_PRICE" in df_view.columns:
 
@@ -1262,12 +1269,10 @@ def build_fast_grid_html(
     prefetch_urls=None,
     scroll_to_top=False,
     show_images=True,
-    seller_trust=None,
     support_files=None,
     curr_sort="",
     curr_flag="",
 ):
-    if seller_trust is None: seller_trust = {}
     if support_files is None: support_files = {}
 
     from translations import get_translation
@@ -1357,7 +1362,13 @@ def build_fast_grid_html(
         "</svg>"
     )
 
-    _zip_img_cache: dict = {}
+    # Persist across reruns/page-turns instead of rebuilding per call —
+    # previously this was a fresh {} every call, so ZIP image lookups for
+    # already-seen (name, brand, img_url) combos were redone on every
+    # page turn / rerun instead of being cached.
+    if "_zip_img_cache" not in st.session_state:
+        st.session_state._zip_img_cache = {}
+    _zip_img_cache: dict = st.session_state._zip_img_cache
 
     _zip_index_ss = st.session_state.get("_zip_sid_index")
     _zip_sid_set = set()
@@ -1617,7 +1628,7 @@ def build_fast_grid_html(
         )
     _cols_btns = "".join(_cols_btns_parts)
 
-    _grid_sync_data = (committed_json, poor_img_sids_json, prefetch_json)
+    _grid_sync_data = (committed_json, poor_img_sids_json, prefetch_json, cards_json)
     _html_str = f"""<!DOCTYPE html>
 <html dir="{html_dir}">
 <head>
@@ -1782,16 +1793,8 @@ def build_fast_grid_html(
   .card.committed-rej.brand-image-rej .rej-label {{ color: #2E7D32 !important; }}
   .card.committed-rej.brand-image-rej .rej-overlay {{ background: rgba(232, 245, 233, 0.6) !important; }}
 
-  /* 🧠 Highlights & Trust Badges */
+  /* 🧠 Highlights */
   .hlt {{ background: #fee2e2; color: #b91c1c; font-weight: 800; border-radius: 2px; padding: 0 2px; }}
-  .trust-badge {{
-    position: absolute; top: 10px; left: 10px;
-    background: #ef4444; color: #fff; font-size: 10px; font-weight: 800;
-    padding: 4px 8px; border-radius: 6px; z-index: 100;
-    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
-    cursor: pointer; transition: transform 0.2s;
-  }}
-  .trust-badge:hover {{ transform: scale(1.1); background: #dc2626; }}
 
   /* Per-card undo shimmer */
   .card.undo-processing {{
@@ -2064,17 +2067,38 @@ var COMMITTED = {{}};
 var POOR_IMG_SIDS = new Set();
 var PREFETCH_URLS = {{}};
 var PLACEHOLDER = "{_PLACEHOLDER_SVG}";
+var _lastCardsSig = null;
 
 window.addEventListener('message', function(e) {{
   if (e.data && e.data.type === 'SYNC_STATE') {{
+    var cardsChanged = false;
+    if (e.data.cards) {{
+      // A new page/filter/sort of cards arrived over postMessage instead
+      // of via a full srcdoc reload. This is what avoids the multi-flicker
+      // on page turns: the iframe document itself never reloads, so
+      // already-decoded images for repeated URLs aren't re-fetched, and
+      // the browser doesn't tear down/rebuild the whole DOM.
+      var sig = e.data.cards_sig || null;
+      if (sig === null || sig !== _lastCardsSig) {{
+        CARDS = e.data.cards;
+        _lastCardsSig = sig;
+        cardsChanged = true;
+      }}
+    }}
     if (e.data.committed) COMMITTED = e.data.committed;
     if (e.data.poor_img_sids) POOR_IMG_SIDS = new Set(e.data.poor_img_sids);
     if (e.data.prefetch) PREFETCH_URLS = e.data.prefetch;
     closeGhostOverlay();
-    
+
     var oldScroll = window.scrollY;
     renderAll();
-    window.scrollTo(0, oldScroll);
+    // Only reset scroll to top on an actual page/filter change (cardsChanged);
+    // for committed/poor_img/prefetch-only syncs, preserve scroll position.
+    if (cardsChanged && e.data.scroll_to_top) {{
+      window.scrollTo(0, 0);
+    }} else {{
+      window.scrollTo(0, oldScroll);
+    }}
   }}
 }});
 var LABELS = {labels_json};
@@ -2321,7 +2345,6 @@ function buildCardActionsHtml(safeSid, warnings, cardData) {{
 
 var UNNECESSARY_WORDS = {_js_json(support_files.get("unnecessary_words", []))};
 var PROHIBITED_WORDS = {_js_json(support_files.get("prohibited_words", []))};
-var SELLER_TRUST = {_js_json(seller_trust)};
 
 function getHighlightedName(card) {{
   var name = card.name;
@@ -2340,18 +2363,6 @@ function getHighlightedName(card) {{
 
   return hName;
 }}
-
-window.rejectAllFromSeller = function(seller) {{
-  var sids = CARDS.filter(c => c.seller === seller).map(c => c.sid);
-  sids.forEach(sid => {{
-    if (!(sid in staged)) {{
-      if (sid in selected) delete selected[sid];
-      staged[sid] = "Bulk Seller Reject (High Risk)";
-      replaceCard(sid);
-    }}
-  }});
-  updateSelCount();
-}};
 
 function renderCard(card) {{
   var sid = card.sid;
@@ -2444,16 +2455,9 @@ function renderCard(card) {{
     actHtml = buildCardActionsHtml(safeSid, card.warnings, card);
   }}
 
-    var trustBadge = '';
-    var score = SELLER_TRUST[card.seller] || 0;
-    if (score > 80) {{
-      trustBadge = `<div class="trust-badge" onclick="event.stopPropagation();window.rejectAllFromSeller('${{card.seller.replace(/'/g,"\\\\'")}}')" title="Seller has ${{score}}% rejection rate. Click to reject all from this seller.">High Risk Seller</div>`;
-    }}
-
   var dataAttrs = 'data-sid="' + escapeHtml(String(card.data_sid||'')) + '" data-name="' + escapeHtml(String(card.data_name||'')) + '" data-brand="' + escapeHtml(String(card.data_brand||'')) + '" data-cat="' + escapeHtml(String(card.data_cat||'')) + '"';
   return `<div class="${{cls}}" id="card-${{escapeHtml(sid)}}" ${{dataAttrs}} tabindex="0" onclick="window.toggleSelect('${{safeSid}}',event)">
     <div class="card-img-wrap">
-      ${{trustBadge}}
       ${{priceHtml}}
       <div class="warn-wrap">${{warnHtml}}</div>
       <div id="debug-${{escapeHtml(sid)}}" class="debug-hud"></div>
@@ -3351,36 +3355,44 @@ def visual_review_modal(support_files):
             review_data["CATEGORY"].astype(str).isin(search_categories)
         ]
 
-    if curr_flag or curr_sort:
-        _fr_flag_map = fr.set_index("ProductSetSid")["FLAG"].to_dict() if "FLAG" in fr.columns else {}
-        _fr_comment_map = fr.set_index("ProductSetSid")["Comment"].to_dict() if "Comment" in fr.columns else {}
-        _zip_index = st.session_state.get("_zip_sid_index")
-        _zip_status_cols = st.session_state.get("_zip_status_cols", [])
-        _zip_prefetch_map = st.session_state.get("_zip_prefetch_map", {})
-        _staged_sids = set(st.session_state.get("_stagedRejections", {}).keys())
-        
-        def get_warnings(sid):
-            w = []
-            comment = str(_fr_comment_map.get(sid, "")).lower()
-            if "stretched" in comment or "tall" in comment: w.append("Tall (Screenshot?)")
-            if "stretched" in comment or "wide" in comment: w.append("Wide Aspect")
-            if "blurry" in comment or "low res" in comment or "resolution" in comment or "small" in comment: w.append("Low Resolution")
-            
-            flag = _fr_flag_map.get(sid)
-            if pd.notna(flag) and flag not in ("Approved", "Manual review", "Approved by User"):
-                w.append(flag)
-                
-            if _zip_index is not None and sid in _zip_index.index:
-                zrow = _zip_index.loc[sid]
-                if hasattr(zrow, "iloc") and hasattr(zrow, "shape") and len(zrow.shape) == 2:
-                    zrow = zrow.iloc[0]
-                for zcol in _zip_status_cols:
-                    if str(zrow.get(zcol, "")).lower() == "rejected":
-                        zflag = _zip_prefetch_map.get(zcol, zcol.replace("_Status", "").replace("_", " ").title())
-                        if zflag not in w: w.append(zflag)
-            return list(dict.fromkeys(w))
+    # --- Shared warning computation -------------------------------------
+    # Single source of truth for per-SID warnings, used both for the
+    # flag/sort filter pass (over review_data, potentially many rows) and
+    # for the per-page display pass (over just page_data, ~ipp rows).
+    # Previously these were two separately-written implementations that
+    # could silently drift out of sync, and the page-display version did
+    # an O(n) DataFrame scan (`fr[fr["ProductSetSid"] == sid]`) per row
+    # instead of a dict lookup.
+    _fr_flag_map = fr.set_index("ProductSetSid")["FLAG"].to_dict() if "FLAG" in fr.columns else {}
+    _fr_comment_map = fr.set_index("ProductSetSid")["Comment"].to_dict() if "Comment" in fr.columns else {}
+    _zip_index = st.session_state.get("_zip_sid_index")
+    _zip_status_cols = st.session_state.get("_zip_status_cols", [])
+    _zip_prefetch_map = st.session_state.get("_zip_prefetch_map", {})
+    _staged_sids = set(st.session_state.get("_stagedRejections", {}).keys())
 
-        review_data["_warnings"] = review_data["ProductSetSid"].apply(get_warnings)
+    def _compute_warnings(sid):
+        w = []
+        comment = str(_fr_comment_map.get(sid, "")).lower()
+        if "stretched" in comment or "tall" in comment: w.append("Tall (Screenshot?)")
+        if "stretched" in comment or "wide" in comment: w.append("Wide Aspect")
+        if "blurry" in comment or "low res" in comment or "resolution" in comment or "small" in comment: w.append("Low Resolution")
+
+        flag = _fr_flag_map.get(sid)
+        if pd.notna(flag) and flag not in ("Approved", "Manual review", "Approved by User"):
+            w.append(flag)
+
+        if _zip_index is not None and sid in _zip_index.index:
+            zrow = _zip_index.loc[sid]
+            if hasattr(zrow, "iloc") and hasattr(zrow, "shape") and len(zrow.shape) == 2:
+                zrow = zrow.iloc[0]
+            for zcol in _zip_status_cols:
+                if str(zrow.get(zcol, "")).lower() == "rejected":
+                    zflag = _zip_prefetch_map.get(zcol, zcol.replace("_Status", "").replace("_", " ").title())
+                    if zflag not in w: w.append(zflag)
+        return list(dict.fromkeys(w))
+
+    if curr_flag or curr_sort:
+        review_data["_warnings"] = review_data["ProductSetSid"].apply(_compute_warnings)
 
     if curr_flag:
         if curr_flag == "committed":
@@ -3420,7 +3432,10 @@ def visual_review_modal(support_files):
     ipp = st.session_state.get("grid_items_per_page", 50)
     total_pages = max(1, (len(review_data) + ipp - 1) // ipp)
     if st.session_state.get("grid_page", 0) >= total_pages:
-        st.session_state.grid_page = 0
+        # Clamp to the nearest valid page instead of bouncing all the way
+        # back to page 0 — e.g. a user on page 9 who applies a filter that
+        # shrinks the result set to 7 pages should land on page 7, not 1.
+        st.session_state.grid_page = total_pages - 1
 
     st.markdown(f"<div style='margin-bottom:-10px;color:#6b7280;font-size:12px;'>Total items: {len(review_data)}</div>", unsafe_allow_html=True)
 
@@ -3501,59 +3516,30 @@ def visual_review_modal(support_files):
         page_start = st.session_state.grid_page * ipp
         page_data = review_data.iloc[page_start : page_start + ipp]
 
-        _poor_img_comments = (
-            fr[fr["FLAG"].isin(["Image Stretched", "Image Blurry", "Poor images"])]
-            .set_index("ProductSetSid")["Comment"]
-            .to_dict()
-        )
+        # Reuse the same _compute_warnings() used for the flag/sort filter
+        # pass above, instead of a second, slightly-different
+        # implementation. This also replaces an O(n) DataFrame scan per
+        # row (`fr[fr["ProductSetSid"] == sid]`) with the dict lookups
+        # already built in _compute_warnings/_fr_flag_map.
         page_warnings = {}
         for _sid in page_data["PRODUCT_SET_SID"].astype(str):
-            _comment = _poor_img_comments.get(_sid, "")
-            _warns = []
-            if _comment:
-                _cl = _comment.lower()
-                if "stretched" in _cl or "tall" in _cl:
-                    _warns.append("Tall (Screenshot?)")
-                if "stretched" in _cl or "wide" in _cl:
-                    _warns.append("Wide Aspect")
-                if (
-                    "blurry" in _cl
-                    or "low res" in _cl
-                    or "resolution" in _cl
-                    or "small" in _cl
-                ):
-                    _warns.append("Low Resolution")
-
-            _row_fr = fr[fr["ProductSetSid"].astype(str) == _sid]
-            if not _row_fr.empty:
-                _flag = _row_fr.iloc[0]["FLAG"]
-                if _flag and _flag not in ("Approved", "Manual review"):
-                    _warns.append(_flag)
-
-            _zip_index = st.session_state.get("_zip_sid_index")
-            if _zip_index is not None and _sid in _zip_index.index:
-                _zrow = _zip_index.loc[_sid]
-                if hasattr(_zrow, "iloc") and hasattr(_zrow, "shape") and len(_zrow.shape) == 2:
-                    _zrow = _zrow.iloc[0]
-                _zip_status_cols = st.session_state.get("_zip_status_cols", [])
-                _zip_prefetch_map = st.session_state.get("_zip_prefetch_map", {})
-                for _zcol in _zip_status_cols:
-                    if str(_zrow.get(_zcol, "")).lower() == "rejected":
-                        _zflag = _zip_prefetch_map.get(_zcol, _zcol.replace("_Status", "").replace("_", " ").title())
-                        if _zflag not in _warns:
-                            _warns.append(_zflag)
-
+            _warns = _compute_warnings(_sid)
             if _warns:
-                page_warnings[_sid] = list(dict.fromkeys(_warns))
+                page_warnings[_sid] = _warns
 
-        seller_trust = {}
-        if not fr.empty and "SELLER_NAME" in fr.columns:
-            _stats = fr.groupby("SELLER_NAME")["Status"].value_counts(normalize=True).unstack().fillna(0)
-            if "Rejected" in _stats.columns:
-                seller_trust = (_stats["Rejected"] * 100).round(1).to_dict()
+        # Bounded prefetch cache: previously each distinct
+        # (page, len(review_data), ipp) combo added a brand-new permanent
+        # top-level session_state key that was never evicted, so a long
+        # session paging/filtering around would leak session_state
+        # entries indefinitely. Store all entries under one dict with a
+        # simple FIFO cap instead.
+        _PREFETCH_CACHE_MAX_ENTRIES = 30
+        if "_prefetch_cache" not in st.session_state:
+            st.session_state._prefetch_cache = OrderedDict()
+        _prefetch_cache = st.session_state._prefetch_cache
 
-        _prefetch_cache_key = f"prefetch_{st.session_state.grid_page}_{len(review_data)}_{ipp}"
-        if _prefetch_cache_key not in st.session_state:
+        _prefetch_cache_key = f"{st.session_state.grid_page}_{len(review_data)}_{ipp}"
+        if _prefetch_cache_key not in _prefetch_cache:
             prefetch_urls = []
             _already_warm = set(st.session_state.get("_grid_warm_urls", []))
             seen_urls = set(_already_warm)
@@ -3572,9 +3558,13 @@ def visual_review_modal(support_files):
                     if url.startswith("https") and url not in seen_urls:
                         seen_urls.add(url)
                         prefetch_urls.append(url)
-            st.session_state[_prefetch_cache_key] = prefetch_urls
+            _prefetch_cache[_prefetch_cache_key] = prefetch_urls
+            _prefetch_cache.move_to_end(_prefetch_cache_key)
+            while len(_prefetch_cache) > _PREFETCH_CACHE_MAX_ENTRIES:
+                _prefetch_cache.popitem(last=False)
         else:
-            prefetch_urls = st.session_state[_prefetch_cache_key]
+            _prefetch_cache.move_to_end(_prefetch_cache_key)
+            prefetch_urls = _prefetch_cache[_prefetch_cache_key]
 
         rejected_state = {
             sid.strip(): st.session_state[f"quick_rej_reason_{sid.strip()}"]
@@ -3599,28 +3589,6 @@ def visual_review_modal(support_files):
                     rejected_state[_sid] = "Poor images"
 
         cols_per_row = st.session_state.get("grid_cols_per_row", 5)
-        skeleton_html = (
-            """
-    <style>
-      .sk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
-      .sk-card{border-radius:12px;overflow:hidden;background:#f3f4f6;height:260px;
-               animation:pulse 1.4s ease-in-out infinite}
-      @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-      progress { width: 100%; height: 6px; border: none; border-radius: 4px; margin-bottom: 15px; }
-      progress::-webkit-progress-bar { background-color: #ffe5cc; border-radius: 4px; }
-      progress::-webkit-progress-value { background-color: #f97316; border-radius: 4px; }
-      progress::-moz-progress-bar { background-color: #f97316; border-radius: 4px; }
-    </style>
-    <div style="font-family: sans-serif; color: #f97316; font-size: 14px; font-weight: bold; margin-bottom: 5px;">Loading Page...</div>
-    <progress></progress>
-    <div class="sk-grid">
-    """
-            + "".join(['<div class="sk-card"></div>'] * 12)
-            + "</div>"
-        )
-
-        placeholder = st.empty()
-        placeholder.html(skeleton_html)
 
         grid_html = build_fast_grid_html(
             page_data=page_data,
@@ -3633,21 +3601,55 @@ def visual_review_modal(support_files):
             prefetch_urls=prefetch_urls,
             scroll_to_top=scroll_top_flag,
             show_images=st.session_state.get("show_images", True),
-            seller_trust=seller_trust,
             support_files=support_files,
             curr_sort=curr_sort,
             curr_flag=curr_flag,
         )
 
-    placeholder.empty()
-    # Unpack the grid html and its sync data (committed, poor_img_sids, prefetch)
-    _grid_html_str, _committed_json, _poor_img_sids_json, _prefetch_json = grid_html
+
+    # Unpack the grid html and its sync data (committed, poor_img_sids, prefetch, cards)
+    _grid_html_str, _committed_json, _poor_img_sids_json, _prefetch_json, _cards_json = grid_html
+
+    # --- Avoid full iframe reload on page/filter/sort changes ------------
+    # Previously every page turn passed a brand-new srcdoc to st.iframe()
+    # (each with the new page's CARDS baked in), which forced the browser
+    # to tear down and rebuild the entire iframe document — reloading and
+    # re-decoding every image on the page, sometimes visibly more than
+    # once as the follow-up SYNC_STATE postMessage also triggered a
+    # re-render. Instead: only give st.iframe() a new srcdoc when
+    # something *structural* changes (columns per row, country, language,
+    # show/hide images, dark mode) — page/filter/sort changes reuse the
+    # existing iframe document and push the new CARDS through the same
+    # postMessage bridge already used for committed/poor_img/prefetch.
+    _shell_sig = (
+        cols_per_row,
+        st.session_state.get("selected_country", "Kenya"),
+        st.session_state.get("ui_lang", "en"),
+        st.session_state.get("show_images", True),
+        st.session_state.get("dark_mode", False),
+    )
+    _prev_shell_sig = st.session_state.get("_grid_shell_sig")
+    _shell_changed = _shell_sig != _prev_shell_sig
+
+    if _shell_changed:
+        st.session_state._grid_shell_sig = _shell_sig
+        st.session_state._grid_shell_html = _grid_html_str
+    else:
+        # Reuse the previously-rendered shell; only the page's CARDS
+        # (plus committed/poor_img/prefetch) travel via postMessage below.
+        _grid_html_str = st.session_state.get("_grid_shell_html", _grid_html_str)
+
     with st.container(key="grid_iframe_container"):
         st.iframe(_grid_html_str, height=750)
         # Inject a zero-height broadcaster that pushes the latest Python state
         # down into the existing static iframe via postMessage.
         # This runs on EVERY rerun and keeps the iframe perfectly in sync
         # WITHOUT destroying/recreating it, eliminating the white flash.
+        # cards_sig lets the iframe-side listener skip a redundant
+        # re-render if the same page's data arrives twice (e.g. from a
+        # retried send).
+        _cards_sig = int(hashlib.md5(_cards_json.encode("utf-8")).hexdigest()[:12], 16)
+        _scroll_top_js = "true" if scroll_top_flag else "false"
         _sync_html = f"""
         <script>
         (function() {{
@@ -3661,7 +3663,10 @@ def visual_review_modal(support_files):
                     type: 'SYNC_STATE',
                     committed: {_committed_json},
                     poor_img_sids: {_poor_img_sids_json},
-                    prefetch: {_prefetch_json}
+                    prefetch: {_prefetch_json},
+                    cards: {_cards_json},
+                    cards_sig: {_cards_sig},
+                    scroll_to_top: {_scroll_top_js}
                   }}, '*');
                 }} catch(e2) {{}}
               }}

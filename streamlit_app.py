@@ -1194,6 +1194,12 @@ def check_restricted_brands(
                     ]
             except Exception:
                 pass
+                
+        # Hardcoded rule: 'Sony' is allowed for video games/playstation
+        if brand_name.lower() == "sony" and "CATEGORY" in current_match.columns:
+            cat_str = current_match["CATEGORY"].astype(str).str.lower()
+            exclude_mask = cat_str.str.contains("gaming|playstation|ps 5|ps5|ps 4|ps4|video game|console|psp|ps vita", regex=True, na=False)
+            current_match = current_match[~exclude_mask]
         if current_match.empty:
             continue
         rejected = current_match[~current_match["_seller_norm"].isin(rule["sellers"])]

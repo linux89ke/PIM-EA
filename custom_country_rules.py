@@ -292,7 +292,7 @@ def check_kebs_banned_products(data: pd.DataFrame) -> pd.DataFrame:
 
     Only applies to Health & Beauty category codes.
     """
-    required = {"PRODUCT_SET_SID", "NAME", "BRAND", "CATEGORY_CODE"}
+    required = {"PRODUCT_SET_SID", "NAME", "BRAND"}
     if data.empty or not required.issubset(data.columns):
         return pd.DataFrame(columns=data.columns)
 
@@ -307,8 +307,18 @@ def check_kebs_banned_products(data: pd.DataFrame) -> pd.DataFrame:
     d = data.copy()
 
     # Filter for H&B categories only
-    cat_mask = d["CATEGORY_CODE"].astype(str).str.strip().isin(hb_codes)
-    target = d[cat_mask].copy()
+    mask_hb = pd.Series(False, index=d.index)
+    if "CATEGORY_CODE" in d.columns:
+        mask_hb = d["CATEGORY_CODE"].astype(str).str.strip().isin(hb_codes)
+    
+    if not mask_hb.all() and "CATEGORY" in d.columns:
+        cat_lower = d["CATEGORY"].astype(str).str.lower()
+        fallback_mask = pd.Series(False, index=d.index)
+        for allowed in _KEBS_ALLOWED_PATH_SECTIONS:
+            fallback_mask |= cat_lower.str.contains(allowed.lower(), na=False)
+        mask_hb = mask_hb | fallback_mask
+        
+    target = d[mask_hb].copy()
     if target.empty:
         return pd.DataFrame(columns=data.columns)
 
@@ -419,7 +429,17 @@ def apply_kebs_banned_rule(sid: str, rec: dict, has_status_col: bool, status: st
         return None
 
     cat_code = str(rec.get("CATEGORY_CODE", "")).strip()
-    if cat_code not in hb_codes:
+    is_hb = (cat_code in hb_codes)
+    
+    if not is_hb:
+        cat_str = str(rec.get("CATEGORY", "")).strip().lower()
+        if cat_str:
+            for allowed in _KEBS_ALLOWED_PATH_SECTIONS:
+                if allowed.lower() in cat_str:
+                    is_hb = True
+                    break
+                    
+    if not is_hb:
         return None
 
     brand_val = str(rec.get("BRAND", "")).strip().lower()
@@ -449,11 +469,18 @@ def apply_kebs_banned_rule(sid: str, rec: dict, has_status_col: bool, status: st
             matched_reason = entry["reason"]
             break
 
+    _GENERIC_KEBS_BRANDS = {"skin", "body", "cream", "clear", "fade", "fair", "hot", "soft", "first", "dream"}
+
     # Step 2: brand-only match + skin-type word
     if not matched_reason:
         for b in meaningful_brands:
-            pat = re.compile(r'^' + re.escape(b) + r'(\b|$)', re.IGNORECASE)
-            name_pat = re.compile(r'^' + re.escape(b) + r'\b', re.IGNORECASE)
+            if b in _GENERIC_KEBS_BRANDS:
+                pat = re.compile(r'^' + re.escape(b) + r'$', re.IGNORECASE)
+                name_pat = re.compile(r'^' + re.escape(b) + r'$', re.IGNORECASE)
+            else:
+                pat = re.compile(r'^' + re.escape(b) + r'(\b|$)', re.IGNORECASE)
+                name_pat = re.compile(r'^' + re.escape(b) + r'\b', re.IGNORECASE)
+            
             if pat.match(brand_val) or name_pat.match(name_val):
                 if _SKIN_PRODUCT_TYPES.search(name_val):
                     matched_reason = brand_only_map.get(b, "Banned by KEBS.")

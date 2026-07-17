@@ -3,6 +3,7 @@ import pandas as pd
 from targeted_audit_filters import (
     evaluate_all_checks,
     diagnose_columns,
+    verify_category_rejections_with_ai,
     CHECK_ORDER,
     CHECK_LABELS,
 )
@@ -16,7 +17,8 @@ _CHECK_ICONS = {
     "warranty": "🛡️",
     "variation": "🔀",
     "fda": "💊",
-    "title_language": "⚖️",
+    "title_weight": "⚖️",
+    "title_english": "🌐",
     "name_brand": "🏷️",
     "image_quality": "🖼️",
     "image_extraction": "🔌",
@@ -112,6 +114,14 @@ def _column_config(df: pd.DataFrame) -> dict:
             cfg["Image"] = st.column_config.LinkColumn("Image")
     if "ProductSetSid" in df.columns:
         cfg["ProductSetSid"] = st.column_config.TextColumn("SID", width="small")
+    if "Product Name" in df.columns:
+        cfg["Product Name"] = st.column_config.TextColumn("Product Name", width="medium")
+    if "Initial Category Path" in df.columns:
+        cfg["Initial Category Path"] = st.column_config.TextColumn("Initial Category Path", width="large")
+    if "Category" in df.columns:
+        cfg["Category"] = st.column_config.TextColumn("Category", width="large")
+    if "Detail" in df.columns:
+        cfg["Detail"] = st.column_config.TextColumn("Detail", width="large")
     return cfg
 
 
@@ -131,6 +141,18 @@ def targeted_audit_modal(support_files):
     country = st.session_state.get("selected_country", "Egypt")
     country_code = {"Kenya": "KE", "Uganda": "UG", "Nigeria": "NG", "Ghana": "GH", "Morocco": "MA", "Egypt": "EG", "Senegal": "SN", "Ivory Coast": "CI"}.get(country, "EG")
 
+    # If the user uploaded a ZIP file (which contains the QC results), restrict the
+    # targeted audit to ONLY those products. This prevents mixing in non-QC'd 
+    # products from an additionally uploaded CSV.
+    qc_zip = st.session_state.get("zip_qc_results", pd.DataFrame())
+    if not qc_zip.empty and not data.empty:
+        _sid_col_qc = next((c for c in ("PRODUCT_SET_SID", "ProductSetSid", "Product Set SID", "cod_productset_sid", "SID") if c in qc_zip.columns), None)
+        if _sid_col_qc and "PRODUCT_SET_SID" in data.columns:
+            zip_sids = set(qc_zip[_sid_col_qc].astype(str).str.strip().unique())
+            data = data[data["PRODUCT_SET_SID"].astype(str).str.strip().isin(zip_sids)].copy()
+            if not fr.empty and "ProductSetSid" in fr.columns:
+                fr = fr[fr["ProductSetSid"].astype(str).str.strip().isin(zip_sids)].copy()
+
     if data.empty:
         st.warning("No data available to audit. Please upload and process files first.")
         if st.button("Close", key="btn_close_audit_empty"):
@@ -149,9 +171,75 @@ def targeted_audit_modal(support_files):
     with clear_col:
         if st.button("Clear Results", width='stretch'):
             st.session_state.pop("_audit_results", None)
+            st.session_state.pop("_category_ai_results", None)
             st.rerun()
 
+    # ── Separate, optional AI category-rejection check ──────────────────────
+    # Independent from Run Full Audit: only sends products the pipeline
+    # REJECTED for category to an AI model, to catch false rejections. The
+    # toggle controlling visibility lives at the bottom of the modal (off by
+    # default); this just reacts to that flag.
+    ai_category_clicked = False
+    if st.session_state.get("_show_ai_category_check", False):
+        ai_cat_col, ai_cat_status_col = st.columns([1.6, 3])
+        with ai_cat_col:
+            ai_category_clicked = st.button(
+                "🤖 AI-Check Category Rejections", width='stretch',
+                help="Sends every product rejected for category to an AI model to "
+                     "double-check whether the rejection was actually correct. "
+                     "Results are added to the audit below and the Word report.",
+            )
+        with ai_cat_status_col:
+            st.caption("Only checks products the pipeline rejected for category. "
+                       "Requires a `keys.txt` file next to the app.")
+
+    if ai_category_clicked:
+        # Always wipe the previous result so we never show stale data
+        st.session_state.pop("_category_ai_results", None)
+        with st.spinner("Preparing to ask AI..."):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            try:
+                base_results = st.session_state.get("_audit_results", pd.DataFrame())
+                st.session_state["_category_ai_results"] = verify_category_rejections_with_ai(
+                    data, 
+                    audit_df=base_results,
+                    progress_bar=progress_bar,
+                    status_text=status_text
+                )
+                progress_bar.progress(1.0)
+                status_text.markdown("**AI Category Verification** — Done ✅")
+                if st.session_state["_category_ai_results"].empty:
+                    st.warning("No results — either there were no category-rejected products, "
+                               "or no `keys.txt` was found next to the app.")
+            except Exception as e:
+                st.error(f"AI category check failed: {type(e).__name__}: {e}")
+                st.session_state["_category_ai_results"] = pd.DataFrame()
+
+        # Merge into the main audit results (if a full audit has already been
+        # run) so this shows up in the same tables/report as everything else.
+        base_results = st.session_state.get("_audit_results", pd.DataFrame())
+        cat_ai_results = st.session_state.get("_category_ai_results", pd.DataFrame())
+        if not cat_ai_results.empty:
+            if base_results.empty:
+                st.session_state["_audit_results"] = cat_ai_results
+            else:
+                st.session_state["_audit_results"] = pd.concat(
+                    [base_results, cat_ai_results], ignore_index=True
+                )
+            # Rebuild the Word report so it reflects the merged results too.
+            st.session_state.pop("_audit_docx_bytes", None)
+            st.session_state.pop("_audit_docx_error", None)
+            with st.spinner("Rebuilding Word report with AI category results..."):
+                try:
+                    st.session_state["_audit_docx_bytes"] = build_docx_report(
+                        fr, st.session_state["_audit_results"], country_label=country_code,
+                    )
+                except Exception as e:
+                    st.session_state["_audit_docx_error"] = f"{type(e).__name__}: {e}"
+
     if run_clicked:
+        st.session_state.pop("_category_ai_results", None)
         with st.spinner("Re-validating every check against the file's own rules..."):
             st.session_state["_audit_results"] = evaluate_all_checks(data, country_code)
 
@@ -263,6 +351,16 @@ def targeted_audit_modal(support_files):
 
     elif run_clicked:
         st.success("✅ No issues found across any check.")
+
+    st.markdown('<hr class="audit-divider">', unsafe_allow_html=True)
+    st.session_state.setdefault("_show_ai_category_check", False)
+    st.toggle(
+        "🤖 Enable AI Category Rejection Check",
+        key="_show_ai_category_check",
+        help="Reveals a button above to send category-rejected products to an "
+             "AI model for a second opinion. Off by default since it costs "
+             "real API calls and time.",
+    )
 
     st.markdown('<hr class="audit-divider">', unsafe_allow_html=True)
     if st.button("Close", key="btn_close_audit_modal", type="secondary", width='stretch'):

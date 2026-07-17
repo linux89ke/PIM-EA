@@ -20,8 +20,6 @@ REINES PALACE
 QuenGel
 Laneige
 C&Q
-Tony Airos
-Always
 Arrow
 Asus
 Acer
@@ -33,9 +31,7 @@ Infinix
 Tecno
 Itel
 Honor
-Gillette
-Bic
-Safisha
+
 JBL
 Beats
 Bose
@@ -46,536 +42,7 @@ Baseus
 Oraimo
 Soundcore
 Skullcandy
-CloseUp
-Close-Up
-Alara
-Dadacare
-Elysium
-Imperial
-Lifebuoy
-Ogx
-Pampered
-Philips
-Revlon
-Softcare
-Tippys
-Titania
-Tropikal
-Vi-John
-Waritex
-Yves
-Ace Bleach
-Afia
-African Blend
-Ajab
-Alison's
-Alpha
-Alvaro
-Amami
-Amana
-Amigo
-Aquafresh
-Aquamist
-Ariel
-Aromat
-Atta Marka
-Avena
-Axe
-Axion Dishwash
-Bahari
-Bahari Flour
-Bahari Fry
-Baileys
-Bake-It
-Balozi
-Baraka Chai
-Baygon
-Bee Healthy
-Bel Tissues
-Belco
-Bic Razors
-Big G
-Bio Foods
-Black & White
-Blue Band
-Bournvita
-Brite
-Broadways
-Brookside
-Brrr Chicken
-Butterfly
-CIL
-Cadbury Dairy Milk
-Caprice
-Captain Cook
-Captain Morgan
-Capwell
-Cerelac Drinks
-Chai Mara
-Chapa Mandashi
-Chef's Pride
-Choco Primo
-Choice Meats
-Chrome
-Clorox
-Club Biscuits
-Club Soda
-Coca-Cola
-Colgate
-Comfort Pads
-Confidence
-Cowboy
-Cussons Baby
-Daawat
-Dabur Herbal
-Daima
-Dark and Lovely
-Darling Hair
-Dasani
-Del Monte
-Delamere
-Desperados
-Dettol Multi-Surface
-Dettol Soap
-Digestive
-Dodo
-Dola
-Doom
-Dormans
-Dove
-Downy
-Dr. Oetker
-Eclairs
-Elianto
-Elliots
-Exe
-Fahari Ya Kenya
-Fair & Lovely
-Famila
-Famous Grouse
-Fanta
-Farmer's Choice
-Fay
-Festive
-Fiesta
-Flirt Vodka
-Flora
-Fresh Fri
-Fresha
-Fruiticana
-Frutall
-Geisha
-Gental
-Gibsons Coffee
-Gilani's Poloni
-Gilbeys
-Ginger Ale
-Ginger Nuts
-Glade
-Glow & Lovely
-Gold Crown
-Gold Crown Honey
-Golden Flour
-Golden Fry
-Gordon's
-Gorillo
-Guinness
-Hanan
-Happy Cow
-Harpic
-Heineken
-Heinz
-Highlands
-Hostess
-Huggies
-Hunter's Choice
-Ilara
-Imara Chai
-Imperial Leather
-Inyange
-Jamaa
-Jambo
-Jameson
-Java House Coffee
-Jebel
-Jik
-Jogoo
-Johnnie Walker
-Johnson's Baby
-Juicy Fruit
-KCC
-KSL
-Kabras Sugar
-Kaluwe Honey
-Kane Extra
-Kapa
-Kapa Chai
-Karatina Tea
-Kasuku
-Kenafric Baking Powder
-Kenafric Spices
-Kenchic
-Kensalt
-Kenya Cane
-Kenylon
-Kericho Gold
-Keringet
-Ketepa
-Kifaru
-Kimbo
-Kinangop
-Kipepeo
-Kiwi Shoe Polish
-Kleenex
-Kleenit
-Knorr
-Konyagi
-Kotex
-Krackles
-Krest
-Krunchy
-Kwale Sugar
-Lady Gay
-Lattita
-Listerine
-Lola
-Lucozade
-Luron
-Maggi
-Manji
-Marini Naturals
-Mayers Water
-McVitie's
-Mchuzi Mix
-Melvins Tea
-Menengai
-Menengai Lemon
-Mentos
-Mikalla
-Milo
-Minute Maid
-Molo Milk
-Monster
-Morning Fresh
-Mortein
-Mosara
-Mount Kenya Milk
-Movvit
-Msafi
-Mt. Kenya
-Mukurweini Milk
-Mumias Sugar
-Mwea Rice
-Mzuri
-Nature's Own
-Ndovu
-Ndovu Soap
-Nescafe
-Ngano
-Nice & Lovely
-Nice Biscuits
-Nivea
-Nordic
-Novida
-NuVita
-Nuru Flour
-Nuru Oil
-Nuteez
-Nutri
-Nyeri Tea
-Nzoia Sugar
-Oishi
-Olive Gold
-Omo
-Oral-B
-Oreo
-Ovaltin
-PK
-Palmolive
-Pampers
-Pascha
-Patco
-Pawa
-Pearl
-Pears
-Pembe
-Pepsodent
-Peptang
-Peptang Juices
-Persil
-Pika
-Pilsner
-Pin Pop
-Pishori Rice
-Plaice
-Platnum Water
-Pledge
-Postman
-Pradip
-Predator
-Prestige
-Pril
-Protex
-Pwani Soap
-Pwani Sunlight
-Quencher
-Raha Premium
-Raid
-Raka Cheese
-Ranee
-Red Bull
-Rexona
-Ribena
-Richot
-Rina
-Rinsun
-Roiko
-Rose Tissues
-Rosy
-Royco
-Safa
-Safari Bites
-Safari Pure Water
-Salit
-Salit Dairy
-Sameer Dairy
-Santa Maria
-Sasini Tea
-Savanna
-Sawa
-Schweppes
-Sea Harvest
-Senator
-Simbas
-Sindano Rice
-Sirimon Cheese
-Sleek
-Smirnoff
-Snapp
-SoftSheen-Carson
-Soko
-Sony Sugar
-Sparkle
-Sparkle Pads
-Spring Valley Coffee
-Sprite
-Stoney Tangawizi
-Sukari
-Summit
-Sunkist
-Sunlight
-Sunlight Bar
-Sunquick
-Sunrice
-Supa Dip
-Supaloaf
-Super Loaf
-Supreme Flour
-Suzie Beauty
-Sミノフ
-TCB Nature's Protein
-Taifa
-Tanqueray
-Target
-Tena
-Tissot
-Toilex
-Top Fry
-Tosha Tissues
-Toss
-Toss Sensitive
-Tree Top
-Trisoda
-Tropical
-Tropical Heat
-Trufoods
-Tusker
-Tuzo
-Ufuta
-Unga
-Urban Bites
-Ushindi
-Utake Coffee
-Valon
-Vaseline
-Velvex
-Vernel
-Viceroy
-Vim
-Waba
-White Cap
-White Wash
-Whitedent
-Wimbi Flours
-Zesta
-Zoe
-Acnes
-Adidas
-Afrisense
-Alana
-Alora
-Amara
-Anashe
-Arimis
-Aris
-Aryuv
-Ashanti
-Ashanti-Q
-Astonish
-Aunt
-Aussie
-Aveeno
-Ballet
-Bigen
-Bio
-Bio-Oil
-Bodycology
-Brio
-Brut
-Cantu
-Carex
-Carrefour
-Chanira
-Chase
-Active
-Honey & Butter
-SofnFree
-Top Class
-Arm & Hammer
-Uncle Bills
-Body Fantasies
-Dr Bronas
-Girlfriend
-Freshmed
-BioOil
-Bodycology
-Chris
-Cleo
-Clere
-Cockrakill
-Colorbar
-Cosmo
-Cottons
-Creme
-Cussons
-Dabur
-Darling
-Dermo
-Destiny
-Detrex
-Dettol
-Dhahabu
-Diva
-Dorall
-Durex
-Ecover
-Eh
-Elvive
-Emami
-Emper
-Energy
-Enliven
-Eventone
-Fabulous
-Fade
-Fadeout
-Famrico
-Feah
-Femella
-Fields
-Flamingo
-Garnier
-Grounded
-Himalaya
-Himani
-Hobby
-Irish
-Ixora
-Jergens
-Jolen
-Jossy
-Joy
-Kapi
-Karis
-Karis/N
-Kings
-La
-Lady
-Lafz
-Lattafa
-Lemongrass
-Lorenti
-Lux
-Malibu
-Maybelline
-Medisure
-Mentholatum
-Metha
-Miadi
-Mielle
-Miracle
-Mirage
-Mischief
-Molped
-Motions
-N&L
-Neutrogena
-Nice&Lovely
-Nisha
-Nuage
-Nukibell
-Omak
-Opal
-Oral
-Ors
-Pam
-Pantene
-Papilion
-Paris
-Petrova
-Prive
-Quip
-Radiant
-Raf
-Rasasi
-Rave
-Remy
-Revel
-Rohto
-Sapil
-Saraya
-Satiskin
-Septona
-Shavecode
-Shower
-Shuggy
-Simple
-Siri
-Smartpro
-Sofn'Free
-Sofy
-St.Ives
-Stargift
-Sts
-Supermax
-Tampax
-Tcb
-Tendercare
-Tony
-Tresemme
-Tweety
-Ultimate
-Vatika
-Veet
-Venus
-Versman
-Vivia
-Warachi
-Waterlily
-Xbc
-Yenbu
-Zayn & Myza
-Con Air
+
 Canon
 Nikon
 GoPro
@@ -586,6 +53,7 @@ Epson
 Brother
 Lexmark
 Xerox
+
 KitchenAid
 Whirlpool
 Haier
@@ -596,6 +64,7 @@ Morphy Richards
 Smeg
 Electrolux
 Sharp
+
 IKEA
 Ashley Furniture
 Wayfair
@@ -606,6 +75,7 @@ Tempur-Pedic
 Sealy
 Sleep Number
 Casper
+
 Crocs
 Skechers
 Clarks
@@ -616,6 +86,7 @@ Steve Madden
 Geox
 ECCO
 Salomon
+
 Decathlon
 Quechua
 Karrimor
@@ -625,6 +96,7 @@ Lotto
 Mizuno
 Yonex
 Wilson
+
 Ray-Ban
 Oakley
 Persol
@@ -635,6 +107,7 @@ Tom Ford
 Oliver Peoples
 Warby Parker
 Gentle Monster
+
 Michael Kors
 Coach
 Kate Spade
@@ -645,6 +118,7 @@ Furla
 Guess
 Marc Jacobs
 Rebecca Minkoff
+
 Diesel
 G-Star RAW
 Superdry
@@ -655,6 +129,7 @@ Hugo Boss
 Armani Exchange
 Massimo Dutti
 COS
+
 Unilever
 Procter & Gamble
 Colgate-Palmolive
@@ -664,12 +139,19 @@ Beiersdorf
 Amway
 Oriflame
 Mary Kay
+Neutrogena
+
 Olay
+Nivea
+Garnier
 Biore
+Simple
 Vichy
 Eucerin
+Aveeno
 Avene
 SVR
+
 Glossier
 ColourPop
 Pat McGrath Labs
@@ -680,7 +162,10 @@ Benefit Cosmetics
 Bobbi Brown
 Laura Mercier
 Make Up For Ever
+
 Hask
+Cantu
+Aussie
 Herbal Essences
 Matrix
 Redken
@@ -688,14 +173,29 @@ Paul Mitchell
 Schwarzkopf
 Wella
 Luster's
+
+Persil
+Ariel
+Sunlight
+Omo
 Comfort
+Downy
 Febreze
+Glade
 Air Wick
+Dettol
+
+Guinness
+Heineken
 Budweiser
 Corona
+Smirnoff
+Johnnie Walker
 Hennessy
 Absolut
+Baileys
 Jack Daniel's
+
 Kellogg's
 Weetabix
 Quaker
@@ -703,8 +203,12 @@ Cadbury
 Mars
 Snickers
 KitKat
+Oreo
 Danone
 Yoplait
+
+
+
 LEGO
 Mattel
 Hasbro
@@ -723,6 +227,7 @@ Tapo
 Netgear
 D-Link
 Linksys
+
 Synology
 QNAP
 Asustor
@@ -733,6 +238,7 @@ G-Technology
 Buffalo
 Promise Technology
 iStorage
+
 Ubiquiti
 MikroTik
 Cambium Networks
@@ -763,6 +269,7 @@ Blu
 Meizu
 Coolpad
 LeEco
+
 Roku
 Fire TV
 Chromecast
@@ -813,14 +320,24 @@ Cetaphil
 Kiehl's
 Clinique
 Dermalogica
+CeraVe
+La Roche-Posay
+Cetaphil
+Kiehl's
+Clinique
+Dermalogica
 COSRX
 Innisfree
+Laneige
 Etude House
 Missha
 Some By Mi
+Pantene
 Head & Shoulders
 Tresemmé
 SheaMoisture
+OGX
+Dove
 AirPods Pro
 Apple
 Samsung
@@ -836,7 +353,9 @@ HP
 Lenovo
 Microsoft
 Google
+
 Nike
+Adidas
 Puma
 Reebok
 New Balance
@@ -848,6 +367,7 @@ Timberland
 Columbia
 The North Face
 Patagonia
+
 Zara
 H&M
 Forever 21
@@ -857,6 +377,7 @@ Hollister
 Abercrombie & Fitch
 Levi's
 Wrangler
+
 Gucci
 Balenciaga
 Prada
@@ -866,90 +387,168 @@ Givenchy
 Off-White
 Supreme
 BAPE
+
 Rolex
 Casio
 Seiko
 Fossil
+Tissot
 TAG Heuer
+
 Hisense
 TCL
 Bosch
+Philips
 Panasonic
 Black+Decker
+
+Coca-Cola
 Pepsi
 Nestlé
+Red Bull
 Nescafé
 Pringles
+
 Samsonite
 American Tourister
 Herschel
 Eastpak
+
 PlayStation
 Xbox
 Nintendo
 Razer
 Logitech
+
 L'Oréal
 Estée Lauder
+Maybelline
 M.A.C
 Fenty Beauty
 Huda Beauty
+Rare Beauty
+Kylie Cosmetics
 Charlotte Tilbury
+E.L.F.
 NYX Cosmetics
+Revlon
 CoverGirl
 Max Factor
 Rimmel London
 Essence
 Catrice
+
+CeraVe
+La Roche-Posay
+Cetaphil
+Kiehl's
+Clinique
+Dermalogica
 The Ordinary
+Laneige
+COSRX
+Innisfree
+Etude House
+Missha
+Some By Mi
+
 Bath & Body Works
+Vaseline
+Sensodyne
 Clean & Clear
 Johnson's
 Cow & Gate
 Palmer's
 Pond's
 Dr Teal's
+Burt's Bees
+
+Dior Beauty
+Yves Saint Laurent Beauty
+Lancôme
+Guerlain
+Clarins
+Shiseido
+
 Armaf
+Lattafa
 Ajmal
+Bond No. 9
+
 Bata
 Kendall + Kylie
 Juventus
+
 Zaron Cosmetics
 Flori Roberts
 Note Cosmetics
 Morgan Taylor
 BlueSky
 Maxfine
+Vaseline
+L'Oréal
+Revlon
+NYX Cosmetics
+CoverGirl
+Max Factor
+Rimmel London
 Avon
+Essence
+Catrice
 Hamdard
 Machislet 
 Maxfine 
 Balletism 
 ARHANORY 
+Blk Opl
+Maxfine 
 WIFINIT 
+Maxfine 
 Anashe 
 Maffick 
+Anashe 
 ANGLICOLOR 
 WIFINIT
 Ushas
 Allso
 ROZO
+Ushas
+Flori Roberts
+The Ordinary
+Charlotte Tilbury
 Milani Cosmetics
 Blue Sky
+BlueSky
 Bronze
 WHO'S THAT Girl
+REINES PALACE
+Note Cosmetics
 Divas
+Estée Lauder
+Zaron Cosmetics
 Reazeal
 Elf
 Hush Beauty
 Ever Beauty
+MORGAN TAYLOR
+QuenGel
+Note Cosmetics
 3Q beauty
+Zaron Cosmetics
 Lady Flora
 PINPAI
 SuzieBeauty
+Estée Lauder
+Huda Beauty
+MORGAN TAYLOR
 BELLAZURI
 ARDELL
+Anashe
+Maybelline
+Fenty
 L.A. Girl
+M.A.C
+Maxfine
 Mei Dian
 Daawati
 Catherine'S
@@ -963,18 +562,23 @@ Cream 2
 Creme 21
 Dalan d'Olive
 Dr Johnson's
+Dr Teal'S
 Dr. Brown'S
 Dr. Miracle'S
 FANYA 254 KWA UPANA
 FAYANKÃU
+Forever 21
 Formula 1
 Gluta C
 Gluta C & E
 Golden Hour
+GORDON'S
 High Power
 House 38
 Hp Power
 J Unique
+Jack Daniel'S
+Johnson's
 Junbao Power
 Junction 18
 June'S Secrets
@@ -1022,6 +626,7 @@ Keep Calm And Carry On
 Keep Jewelry Silver 925
 Kei And Kori
 K'Ella
+Kellogg's
 Kelly And Katie
 Kendall And Kylie
 Kennbanks 24 7
@@ -1032,7 +637,12 @@ Keto Os Max
 Kevin Beaver Peter T Davisand Devin K Akin
 Kevin'S Comfort
 Khloe And Lamar
+Kid'S Dough
+Kids' Paradise
+Kid'S Planet
+Kid'S Sunglasses
 Kidsmate 1
+Kiehl'S
 Kiffy'S
 Kikky'S Collection Hair
 Kim Royal Hotel And Suites
@@ -1084,8 +694,10 @@ O'Carly
 OmbrÃ© Braids KE
 One A Day
 Orbi 20
+PALMER'S
 Phillips 66
 Planter'S
+Pond'S
 Power 7
 Power King
 Rc
@@ -1111,6 +723,7 @@ ABS
 Absolute
 ACC
 AceCamp
+Acer
 ACME
 Acnesol
 Acrylic mink
@@ -1119,6 +732,7 @@ Activilong
 ACURE
 Addis
 Adegso
+ADIDAS
 Adiddas Terex
 Adix
 Adobe
@@ -1127,6 +741,7 @@ Advanced Clinical
 Advanced clinicals
 Aerbes
 AFG
+Afia
 Afnan
 Afox
 AFRI Berry
@@ -1149,6 +764,8 @@ Airmax
 AirPods
 Airtel
 Airwick
+Ajab
+Ajmal
 Akira
 AKKO
 AKKO Star
@@ -1156,6 +773,7 @@ Akshar
 AL Habib perfumes
 AL RAYHAN
 AL Rehab
+Alara
 Alba Botanica
 Aldeepo
 Alex
@@ -1168,9 +786,11 @@ Althea
 ALUMINAID
 Aluminor
 Alva
+Always
 AM Jeans
 AMALICO
 Amar
+Amara
 Amaya
 Amaze
 Amazfit
@@ -1196,16 +816,19 @@ Angel
 Angelique
 Animate
 Anion
+Anker
 Anlabeier
 Anua
 Aomei
 Ap
 APan
 Apc
+Apple
 Applied Nutrition
 Aps
 Aptamil
 Aqua
+Aquafresh
 Aquaphor
 Arabia
 Arabica
@@ -1219,42 +842,53 @@ ARDEN
 Arduino
 Argan
 Ariana Grande
+Ariel
+Arimis
+Aris
 Ariston
 Arm & Hammer
+Armaf
 Armaf Sterling Perfums
 Armco
 ARO ORGANICS
 Artesa
 Arya
+Aryuv
 As I AM
 Asahi
 ASANTE
 Asantee
 Asdaaf
 Asenware
+Ashanti-Q
 Asics
 Asmaco
 Aspatek
 Ast
 Asta
+Astonish
 Astra
 Astral
 Ata
 Atlantis
 Atlas
 ATMAARA SMARTLOCKS
+Audemars Piguet
 Audi
 Audio Pro
 Audio Solutions
 Audio-Technica
 AURA
 Aurelia
+Aussie
 Autodesk
 Automatiq
+Aveeno
 Avène
 Avent
 Aviator
 Avitron
+Avon
 Awei
 Axion
 AXIS - Y
@@ -1276,6 +910,7 @@ Bajaj
 Baker
 Bakers
 Balance
+Ballet
 Bambeado
 Bamsi
 Banana Republic
@@ -1285,7 +920,9 @@ Baoke
 Baraka
 Barbieliya
 Bat
+Bata
 Bata Industrials
+Bath & Body Works
 Bath & Shower
 Bath Accessories Company
 Bath Works
@@ -1295,11 +932,13 @@ Bbrose
 Bc
 Be Brand
 Beads Treats
+Beats
 Beauteous
 Bebe
 Bebe Confort
 Beckon
 BELGIAN
+Belkin
 Bells
 Benefit
 Benice
@@ -1318,6 +957,7 @@ Bhawsar
 Bianchi
 Bidco
 Big Boss
+Bigen
 Bigfun
 Bigspoon
 BILEF
@@ -1326,6 +966,7 @@ BINBOND
 Binnys
 Bint El Sudan
 Bint Hooran
+Bio
 Bio Aqua
 Bio Balance
 Bio Luxe
@@ -1334,6 +975,8 @@ BIOAQUA
 Bioderma
 Bioland
 Bioleaf
+Biore
+Birkenstock
 Birkenstones
 Bisquit
 Bitters & liqueurs
@@ -1343,11 +986,13 @@ Bk
 BLACK & DECKER
 BLACK Chic
 BLACK Mamba
+BLACK+DECKER
 Blackberry
 Blackview
 Bliss Hair
 Blooming
 Blooming Baby
+Blue Band
 Blue Magic
 BLUEQUE
 Blundstone
@@ -1355,6 +1000,7 @@ Bmi
 Bmw
 Bnk
 Boafeng
+Bobbi Brown
 Bod Man
 Boden
 Bodi
@@ -1362,6 +1008,7 @@ Bodum
 Body Care
 Body Essence
 Body Luxuries
+Bodycology
 Bodyform
 Boiron
 Boker
@@ -1387,7 +1034,9 @@ Boost
 Bopai
 Borghese
 Borotalco
+Bosch
 Boschmann
+Bose
 Bosh
 Boss
 Boss Orange
@@ -1425,10 +1074,13 @@ Britney Spears
 Britool
 Brooke Bond
 Brooks Brothers
+Brookside
+Brother
 Brown Orchid
 Bruhm
 Brunello Cucinelli
 Bruno Magli
+Brut
 Brylcreem
 BSG ORGANICS
 Bt
@@ -1436,12 +1088,14 @@ B-Tex
 Bubchen
 Buckler
 Budi
+Budweiser
 Bugatti
 Bulgari (Bvlgari)
 Bulova
 Bump Patrol
 Burberry
 Bushnell
+Butterfly
 Bvlcada
 BVOT
 Bw
@@ -1450,6 +1104,7 @@ Caflon
 Callany
 Callaway
 CALUS
+Calvin Klein
 Cam Sport
 Cambridge
 Camel
@@ -1459,6 +1114,8 @@ Campus
 Camry
 Canaan Silver
 Canderel
+Canon
+Cantu
 Canye
 Captain
 Carambola
@@ -1476,6 +1133,7 @@ Cas
 Casa Bella
 Caseme
 Casio Digital
+Casio
 Casio General
 Casio Japan
 Caston
@@ -1493,6 +1151,7 @@ Centurion
 CEO
 Cera-Care
 Ceriotti
+Cetaphil
 Chadni
 Chaffoteaux
 Chagme
@@ -1522,13 +1181,15 @@ City Sneakers
 Ck
 Clarion
 Clarity
+Clarks
+CLEAN & Clear
 Cleanox
 Clear Essence
 Clinic Clear
 Cliptec
 Clonovate
+Clorox
 Cloudoon
-Clove
 Clover
 Clovers
 Cluedo
@@ -1538,6 +1199,7 @@ Coco
 Cocoderm
 Cocopulp
 COFE
+Colgate
 Collagen Peptide
 Colmi
 Comfort & Protect
@@ -1546,19 +1208,24 @@ Comfycare
 Compeed
 Complast
 CompMist
+CONFIDENCE
 Constanta
 Conta
 Contigo
 Continental
+Converse
 COOFIX
 Corel
 Corella
 Corn
 Corsx
 Cosco
+Cosmo
 Cosmolive
+Cosrx
 Country Life
 Cover Shop
+Cow & Gate
 Cp
 Cracky
 Crafe Away
@@ -1568,6 +1235,7 @@ Cream Silk
 Creme Of Nature
 Crest
 CROC
+Crocs
 Crocs Kids
 Cronier PROFESSIONAL
 Crown
@@ -1582,13 +1250,16 @@ Ctorch
 Cup & Kettle
 Curaprox
 Curren
+Cussons Baby
 Custom
 Cutlery Set
 CYFAZA
 D light
 Da
+Daawat
 Dab
 DABO
+Dabur
 Dadacare Plus
 Dafii
 Dag Pillow
@@ -1601,6 +1272,7 @@ Daling
 DANNY HOME
 Dansko
 Dark & Lovely
+Darling
 Dartek
 Dat
 Davis
@@ -1618,6 +1290,7 @@ Deco Art
 Deep Bass
 Deli
 Delia Cosmetics
+DELL
 DELTA
 DENGGAO
 Denri
@@ -1638,12 +1311,14 @@ Dessin
 Dessini
 Dessini Regina
 Detergent
+Dettol
 Dew Point Naturals
 Dewalt
 Dexe
 DFAC PACK
 DG Ming
 Dgt
+Dhahabu
 Diamond Carpets
 Diana
 Diary Best
@@ -1654,20 +1329,28 @@ Dior
 Disaar
 Discovery
 Disney
+Diva
 Diva La Opala
 Diy Wig
 Dizao
+Dji
+D-Link
 Dls
 Dm Balea
 Do
 Doctor White
+Dodo
 Dodoki
 Dolcebon
 Dolcir
 Dolphin
 Domino
+Doom
+Dormans
 Dot
 DOUBLE DOSE
+Dove
+Downy
 Dp
 Dp Led
 Dp light
@@ -1687,8 +1370,10 @@ DR Skin
 Dr. Davey
 Dr. DuDu
 Dr. Marcus
+Dr. Martens
 Dr. MEINAIER
 Dr. Organic
+Dr. Rashel
 DR.DAVEY
 Dr.Meinaier
 DR.Rashel
@@ -1704,9 +1389,11 @@ Dunhill London
 DUNSPIN
 Duozi
 Duracell
+Durex
 Duvet Cover Set
 Duzzit
 Dy
+Omo
 Dye Shop
 Dymatize
 Dynamic
@@ -1716,6 +1403,7 @@ EAGEAT
 Easeus
 EAU De PARFUM
 EAU Magic
+Ecco
 Eclause ORGANICS
 Eco
 Ecoa
@@ -1738,7 +1426,9 @@ Elixir
 Elnett
 Elysium Spa
 Em
+Emami
 EMLA
+EMPER
 Empire
 Emporio Armani
 Emtop
@@ -1752,14 +1442,17 @@ Epica
 Epiderm
 Epimax
 Epos
+Epson
 EQQUAL Berry
 Escene
 Escent
 Escenti
 Esquire
 ESSAGER
+Essence
 Estelin
 Estia
+Eucerin
 Eucryl
 Eurochef
 Euroken
@@ -1789,6 +1482,7 @@ Face Facts
 Face Republic
 Fade Out
 FADED TOPICALS
+Fadeout
 Fahari
 Fahion
 Faholo
@@ -1804,12 +1498,14 @@ Faiza
 Fakang
 Fame
 Family Game
+FAMRICO
 Fancy Collection
 FANTASY SANDALS
 FASCIAL GUN
 Fashiin Secret
 Fastrack
 Fbk
+Feah
 Fealty
 Fear It
 Feathers
@@ -1828,6 +1524,7 @@ Finder
 First Class Lady
 Fixtec
 Fk
+Flamingo
 Flip Back
 FLOATING ARK
 Floshyne
@@ -1844,6 +1541,7 @@ Forever
 Formula
 Fortress Mattress
 Fortune
+Fossil
 Fotorgear
 Four Cousins
 FPM
@@ -1865,6 +1563,7 @@ Gale
 Gallery Amaya
 Galway Crystal
 Ganesh
+Garnier
 Garnier Fructis
 Garnish
 Garrett
@@ -1893,17 +1592,22 @@ Genesis
 Genetic
 Gentle
 Gentle Magic
+Gentle Monster
 German Herb (Thai) & Co
 Gettop
 Ghost Bond
 GhostBond
 Gift Of Zanzibar
 Giga
+Gillette
 Gio
 Giorgi
 Giovanni
 GIP
+Girl
+Girl Collection
 Gissah
+Glade
 Glass Polish
 Gld
 Gleam
@@ -1919,15 +1623,18 @@ Gluta Master
 Gluta White
 Glutathione
 Gmp
+Go
 Go_wellness
 Godrej
 Godson
 Gold 24K
 Gold Star
+Golden Fry
 Golden Pearl
 Golden Tech
 Good Look
 Goodal
+Google
 Google Pixel
 Got2B
 Gotv
@@ -1946,6 +1653,7 @@ GtyGo
 Gu
 Guan Jing
 Guanjing
+Gucci
 GUEETON
 Guru
 Gurunanda
@@ -1954,11 +1662,14 @@ GX
 GX Fresh
 H&Co
 H&H
+H&M
+Haier
 Haino Teko
 Hair Wonder
 HAISION
 Half Cast
 Hamlet
+Hanan
 HANDAIYAN
 Handboss
 HANGERS
@@ -1969,17 +1680,22 @@ Happy HOME
 Happy Valentine
 Hard Wax Beans
 Harman Kardon
+Harpic
 Harraz
 HATHI
 Hauwei
 Haven ORGANICS
 Havit
+Head & Shoulders
 Health & Beyond
 HEALTHY Air Fryer
 HEALTHY Shop
 HEAVEN Dove
+Heinz
 Hello Kitty
 Hemani
+Henkel
+Hennessy
 Her PRIDE
 Herbalife
 Herblink
@@ -1996,17 +1712,20 @@ HIGHPOWER
 HIGH-POWER
 HIK Vision
 Hikvision
+Himalaya
 Himalaya Herbals
 Himalayan
 Hipp
 Hipp Organic
 HIRAMANI
+Hisense
 Hisense Original
 Hismiles
 Hitoral
 HITZZ
 Hlw
 Hmd
+Hobby
 Hodan
 Holts
 Hom
@@ -2021,6 +1740,7 @@ Honey Collection
 Honey Vital
 HoneyMoon
 Honeywell
+Honor
 HORION
 Horizon
 Horizons
@@ -2028,9 +1748,13 @@ Hotplet
 Hoursly
 Hoyan
 Hozelock
+Hp
 Htc
 Huanger
+Huawei
 Hu-Baby
+Hublot
+Hugo Boss
 HUILE
 Huion
 Human Cherish
@@ -2038,6 +1762,7 @@ Hurricane
 Husqvarma
 Husqvarna
 Huy Fong Sriracha
+HyperX
 Hypo
 Ibanez
 ICONA
@@ -2049,11 +1774,13 @@ Igco
 Illumatt
 Imation
 Impact
+Imperial Leather
 Impulse
 Inatur
 Indomie
 Ines & Marechal
 Infantino
+Infinix
 INGCO
 Ingrams
 Inkworld arts
@@ -2065,6 +1792,7 @@ Ipsa
 IREV
 ISNtree
 Isomars
+Itel
 J & W
 J V Haasteren
 J Vision
@@ -2080,6 +1808,7 @@ Japanese Cherry
 Jaragar
 Java House
 JB
+Jbl
 JBR
 JEAN
 JEAN MISS
@@ -2088,6 +1817,7 @@ Jedi
 Jeep
 Jello
 Jemaxo
+Jergens
 Jerusalem SANDALS
 JESOU
 JESOU Collection
@@ -2097,6 +1827,7 @@ JET7
 JIBAO
 JIELIYA PROFESSIONAL
 Jigsaw
+Jik
 Jikokoa
 Jimator Tape
 Jing
@@ -2104,10 +1835,14 @@ JK
 Jmc
 Jnix
 Jo Malone
+Jogoo
 John
 John Foster
 Johnson
+Jolen
 Jomu
+Jordan
+Joy
 Joycare
 JP
 JP Jamesport
@@ -2562,10 +2297,6 @@ Kaffe Cafe
 Kaffee Haus
 Kaffs
 Kafine
-Kaftan
-Kaftan Abaya
-Kaftan Corture
-Kaftan Terengganu
 Kafucard
 KAG LENS
 Kagan
@@ -2838,6 +2569,7 @@ Kandy Tea
 Kandy Tv
 Kandyfloss
 Kane
+Kane Extra
 Kane Miller Book Publishers
 Kanebo
 Kanekalon
@@ -2913,6 +2645,7 @@ Kaos
 Kaos Oshkosh
 Kap
 Kap Creations
+Kapa
 Kapaier
 Kapal Api
 Kapalua
@@ -3018,6 +2751,7 @@ Karin Herzog
 Karin Kirin
 Karin Stevens
 Karina
+Karis
 Karishma
 Karisma
 Karisma Cm
@@ -3060,6 +2794,7 @@ Karonka
 Karossi
 Karpet
 Karpeta
+Karrimor
 Karrot
 Karrucci
 Karsa
@@ -3125,6 +2860,7 @@ Kastking
 Kaston
 Kastor
 Kasu
+Kasuku
 Kasut Jordan
 Kat Choize
 Kat Electro
@@ -3617,15 +3353,13 @@ Kenvera
 Kenvert
 Kenway
 Kenwingston Hotel
-Kenya
+Kenwood
 Kenya Aa Coffee Bean
 Kenya arts Diary
 Kenya Faith Writers Network
 Kenya Highland
 Kenya King
 Kenya Wine Agencies
-Kenyan Alliance Insurance Company
-Kenyan Rural Women
 Kenyo
 Kenz Fs
 Kenzat
@@ -3674,7 +3408,9 @@ Keres
 Kereta Kebal
 Kerholz
 Keri
+Kericho Gold
 Kericho Tea
+Keringet
 Keripik Karma
 Keris Nagasari
 Kerisik
@@ -3714,6 +3450,7 @@ Kester BLACK
 Kestrel
 Kesuma Jiwa Craft
 Keswick
+Ketepa
 Keter
 Ketereh
 Ketineal
@@ -4058,6 +3795,7 @@ Kiesya
 Kievid
 Kif Sport
 KIF1
+Kifaru
 Kifayet
 Kifer
 Kiff
@@ -4356,6 +4094,7 @@ Kingsons
 Kingst
 Kingstep
 Kingstick
+Kingston
 Kingston Apacer Apacer Advance Module Twinmos
 Kingston Branded
 Kingston Brass
@@ -4434,6 +4173,7 @@ Kiotori
 Kip
 Kipa
 Kipekee
+Kipepeo
 Kiphone
 Kipling
 Kipllng
@@ -4651,8 +4391,10 @@ Kleansol
 Kleanz
 Klee
 Kleen
+Kleenex
 Kleenex White
 Kleengard
+Kleenit
 Kleenjet
 Kleenso
 Kleesoft
@@ -4836,6 +4578,7 @@ Kockuu
 Kocom
 Kocost
 Kocotree
+Kodak
 Kodama
 Kodansha
 Kodds
@@ -5068,7 +4811,9 @@ Lansinoh
 LansYade
 Lanthome
 Latafa
+Lattafa
 Lattafa PRIDE
+Lava
 Lava The Original
 Lbc
 Ldino
@@ -5086,6 +4831,7 @@ Lemonvate
 Lena
 Lenhard
 Lenor
+Lenovo
 Lenovo Thinkpad
 Leopard
 LESIA
@@ -5093,6 +4839,7 @@ Leto
 Levone
 Lexar
 Lexus
+LG
 Lian Thai
 Liberty
 LIGE
@@ -5112,11 +4859,13 @@ Lister Petter
 Littmann
 Live Life Well
 Locks & Switches
+Logitech
 Lolita
 LONG Life
 Lordex
 LOreal Paris
 LOreal Professionnel
+Lorenti
 Lorenzetti
 Lorenzi
 Lorenzo
@@ -5138,6 +4887,7 @@ Lunn
 LUODAIS
 Lupilu
 LurnaoQueen
+Luron
 Luxe Cosmetic
 Lyons
 Lyons Maid
@@ -5173,27 +4923,32 @@ Makita
 Makita Accessories
 Makute
 Malaika
+Malibu
 Mam
 Mama Earth
 Mamado
 Mamaearth
 Mangalam
+Manji
 Mara
 Marado
 Marble Berry
 Maries
 Marigold
+Marshall
 Marshall Headphones
 Martin Lion
 Marula
 Marvel
 Marwa
+Mary Kay
 Mary Kay Timewise
 Mason Natural
 Mastela
 Mastella
 Mat Star
 Mathey Tissot
+Matrix
 MAX
 MAX & More Cosmetic Sponge
 Maxbest
@@ -5236,14 +4991,20 @@ MG Baby
 Mhb
 M-Horse
 Mi
+Miadi
 Michaels Bouquet
 Mickey
 Micolor
+Midea
+Mielle
 Mika Lee
 Mikahome
+Mikalla
 Mikasa
+Mikrotik
 Milano
 Milestone
+Milo
 Milton
 Mimi
 Mindy
@@ -5267,6 +5028,7 @@ Modio
 Moika
 Molato
 Molfix
+Molped
 Molten
 Mom Easy
 Momeasy
@@ -5315,6 +5077,7 @@ My perfumes
 NAIL Pro
 NAIL TIPS
 Naked Wolfe
+Nano
 Nano Bakeware
 Nashi Spread
 Nataraj
@@ -5341,6 +5104,7 @@ Neewer
 Neo
 Neocell
 Neon
+Nescafe
 Nest
 Nestle
 Net Fiber
@@ -5353,6 +5117,7 @@ Nice One
 Nice&Nice
 Niceone
 Nicetech
+Nike
 Nike Air
 Nikeshoe
 Nilkin
@@ -5362,6 +5127,7 @@ Nimue
 Nineless
 NIPNAP
 Nirmal
+Nisha
 Nissan
 Nitrile
 No Longer
@@ -5369,12 +5135,15 @@ Nobel
 Nokia
 Noor Gold
 Nora
+Nordic
 North Bayou
 Northern
 Norton
+Nothing
 Nova
 NOW
 Nu U Nutrition
+Nuage
 Nunex
 Nunix
 Nuspa
@@ -5398,6 +5167,7 @@ OH SO Heavenly
 Oilatum
 Oking
 Okok
+Olay
 Old Monk
 Old Spice
 Olevs
@@ -5409,13 +5179,16 @@ Omron
 On Call Plus
 One
 One Step
+OnePlus
 Oniss
 Onn
 Onten
 Opk
+Oppo
 Optical Mouse
 Oraimo ET Gcl
 Oraimo ET Noosy
+ORAL-B
 Ordinary Skincare Co
 Org
 Organic Choice
@@ -5423,10 +5196,12 @@ Organic Living
 Organica
 ORGANO
 Orgo
+Oriflame
 Original Femtight
 Orimo
 Orimono
 Oronzo
+Ors
 Ortho
 Orthoflex
 ORUSS
@@ -5450,12 +5225,14 @@ Pacific
 Paco Rabanne
 Paean
 Palmers
+Palmolive
 Pan Aroma
 Panda
 Panorama
 PanOxyl
 PANSLY
 Pantajali
+Pantene
 Pantum
 Paper Air
 Paper One
@@ -5467,23 +5244,31 @@ Paragon
 Parex
 PARFUM De Marley
 Parfums De Marly
+Paris
 Paris Corner
 Pasa
 Patanjali
+Patek Philippe
 Paw Paw
 Pd
+Pearl
+Pears
 Peavey
 Pedro
 Pei Mei
 PeiMei
+Pembe
 PENFORMA
 Pepets
+Peptang
 PERFECT Skin Lady
+Persil
 Peruvian
 Pet brands
 Petrova Naturals
 Pfs
 Philip
+Philips
 Phillip
 Phillips
 Photography & Cinema
@@ -5493,6 +5278,7 @@ Pink Edition
 Pinnacle
 Pioneer
 PIXOR
+PK
 PLOKAMA
 Pms Uk
 Pocket Binocular
@@ -5509,11 +5295,13 @@ Portia M
 Post It
 Powermate
 Pradhan
+Pradip
 Prado
 Prd Pearls & Jewelry
 Premier
 Premiere
 PressOnique
+PRESTIGE
 Pretty Be
 Pretty White
 PRIDE
@@ -5521,11 +5309,14 @@ PRIDE Mobility
 Prima
 Primax
 PRIMDALE
+Prive
 Pro Arte
 Pro White
 Probiotics Collagen Peptides
 Promate
 Protect
+Protex
+Puma
 Punex
 Punpple
 PURE Glow
@@ -5545,7 +5336,9 @@ Quest
 Qv
 Qwen
 RABITO
+Radiant
 Raeno
+RAF
 Raha
 Rainbow
 Rako
@@ -5554,15 +5347,18 @@ Ralph Lauren Polo
 Ram Collection
 Rapid
 RASAISI
+Rasasi
 Rascal
 Rashnick
 Rashnik
 Rattan
+Rave
 RBT
 Rdl
 Reactor
 Real Skin
 Real Thai
+Realme
 Realskin
 Rebel
 Rebune
@@ -5576,16 +5372,21 @@ Remax
 REMBO Jewelry
 Remy Marquis
 Retinol
+Revlon
 Revoflex
 Revoflex Xtreme
 REWARD
 Rhino
+Ribena
 Richboss
 RichRipple
 Rico By Daddario
 Ricoh
 Ricola
 Rieker
+Rimmel London
+Rina
+Rinsun
 Rinz
 Ritar
 Ritu
@@ -5599,6 +5400,7 @@ Rockstar Games
 Rog
 Rogaine
 Rok
+Roku
 Roleo
 Roll Bond
 Roller
@@ -5635,17 +5437,21 @@ S&K
 SADOER
 Safaricom
 Safety Jogger
+Safisha
 Sail
 Salkin
 Sam
 Samantha
 Samba
 Samoa
+Samsung
 Samsung Original
 Samwa
 San Disk
 Sanda
+Sandisk
 Sanford
+Santa Maria
 Santhome
 Santoni
 SANURA
@@ -5656,7 +5462,9 @@ Saratoga
 Saru ORGANICS
 Sas
 Sasani
+Satiskin
 Sauvasine
+Sawa
 Saxa
 Sayona
 Sc Johnsons
@@ -5688,6 +5496,7 @@ Sew&Design
 Sexy Lady
 SF
 Shalina
+Sharp
 Shavers
 SHAWL
 Shawn K
@@ -5705,6 +5514,7 @@ Shirley MAY
 Shivanya
 SHK
 Shokki
+Shure
 Signature
 Signature HOME Collection
 Signatures
@@ -5722,6 +5532,7 @@ Simply Straight
 Sinda
 Singer
 Sino
+SIRI
 Sivop
 SIWAR
 SiYa
@@ -5743,6 +5554,7 @@ Skins
 Skinu
 Skmei
 Skyview
+Skyworth
 SMAPEX
 Smart Berry
 Smart Collection
@@ -5757,6 +5569,7 @@ SNL1
 SO
 Soap & GLORY
 SOFT FINE
+Softcare
 SoftTouch
 Sokani
 Sokany
@@ -5768,6 +5581,8 @@ Sollatek
 Solo
 Sonar
 Sonifer
+Sony
+Soundcore
 Soundstar
 SOUTH Moon
 SP
@@ -5806,6 +5621,9 @@ SUNTEX
 SWEEPER
 SWITCH
 SWS
+Casio
+Axe
+Veet
 Mariya
 Noir
 Blue King

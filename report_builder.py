@@ -90,7 +90,8 @@ _DOC_EXTRA_FIELDS = {
     "warranty": ["Warranty", "Warranty Type", "Warranty Duration", "Warranty Address"],
     "variation": ["Variation", "Existing Variation Count"],
     "fda": ["FDA"],
-    "title_language": [],
+    "title_weight": [],
+    "title_english": [],
     "name_brand": ["Brand", "Brand Detected On Product"],
     "image_quality": ["Image Filename"],
     "image_extraction": ["Image"],
@@ -275,7 +276,7 @@ def build_docx_report(
                 reason_slice = check_slice[check_slice["Reason Type"] == reason_type]
 
                 for verdict in _REPORTABLE_VERDICTS:
-                    if check_key == "category" and verdict != "AI Error":
+                    if check_key == "category" and verdict != "AI Error" and not str(reason_type).startswith("AI:"):
                         continue
                     sub = reason_slice[reason_slice["Verdict"] == verdict]
                     if sub.empty:

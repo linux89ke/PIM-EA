@@ -1,6 +1,12 @@
 import re
 import pandas as pd
+import polars as pl
+import json as _json
+import os as _os
+import requests as _requests
+import time as _time
 import streamlit as st
+from typing import Dict, List
 
 # ── Shared volume/quantity regex ──────────────────────────────────────────────
 # Used by BOTH the false-rejection check (approved products that had volume in
@@ -414,12 +420,12 @@ def _verify(check_key: str, rec: dict, rule: dict, weights: set, color_re) -> st
         def _ai_rescued():
             return ai_color and ai_color.lower() not in ("nan", "none", "not found") and _color_recognised(ai_color, valid_colors)
             
-        # Column must be filled AND the value must be a recognised color in colors.txt
+        # Column must be filled AND the value must be a recognised color in colors.txt.
+        # A blank COLOR field is always a True Rejection — the AI being able to guess
+        # a color from the title text doesn't excuse the seller leaving it blank.
         if not color_val:
-            if _ai_rescued():
-                return "False Rejection"
             return "True Rejection"
-            
+
         if not _color_recognised(color_val, valid_colors):
             if _ai_rescued():
                 return "False Rejection"
@@ -628,7 +634,10 @@ def evaluate_all_checks(data: pd.DataFrame, country_code: str) -> pd.DataFrame:
     color_re = get_color_regex()
     qc_rules = load_qc_excel(country_code)
     cols = [c for c in _NEEDED if c in data.columns]
-    records = data[cols].to_dict("records")
+    # Deduplicate: if the CSV has duplicate column names pandas will drop
+    # data silently in .to_dict(). Take only the first occurrence of each.
+    _dedup_data = data.loc[:, ~data.columns.duplicated()]
+    records = _dedup_data[cols].to_dict("records")
     status_cols_present = {status_col for status_col, _ in _CHECK_COLUMNS.values() if status_col in data.columns}
 
     rows = []
@@ -810,4 +819,312 @@ def evaluate_all_checks(data: pd.DataFrame, country_code: str) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=["ProductSetSid", "Check", "Product Name", "Category",
                                       "Reason Type", "Verdict", "Detail"])
+    return pd.DataFrame(rows)
+
+
+# ── AI-powered category rejection verifier ────────────────────────────────────
+# Separate, optional pass: takes products the pipeline REJECTED for category
+# (Category_Check_Status == 'Rejected') and asks an AI model whether that
+# rejection was actually correct, using the same OpenAI-compatible gateway
+# pattern as category_checker_app.py (keys.txt, batched calls). This is not
+# part of evaluate_all_checks() — it's a separate opt-in pass the user
+# triggers explicitly, since it costs real API calls and time.
+import os as _os
+import json as _json
+
+_CATEGORY_AI_KEYS_FILE = _os.path.join(_os.path.dirname(__file__), "keys.txt")
+if not _os.path.exists(_CATEGORY_AI_KEYS_FILE):
+    _CATEGORY_AI_KEYS_FILE = _os.path.join(_os.path.dirname(__file__), "pages", "keys.txt")
+
+_CATEGORY_AI_SYSTEM_PROMPT = """You are a strict e-commerce catalog QC auditor for Jumia.
+
+You will be given a JSON array of products that our QC pipeline REJECTED for
+category mismatch. Each has a name, description, brand, its FULL category path
+(category_path), and the pipeline's stated rejection reason.
+
+CRITICAL RULES:
+- The category_path field contains the FULL hierarchical path, e.g.
+  "Books, Movies and Music / Art & Humanities / Politics & History".
+  A leaf category like "Politics & History" that lives under
+  "Books, Movies and Music" IS a valid books category. Always read the
+  FULL path, not just the last segment.
+- A book titled with politics/history content in category
+  "Books, Movies and Music / ... / Politics & History" is CORRECTLY categorized.
+- Only mark "correct_rejection" when the FULL path is genuinely wrong for
+  the product — not just because the leaf name sounds non-obvious.
+
+For each product:
+1. Identify what the product actually IS and its primary USE CASE from the
+   name and description alone.
+2. Read the FULL category_path. Judge whether the full path fits the product.
+3. Decide:
+   - If the full path is genuinely wrong for this product -> "correct_rejection"
+   - If the full path is actually fine and the rejection was a mistake -> "wrong_rejection"
+
+Respond with ONLY a valid JSON array, no markdown, no preamble, same order as
+input, one compact object per product:
+{
+  "id": "<the id field from input, copied exactly>",
+  "verdict": "correct_rejection" or "wrong_rejection",
+  "reason": "1 short sentence explaining the verdict, max ~25 words"
+}
+"""
+
+_CATEGORY_AI_COLS = [
+    "NAME", "CATEGORY", "CATEGORY_CODE", "Initial_Category_Path",
+    "Category_Check_Rejection_Reason", "DESCRIPTION", "SHORT_DESCRIPTION", "BRAND",
+]
+
+
+def _load_category_ai_keys(model_hint: str = "") -> list:
+    """Same keys.txt format as category_checker_app.py: each line is either a
+    bare key, or 'key:model_hint'. Returns a list of key strings whose hint
+    matches the requested model (or all keys if no hint filtering applies)."""
+    if not _os.path.exists(_CATEGORY_AI_KEYS_FILE):
+        return []
+    keys = []
+    with open(_CATEGORY_AI_KEYS_FILE) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if ":" in line and not line.startswith("http"):
+                key, hint = line.split(":", 1)
+                key = key.strip()
+                hint = hint.strip().lower()
+            else:
+                key, hint = line, ""
+            
+            # Filter: if the key is tagged for a specific family, only include
+            # it when the requested model is in that family
+            if hint:
+                is_claude = "claude" in model_hint.lower() or "haiku" in model_hint.lower() or "sonnet" in model_hint.lower()
+                is_gpt = "gpt" in model_hint.lower() or "openai" in model_hint.lower()
+                hint_claude = "haiku" in hint or "claude" in hint or "sonnet" in hint
+                hint_gpt = "gpt" in hint or "openai" in hint
+                if is_claude and hint_gpt:
+                    continue  # Skip GPT-only keys when using Claude model
+                if is_gpt and hint_claude:
+                    continue  # Skip Claude-only keys when using GPT model
+            
+            keys.append(key)
+    return keys
+
+
+def _build_category_ai_prompt(rows: list, desc_limit: int = 400) -> str:
+    compact = []
+    for i, row in enumerate(rows):
+        entry = {"id": str(i)}
+        for col in _CATEGORY_AI_COLS:
+            val = row.get(col, "")
+            if val is None or (isinstance(val, float) and pd.isna(val)) or val == "":
+                continue
+            val_str = str(val)
+            if col in ("DESCRIPTION", "SHORT_DESCRIPTION") and len(val_str) > desc_limit:
+                val_str = val_str[:desc_limit] + "...[truncated]"
+            entry[col] = val_str
+        # Always expose a 'category_path' key with the best available full path
+        # so the AI never sees only a leaf node like 'Politics & History' alone.
+        full_path = (
+            str(row.get("Initial_Category_Path") or "")
+            or str(row.get("CATEGORY") or "")
+        ).strip()
+        if full_path and full_path.lower() not in ("nan", "none"):
+            entry["category_path"] = full_path
+        compact.append(entry)
+    return _json.dumps(compact, ensure_ascii=False)
+
+
+def _call_category_ai_batch(api_key: str, base_url: str, model: str, rows: list, timeout: int = 90) -> list:
+    """Returns a list of {'verdict': ..., 'reason': ...} dicts, one per row,
+    same order as input. Falls back to an 'error' verdict per-row on any
+    failure so the caller can surface it as an AI Error rather than crash."""
+    empty = {"verdict": "error", "reason": ""}
+    if not rows:
+        return []
+    user_prompt = _build_category_ai_prompt(rows)
+    text = ""
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+    
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": _CATEGORY_AI_SYSTEM_PROMPT + "\n\n---\n\n" + user_prompt}],
+        "max_tokens": min(120 * len(rows) + 150, 8000),
+    }
+    
+    # Simple retry logic for transient gateway errors
+    for attempt in range(3):
+        try:
+            resp = _requests.post(
+                f"{base_url.rstrip('/')}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=timeout
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text = data["choices"][0]["message"]["content"].strip()
+            text = text.replace("```json", "").replace("```", "").strip()
+            parsed_list = _json.loads(text)
+            by_id = {str(item.get("id")): item for item in parsed_list}
+            ordered = []
+            for i in range(len(rows)):
+                item = by_id.get(str(i))
+                if item is None:
+                    item = dict(empty)
+                    item["reason"] = "Missing from batch response"
+                ordered.append(item)
+            return ordered
+        except _json.JSONDecodeError:
+            if attempt == 2:
+                err = dict(empty)
+                err["reason"] = f"Could not parse AI response as JSON: {text[:200]}"
+                return [dict(err) for _ in rows]
+        except Exception as e:
+            if attempt == 2:
+                err = dict(empty)
+                err["reason"] = f"API error: {e}"
+                return [dict(err) for _ in rows]
+            _time.sleep(2)
+    return [dict(empty) for _ in rows]
+
+
+def verify_category_rejections_with_ai(
+    data: pd.DataFrame,
+    base_url: str = "https://ai-gateway.zuma.jumia.com/v1",
+    model: str = "claude-haiku-4.5",
+    batch_size: int = 10,
+    max_workers: int = 10,
+    audit_df: pd.DataFrame = None,
+    progress_bar = None,
+    status_text = None
+) -> pd.DataFrame:
+    """
+    Separate, optional pass: takes products the pipeline REJECTED for category
+    and sends them to the GPT-4o-mini fast API to ask 'is this ACTUALLY a
+    violation?'. Returns a DataFrame of just those results.
+    """
+    empty_cols = ["ProductSetSid", "Check", "Product Name", "Category", "Reason Type", "Verdict", "Detail"]
+    if data.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    keys = _load_category_ai_keys(model)
+    if not keys:
+        return pd.DataFrame(columns=empty_cols)
+
+    rejected_mask = pd.Series(False, index=data.index)
+    if audit_df is not None and not audit_df.empty:
+        cat_sids = audit_df[audit_df["Check"] == "category"]["ProductSetSid"].unique()
+        if len(cat_sids) > 0:
+            rejected_mask = data["PRODUCT_SET_SID"].isin(cat_sids)
+            
+    if not rejected_mask.any():
+        if "QC Status" in data.columns:
+            status_rej = data["QC Status"].astype(str).str.strip().str.lower() == "rejected"
+            if "QC Reason" in data.columns:
+                reason_cat = data["QC Reason"].astype(str).str.strip().str.lower() == "wrong category"
+                rejected_mask |= (status_rej & reason_cat)
+            if "Reason" in data.columns:
+                reason_cat = data["Reason"].astype(str).str.strip().str.lower().str.contains("wrong category", na=False)
+                rejected_mask |= (status_rej & reason_cat)
+            if "FLAG" in data.columns:
+                flag_cat = data["FLAG"].astype(str).str.strip().str.lower().str.contains("wrong category", na=False)
+                rejected_mask |= (status_rej & flag_cat)
+                
+        if "Status" in data.columns:
+            status_rej = data["Status"].astype(str).str.strip().str.lower() == "rejected"
+            if "Reason" in data.columns:
+                reason_cat = data["Reason"].astype(str).str.strip().str.lower().str.contains("wrong category", na=False)
+                rejected_mask |= (status_rej & reason_cat)
+            if "FLAG" in data.columns:
+                flag_cat = data["FLAG"].astype(str).str.strip().str.lower().str.contains("wrong category", na=False)
+                rejected_mask |= (status_rej & flag_cat)
+                
+        # Also support Seller Center columns if they happen to be named differently
+        if "status" in data.columns and "rejectionReason" in data.columns:
+            status_rej = data["status"].astype(str).str.strip().str.lower() == "rejected"
+            reason_cat = data["rejectionReason"].astype(str).str.strip().str.lower().str.contains("wrong category", na=False)
+            rejected_mask |= (status_rej & reason_cat)
+
+    rejected = data.loc[rejected_mask].copy()
+    if rejected.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    cols = [c for c in _CATEGORY_AI_COLS + ["PRODUCT_SET_SID", "CATEGORY", "Initial_Category_Path"] if c in rejected.columns]
+    # Deduplicate columns before converting to records to avoid silent data loss
+    rejected = rejected.loc[:, ~rejected.columns.duplicated()]
+    cols = [c for c in cols if c in rejected.columns]
+    records = rejected[cols].to_dict("records")
+
+    import itertools as _itertools
+    import concurrent.futures as _cf
+
+    api_keys_cycle = _itertools.cycle(keys)
+    results = [None] * len(records)
+
+    chunks = [
+        (start, records[start:start + batch_size])
+        for start in range(0, len(records), batch_size)
+    ]
+
+    def _worker(chunk):
+        start, chunk_rows = chunk
+        api_key = next(api_keys_cycle)
+        batch_results = _call_category_ai_batch(api_key, base_url, model, chunk_rows)
+        return start, batch_results
+
+    # If we have a status text element, show initial info
+    if status_text is not None:
+        status_text.markdown(f"**AI Category Verification**  \nFound **{len(records)}** rejected items to analyze. Splitting into **{len(chunks)}** batches...")
+        
+    completed_chunks = 0
+    with _cf.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_worker, c) for c in chunks]
+        for future in _cf.as_completed(futures):
+            start, batch_results = future.result()
+            for offset, result in enumerate(batch_results):
+                results[start + offset] = result
+            
+            completed_chunks += 1
+            if progress_bar is not None:
+                progress = min(1.0, completed_chunks / len(chunks))
+                progress_bar.progress(progress)
+            if status_text is not None:
+                items_done = min(len(records), completed_chunks * batch_size)
+                status_text.markdown(f"**AI Category Verification**  \nProcessing: **{items_done}** / **{len(records)}** items completed...")
+
+    rows = []
+    for rec, result in zip(records, results):
+        if result is None:
+            continue
+        sid = _clean(rec.get("PRODUCT_SET_SID"))
+        verdict_raw = result.get("verdict", "error")
+        reason = result.get("reason", "")
+        if verdict_raw == "wrong_rejection":
+            verdict = "False Rejection"
+            reason_type = "AI: Category Rejection Overturned"
+        elif verdict_raw == "correct_rejection":
+            verdict = "True Rejection"
+            reason_type = "AI: Category Rejection Confirmed"
+        else:
+            verdict = "AI Error"
+            reason_type = "AI: Category Check Failed"
+            
+        best_category = _clean(rec.get("Initial_Category_Path")) or _clean(rec.get("CATEGORY"))
+        rows.append({
+            "ProductSetSid": sid,
+            "Check": "category",
+            "Product Name": _clean(rec.get("NAME")),
+            "Category": best_category,
+            "Reason Type": reason_type,
+            "Verdict": verdict,
+            "Detail": reason or "No reason returned.",
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=empty_cols)
     return pd.DataFrame(rows)
