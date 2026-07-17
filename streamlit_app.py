@@ -1688,7 +1688,24 @@ def check_suspected_fake_perfume(
     if not fake_brands or not (legit_brand_terms or model_terms):
         return pd.DataFrame(columns=data.columns)
 
-    all_terms = legit_brand_terms | model_terms
+    # ── Filter out ambiguous short model terms ────────────────────────────────
+    # Single-word model names of ≤4 characters (e.g. "Body", "One", "Men",
+    # "Red", "Love") are common English words that fire on innocent products
+    # like "Splash Perfume Mist 236ml … Fragrance Body Mist".
+    # Keep a model term only if it is:
+    #   • multi-word (contains a space), OR
+    #   • a single word with ≥ 5 characters
+    # Brand-level terms (legit_brand_terms) are always kept — they are proper
+    # nouns specific enough to be reliable signals (Chanel, Dior, Givenchy…).
+    safe_model_terms = {
+        t for t in model_terms
+        if " " in t or len(t) >= 5
+    }
+
+    all_terms = legit_brand_terms | safe_model_terms
+    if not all_terms:
+        return pd.DataFrame(columns=data.columns)
+
     term_pattern = re.compile(
         r"\b("
         + "|".join(re.escape(t) for t in sorted(all_terms, key=len, reverse=True))

@@ -2708,12 +2708,36 @@ window.applyFilter = function(val) {{
   renderAll();
 }};
 
+var _renderSeq = 0;
 function renderAll() {{
+  var seq = ++_renderSeq;
   var cards = getDisplayCards();
-  document.getElementById('card-grid').innerHTML = cards.map(renderCard).join('');
   var countEl = document.getElementById('grid-count');
   if (countEl) countEl.textContent = cards.length + ' products' + (window._currentFilter ? ' (filtered)' : '');
-  updateSelCount(); activateLazyImages();
+  
+  var grid = document.getElementById('card-grid');
+  grid.innerHTML = ''; // clear quickly
+  
+  var chunkSize = 50;
+  var idx = 0;
+  
+  function renderChunk() {{
+    if (seq !== _renderSeq) return; // aborted by newer render
+    if (idx >= cards.length) return;
+    
+    var chunk = cards.slice(idx, idx + chunkSize);
+    grid.insertAdjacentHTML('beforeend', chunk.map(renderCard).join(''));
+    activateLazyImages();
+    
+    idx += chunkSize;
+    if (idx < cards.length) {{
+      requestAnimationFrame(renderChunk);
+    }} else {{
+      updateSelCount();
+    }}
+  }}
+  
+  renderChunk();
 }}
 
 function replaceCard(sid) {{
@@ -3642,7 +3666,7 @@ def visual_review_modal(support_files):
         }})();
         </script>
         """
-        components.html(_sync_html, height=0)
+        st.iframe(_sync_html, height=0)
     st.markdown("---")
 
     pg_cols_bot = st.columns([1, 2, 1], vertical_alignment="bottom", gap="small")
