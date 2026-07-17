@@ -1280,6 +1280,7 @@ def build_fast_grid_html(
     support_files=None,
     curr_sort="",
     curr_flag="",
+    items_per_page=50,
 ):
     if support_files is None: support_files = {}
 
@@ -1394,8 +1395,8 @@ def build_fast_grid_html(
         _zip_override_map = _fr_ss.set_index("ProductSetSid")["zip_override"].fillna("").to_dict()
 
     cards_data = []
-    for _, row in page_data.iterrows():
-        sid = str(row["PRODUCT_SET_SID"]).strip()
+    for row in page_data.to_dict("records"):
+        sid = str(row.get("PRODUCT_SET_SID", "")).strip()
         img_url = str(row.get("MAIN_IMAGE", "")).strip()
         if img_url.startswith("http"):
             img_url = img_url.replace("http://", "https://", 1)
@@ -2104,7 +2105,7 @@ window.addEventListener('message', function(e) {{
   }}
 }});
 var LABELS = {labels_json};
-var DEFAULT_PAGE_SIZE = CARDS.length || 50;
+var DEFAULT_PAGE_SIZE = {items_per_page};
 var PAGE_SIZE_OPTIONS = [20, 50, 100, 200, 500];
 var PAGE_STATE = {{
   pageSize: DEFAULT_PAGE_SIZE,
@@ -3637,6 +3638,7 @@ def visual_review_modal(support_files):
             support_files=support_files,
             curr_sort=curr_sort,
             curr_flag=curr_flag,
+            items_per_page=ipp,
         )
 
     # Unpack the grid html and its sync data
