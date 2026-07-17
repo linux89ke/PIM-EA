@@ -377,104 +377,59 @@ def _classify_title_language_sub_bucket(reason: str) -> str:
     return "Title Language Check \u2013 Other"
 
 
+_RE_JERSEY_1 = re.compile(r'replica jersey')
+_RE_JERSEY_2 = re.compile(r'jersey')
+_RE_JERSEY_3 = re.compile(r'licensed|protected|brand|team')
+_RE_BABY_1 = re.compile(r'baby')
+_RE_BABY_2 = re.compile(r'adult|women|women\'s|men|hosiery|socks|footwear|eu 3|eu 4')
+_RE_BABY_3 = re.compile(r'baby|toddler')
+_RE_BABY_4 = re.compile(r'non-baby|non baby')
+_RE_FRAGRANCE_1 = re.compile(r'fragrance|perfume|deodorant body spray')
+_RE_FRAGRANCE_2 = re.compile(r'unisex|men\'s|women\'s|decorative|grooming|oral care|lotion|skin care')
+_RE_CLOTHING = re.compile(r't-shirt|jeans|trousers|vest|thobe|satin shirt|button-down|boot|oxford|derby|outerwear|climbing gear|hosiery|socks')
+_RE_HAIR = re.compile(r'hair clipper|hair dryer|hair trimmer|hair darkening|hair coloring|hair cut|balding')
+_RE_ELECTRONICS = re.compile(r'earphone|headphone|keyboard|mouse combo|laptop|dome camera|bullet camera|sports camera')
+_RE_KITCHEN = re.compile(r'toaster|kitchen appliance|electric coil cooker|hotplate|insect killer')
+_RE_HEALTH = re.compile(r'dietary supplement|weight management|energy chew|ashwagandha|herbal supplement')
+_RE_FOOD = re.compile(r'wine|stout beer|tonic water|cocktail mixer')
+_RE_SKINCARE = re.compile(r'face cream|facial|serum|kaolin clay|body moisturizer')
+_RE_LIGHTING = re.compile(r'emergency lamp|outdoor light|garden light|heat bulb|solar light|specialty bulb|agricultural machinery')
+_RE_BEDDING = re.compile(r'duvet|comforter|mosquito net')
+_RE_TOOLS = re.compile(r'hacksaw|router bit|woodworking|agricultural')
+_RE_MEDICAL = re.compile(r'diagnostic medical|support hose|compression category')
+
 def _classify_category_check_sub_bucket(reason: str) -> str:
-    """Map Category_Check_Rejection_Reason to its sub-bucket key.
-
-    Returns one of the keys registered in PREFETCH_DISPLAY_COLUMNS that starts
-    with 'Category Check \u2013 '.  Defaults to 'Category Check \u2013 Other Mismatch'.
-    """
+    """Map Category_Check_Rejection_Reason to its sub-bucket key."""
     r = str(reason).strip()
-
-    # 1. Literal API / network error strings
     if _CAT_API_ERROR_RE.search(r):
-        return "Category Check \u2013 AI API Errors"
+        return "Category Check – AI API Errors"
 
     low = r.lower()
     if not r or low == 'nan':
-        return "Category Check \u2013 Other Mismatch"
+        return "Category Check – Other Mismatch"
 
-    # 2. Prohibited
-    if 'prohibited' in low:
-        return "Category Check \u2013 Prohibited Category"
+    if 'prohibited' in low: return "Category Check – Prohibited Category"
+    if 'inactive' in low: return "Category Check – Inactive Category"
+    if _RE_JERSEY_1.search(low) or (_RE_JERSEY_2.search(low) and _RE_JERSEY_3.search(low)): return "Category Check – Replica Jersey / IP Violation"
+    if 'sexual wellness' in low or 'intimate product' in low: return "Category Check – Sexual Wellness Miscategory"
+    if 'pet product' in low: return "Category Check – Pet product listed under non-pet category"
+    if _RE_BABY_1.search(low) and _RE_BABY_2.search(low): return "Category Check – Adult product listed under Baby category"
+    if _RE_BABY_3.search(low) and _RE_BABY_4.search(low): return "Category Check – Baby/toddler listed under non-baby category"
+    if _RE_FRAGRANCE_1.search(low) and _RE_FRAGRANCE_2.search(low): return "Category Check – Fragrance/Perfume Mismatch"
+    if 'book' in low: return "Category Check – Books Wrong Subcategory"
+    if _RE_CLOTHING.search(low): return "Category Check – Clothing Subcategory Mismatch"
+    if _RE_HAIR.search(low): return "Category Check – Hair / Grooming Appliance Mismatch"
+    if _RE_ELECTRONICS.search(low): return "Category Check – Electronics / Accessories Mismatch"
+    if _RE_KITCHEN.search(low): return "Category Check – Kitchen / Home Appliance Mismatch"
+    if _RE_HEALTH.search(low): return "Category Check – Health / Supplement Mismatch"
+    if _RE_FOOD.search(low): return "Category Check – Food / Beverage Mismatch"
+    if _RE_SKINCARE.search(low): return "Category Check – Skincare Subcategory Mismatch"
+    if _RE_LIGHTING.search(low): return "Category Check – Lighting Mismatch"
+    if _RE_BEDDING.search(low): return "Category Check – Bedding / Linen Mismatch"
+    if _RE_TOOLS.search(low): return "Category Check – Tools / Hardware Mismatch"
+    if _RE_MEDICAL.search(low): return "Category Check – Medical Device Mismatch"
 
-    # 2b. Inactive
-    if 'inactive' in low:
-        return "Category Check \u2013 Inactive Category"
-
-    # 3. Jersey / IP
-    if 'replica jersey' in low or ('jersey' in low and any(x in low for x in ('licensed', 'protected', 'brand', 'team'))):
-        return "Category Check \u2013 Replica Jersey / IP Violation"
-
-    # 4. Sexual wellness
-    if 'sexual wellness' in low or 'intimate product' in low:
-        return "Category Check \u2013 Sexual Wellness Miscategory"
-
-    # 5. Pet
-    if 'pet product' in low:
-        return "Category Check \u2013 Pet product listed under non-pet category"
-
-    # 6. Adult in Baby category
-    if 'baby' in low and any(x in low for x in ('adult', 'women', "women's", 'men', 'hosiery', 'socks', 'footwear', 'eu 3', 'eu 4')):
-        return "Category Check \u2013 Adult product listed under Baby category"
-
-    # 7. Baby/toddler in non-baby
-    if ('baby' in low or 'toddler' in low) and ('non-baby' in low or 'non baby' in low):
-        return "Category Check \u2013 Baby/toddler listed under non-baby category"
-
-    # 8. Fragrance / perfume
-    if any(x in low for x in ('fragrance', 'perfume', 'deodorant body spray')) and \
-       any(x in low for x in ('unisex', "men's", "women's", 'decorative', 'grooming', 'oral care', 'lotion', 'skin care')):
-        return "Category Check \u2013 Fragrance/Perfume Mismatch"
-
-    # 9. Books
-    if 'book' in low:
-        return "Category Check \u2013 Books Wrong Subcategory"
-
-    # 10. Clothing / fashion
-    if any(x in low for x in ('t-shirt', 'jeans', 'trousers', 'vest', 'thobe', 'satin shirt', 'button-down', 'boot', 'oxford', 'derby', 'outerwear', 'climbing gear', 'hosiery', 'socks')):
-        return "Category Check \u2013 Clothing Subcategory Mismatch"
-
-    # 11. Hair & grooming
-    if any(x in low for x in ('hair clipper', 'hair dryer', 'hair trimmer', 'hair darkening', 'hair coloring', 'hair cut', 'balding')):
-        return "Category Check \u2013 Hair / Grooming Appliance Mismatch"
-
-    # 12. Electronics / audio
-    if any(x in low for x in ('earphone', 'headphone', 'keyboard', 'mouse combo', 'laptop', 'dome camera', 'bullet camera', 'sports camera')):
-        return "Category Check \u2013 Electronics / Accessories Mismatch"
-
-    # 13. Kitchen / home appliances
-    if any(x in low for x in ('toaster', 'kitchen appliance', 'electric coil cooker', 'hotplate', 'insect killer')):
-        return "Category Check \u2013 Kitchen / Home Appliance Mismatch"
-
-    # 14. Health & supplements
-    if any(x in low for x in ('dietary supplement', 'weight management', 'energy chew', 'ashwagandha', 'herbal supplement')):
-        return "Category Check \u2013 Health / Supplement Mismatch"
-
-    # 15. Food & beverage
-    if any(x in low for x in ('wine', 'stout beer', 'tonic water', 'cocktail mixer')):
-        return "Category Check \u2013 Food / Beverage Mismatch"
-
-    # 16. Skincare
-    if any(x in low for x in ('face cream', 'facial', 'serum', 'kaolin clay', 'body moisturizer')):
-        return "Category Check \u2013 Skincare Subcategory Mismatch"
-
-    # 17. Lighting
-    if any(x in low for x in ('emergency lamp', 'outdoor light', 'garden light', 'heat bulb', 'solar light', 'specialty bulb', 'agricultural machinery')):
-        return "Category Check \u2013 Lighting Mismatch"
-
-    # 18. Bedding
-    if any(x in low for x in ('duvet', 'comforter', 'mosquito net')):
-        return "Category Check \u2013 Bedding / Linen Mismatch"
-
-    # 19. Tools / hardware
-    if any(x in low for x in ('hacksaw', 'router bit', 'woodworking', 'agricultural')):
-        return "Category Check \u2013 Tools / Hardware Mismatch"
-
-    # 20. Medical
-    if any(x in low for x in ('diagnostic medical', 'support hose', 'compression category')):
-        return "Category Check \u2013 Medical Device Mismatch"
-
-    return "Category Check \u2013 Other Mismatch"
+    return "Category Check – Other Mismatch"
 
 
 def _derive_prefetched_skip_list(qc_df: pd.DataFrame) -> List[str]:
@@ -924,7 +879,7 @@ def check_image_stretched(data: pd.DataFrame, _image_cache: dict = None) -> pd.D
     if target.empty:
         return pd.DataFrame(columns=data.columns)
 
-    url_data = _image_cache if _image_cache else _fetch_all_image_dimensions(data)
+    url_data = _image_cache if _image_cache else _fetch_all_image_dimensions(target)
 
     url_issues = {}
     for url, (w, h) in url_data.items():
@@ -950,7 +905,7 @@ def check_image_blurry(data: pd.DataFrame, _image_cache: dict = None) -> pd.Data
     if target.empty:
         return pd.DataFrame(columns=data.columns)
 
-    url_data = _image_cache if _image_cache else _fetch_all_image_dimensions(data)
+    url_data = _image_cache if _image_cache else _fetch_all_image_dimensions(target)
 
     reject_map = {}
     commentary_map = {}
@@ -1078,8 +1033,6 @@ def check_restricted_brands(
     if "_name_lower" not in d.columns:
         d["_name_lower"] = d.get("NAME", pd.Series("", index=d.index)).astype(str).str.lower()
 
-    ldf = _to_polars_cached(df_hash(d), d)
-
     all_keywords = set()
     brand_names_only = set()
     brand_raw_lower_only = set()
@@ -1092,26 +1045,21 @@ def check_restricted_brands(
             brand_raw_lower_only.add(rule["brand_raw"].lower())
 
     _name_pattern = "(?i)" + "|".join(r"\b" + re.escape(k) + r"\b" for k in brand_names_only if k)
-    # The raw lowercase names preserve punctuation, so \b works on them in _name_lower
     _name_raw_pattern = "(?i)" + "|".join(r"\b" + re.escape(k) + r"\b" for k in brand_raw_lower_only if k)
-    # Use simple substring (no boundaries) for _name_norm since it strips punctuation
     _name_norm_pattern = "(?i)" + "|".join(re.escape(k) for k in brand_names_only if k)
-
-    # Also match brands whose _brand_norm CONTAINS the brand keyword as a distinct word
-    # (catches accent-obfuscation like 'CeraVeé' -> 'ceravee' but avoids 'mac' matching 'machine')
     _brand_substr_pattern = "(?i)" + "|".join(r"\b" + re.escape(k) + r"\b" for k in brand_names_only if k)
     
-    candidate_ldf = ldf.filter(
-        pl.col("_brand_norm").is_in(list(all_keywords))
-        | pl.col("_brand_norm").str.contains(_brand_substr_pattern)
-        | pl.col("_name_norm").str.contains(_name_norm_pattern)
-        | pl.col("_name_lower").str.contains(_name_raw_pattern)
+    mask = (
+        d["_brand_norm"].isin(all_keywords)
+        | d["_brand_norm"].str.contains(_brand_substr_pattern, na=False)
+        | d["_name_norm"].str.contains(_name_norm_pattern, na=False)
+        | d["_name_lower"].str.contains(_name_raw_pattern, na=False)
     )
+    
+    d = d[mask].copy()
 
-    if candidate_ldf.is_empty():
+    if d.empty:
         return pd.DataFrame(columns=data.columns)
-
-    d = candidate_ldf.to_pandas()
 
     flagged_indices = set()
     comment_map = {}
@@ -2700,16 +2648,14 @@ def validate_products(
     dup_groups = {}
     if {"NAME", "BRAND", "SELLER_NAME", "COLOR"}.issubset(data.columns):
         dt = data[["NAME", "BRAND", "SELLER_NAME", "COLOR", "PRODUCT_SET_SID"]].copy()
-        dt["dup_key"] = (
-            dt["NAME"].astype(str).str.strip().str.lower() + "||" +
-            dt["BRAND"].astype(str).str.strip().str.lower() + "||" +
-            dt["SELLER_NAME"].astype(str).str.strip().str.lower() + "||" +
-            dt["COLOR"].astype(str).str.strip().str.lower()
-        )
-        for k, v in dt.groupby("dup_key")["PRODUCT_SET_SID"].apply(list).items():
-            if len(v) > 1:
-                for sid in v:
-                    dup_groups[sid] = v
+        for col in ["NAME", "BRAND", "SELLER_NAME", "COLOR"]:
+            dt[col] = dt[col].astype(str).str.strip().str.lower()
+        dup_mask = dt.duplicated(subset=["NAME", "BRAND", "SELLER_NAME", "COLOR"], keep=False)
+        if dup_mask.any():
+            for _, group in dt[dup_mask].groupby(["NAME", "BRAND", "SELLER_NAME", "COLOR"]):
+                sids = group["PRODUCT_SET_SID"].tolist()
+                for sid in sids:
+                    dup_groups[sid] = sids
 
     _overall_data_hash = df_hash(data)
 
@@ -2731,9 +2677,7 @@ def validate_products(
     if not data_has_warranty_cols:
         _skip_set.add("product warranty")
     _needs_image_cache = any(v[0].lower() not in _skip_set and v[1] in (check_image_stretched, check_image_blurry, check_duplicate_products) for v in validations)
-
-    _img_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1) if _needs_image_cache else None
-    _image_future = _img_executor.submit(_fetch_all_image_dimensions, data) if _img_executor else None
+    _needs_image_cache = any(v[0].lower() not in _skip_set and v[1] in (check_image_stretched, check_image_blurry, check_duplicate_products) for v in validations)
 
     total_tasks = len([v for v in validations if v[0].lower() not in _skip_set and not country_validator.should_skip_validation(v[0])])
     processed_count = 0
@@ -2750,7 +2694,7 @@ def validate_products(
             on_progress(name, i, total)
             _last_progress_t = now
 
-    def run_batch(v_list, current_data, img_cache: dict):
+    def run_batch(v_list, current_data):
         nonlocal processed_count
         batch_results = {}
         _val_workers = min(8, max(2, (os.cpu_count() or 4) * 2))
@@ -2769,9 +2713,6 @@ def validate_products(
                         continue
 
                 ckwargs = {"data": working_data, **kwargs}
-                if func in (check_image_stretched, check_image_blurry):
-                    ckwargs["_image_cache"] = img_cache
-
                 flag_hash = hashlib.md5((_overall_data_hash + name).encode()).hexdigest()
                 cache_path = os.path.join(FLAG_CACHE_DIR, f"{flag_hash}.pkl")
                 future_to_name[executor.submit(run_cached_check, func, cache_path, ckwargs)] = name
@@ -2809,7 +2750,7 @@ def validate_products(
                         batch_results[name] = final_res
                         rejected_sids.update(_expanded)
                     else:
-                            results[name] = pd.DataFrame(columns=data.columns)
+                        batch_results[name] = pd.DataFrame(columns=data.columns)
                 except Exception as e:
                     logger.error(f"Validation error in '{name}': {e}")
                     validation_errors.append((name, str(e)))
@@ -2818,18 +2759,8 @@ def validate_products(
     cheap_v = [v for v in validations if v[0] not in EXPENSIVE_VALIDATORS]
     expensive_v = [v for v in validations if v[0] in EXPENSIVE_VALIDATORS]
 
-    results.update(run_batch(cheap_v, data, img_cache={}))
-
-    _image_cache: dict = {}
-    if _image_future is not None:
-        try:
-            _image_cache = _image_future.result()
-        except Exception as _ie:
-            logger.warning("Image prefetch failed: %s", _ie)
-    if _img_executor is not None:
-        _img_executor.shutdown(wait=False)
-
-    results.update(run_batch(expensive_v, data, img_cache=_image_cache))
+    results.update(run_batch(cheap_v, data))
+    results.update(run_batch(expensive_v, data))
 
     if validation_errors:
         st.warning(f"{len(validation_errors)} validation checks encountered errors.")
@@ -3654,7 +3585,7 @@ if st.session_state.get("last_processed_files") != process_signature:
                                     _learned_count += 1
 
                             qc_zip_indexed = qc_zip.set_index(_sid_col_qc)
-                            for _, mrow in rejected_entries.iterrows():
+                            for mrow in rejected_entries.to_dict("records"):
                                 _sid = str(mrow[_sid_col_qc]).strip()
                                 _col = mrow["col"]
                                 if _sid not in qc_zip_indexed.index: continue
@@ -3822,18 +3753,29 @@ if st.session_state.get("last_processed_files") != process_signature:
 
                         if not final_report_subset.empty:
                             fmap = support_files.get("flags_mapping", {})
-                            _rej_in_app = 0
-                            for _, _row in final_report_subset.iterrows():
-                                if _row["Status"] == "Rejected":
-                                    _sid = str(_row["ProductSetSid"]).strip()
-                                    _mask = final_report["ProductSetSid"].astype(str).str.strip() == _sid
-                                    if _mask.any() and (final_report.loc[_mask, "Status"] == "Approved").any():
-                                        final_report.loc[_mask, "Status"] = "Rejected"
-                                        final_report.loc[_mask, "FLAG"] = _row["FLAG"]
-                                        final_report.at[final_report[_mask].index[0], "Comment"] = _row.get("Comment", _row.get("Comment_Detail", ""))
-                                        final_report.loc[_mask, "Reason"] = fmap.get(str(_row["FLAG"]), {}).get("reason", "1000007 - Other Reason")
-                                        _rej_in_app += 1
-                            if _rej_in_app > 0: st.write(f"App validation found {_rej_in_app} additional rejections.")
+                            rejected_subset = final_report_subset[final_report_subset["Status"] == "Rejected"]
+                            if not rejected_subset.empty:
+                                rej_first = rejected_subset.drop_duplicates(subset=["ProductSetSid"], keep="first")
+                                rej_sids = set(rej_first["ProductSetSid"].astype(str).str.strip())
+                                
+                                fr_sids = final_report["ProductSetSid"].astype(str).str.strip()
+                                update_mask = fr_sids.isin(rej_sids) & (final_report["Status"] == "Approved")
+                                
+                                if update_mask.any():
+                                    flag_map = rej_first.set_index(rej_first["ProductSetSid"].astype(str).str.strip())["FLAG"].to_dict()
+                                    cmt_series = rej_first.get("Comment", pd.Series("", index=rej_first.index))
+                                    if "Comment_Detail" in rej_first.columns:
+                                        cmt_series = cmt_series.where(cmt_series != "", rej_first["Comment_Detail"])
+                                    cmt_map = pd.Series(cmt_series.values, index=rej_first["ProductSetSid"].astype(str).str.strip()).to_dict()
+                                    
+                                    sids_to_update = fr_sids[update_mask]
+                                    final_report.loc[update_mask, "Status"] = "Rejected"
+                                    final_report.loc[update_mask, "FLAG"] = sids_to_update.map(flag_map)
+                                    final_report.loc[update_mask, "Comment"] = sids_to_update.map(cmt_map)
+                                    final_report.loc[update_mask, "Reason"] = final_report.loc[update_mask, "FLAG"].astype(str).map(lambda f: fmap.get(f, {}).get("reason", "1000007 - Other Reason"))
+                                    
+                                    _rej_in_app = update_mask.sum()
+                                    st.write(f"App validation found {_rej_in_app} additional rejections.")
 
                         _parent_map = data.set_index("PRODUCT_SET_SID")["PARENTSKU"].to_dict() if "PARENTSKU" in data.columns else {}
                         _seller_map = data.set_index("PRODUCT_SET_SID")["SELLER_NAME"].to_dict() if "SELLER_NAME" in data.columns else {}

@@ -535,6 +535,23 @@ def _add_sids_to_post_qc_results(sid_set: set, flag: str, comment: str = "") -> 
         results[base_flag] = base_rows
 
 
+def _get_image_maps(all_data):
+    if "_image_maps" not in st.session_state or st.session_state.get("_image_maps_df_id") != id(all_data):
+        if all_data is None or "PRODUCT_SET_SID" not in all_data.columns or "IMAGE1" not in all_data.columns:
+            st.session_state["_image_maps"] = ({}, {})
+        else:
+            sid_to_img = dict(zip(all_data["PRODUCT_SET_SID"].astype(str).str.strip(), all_data["IMAGE1"]))
+            img_to_sids = {}
+            for sid, img in sid_to_img.items():
+                if pd.isna(img) or not str(img).strip():
+                    continue
+                if img not in img_to_sids:
+                    img_to_sids[img] = set()
+                img_to_sids[img].add(sid)
+            st.session_state["_image_maps"] = (sid_to_img, img_to_sids)
+            st.session_state["_image_maps_df_id"] = id(all_data)
+    return st.session_state["_image_maps"]
+
 def apply_status_change(
     sids,
     *,
@@ -552,16 +569,10 @@ def apply_status_change(
     if is_image_rej:
         all_data = st.session_state.get("all_data_map")
         if all_data is not None and "PRODUCT_SET_SID" in all_data.columns and "IMAGE1" in all_data.columns:
-            _norm_pss = _get_norm_col(all_data, "PRODUCT_SET_SID")
-            _target_images = set(
-                all_data[_norm_pss.isin(sid_set)]["IMAGE1"]
-                .dropna().unique()
-            )
-            if _target_images:
-                _global_similar_sids = set(
-                    _norm_pss[all_data["IMAGE1"].isin(_target_images)].unique()
-                )
-                sid_set.update(_global_similar_sids)
+            sid_to_img, img_to_sids = _get_image_maps(all_data)
+            _target_images = {sid_to_img[sid] for sid in sid_set if sid in sid_to_img and pd.notna(sid_to_img[sid])}
+            for img in _target_images:
+                sid_set.update(img_to_sids.get(img, set()))
 
     fr = st.session_state.get("final_report", pd.DataFrame())
     if (
@@ -597,13 +608,13 @@ def apply_status_change(
         _add_sids_to_post_qc_results(sid_set, flag, comment)
 
     if sync_quick_rejects:
+        if "quick_rejects" not in st.session_state:
+            st.session_state["quick_rejects"] = {}
         for sid in sid_set:
             if status == "Rejected":
-                st.session_state[f"quick_rej_{sid}"] = True
-                st.session_state[f"quick_rej_reason_{sid}"] = flag or comment or reason
+                st.session_state["quick_rejects"][sid] = flag or comment or reason
             else:
-                st.session_state.pop(f"quick_rej_{sid}", None)
-                st.session_state.pop(f"quick_rej_reason_{sid}", None)
+                st.session_state["quick_rejects"].pop(sid, None)
 
     st.session_state.data_version = st.session_state.get("data_version", 0) + 1
     _clear_result_caches(batch_gc=len(sid_set) >= 20)
@@ -881,6 +892,47 @@ def render_flag_expander(
             )
         )
         df_display = df_display[_final_cols]
+        if "NAME" in df_display.columns:
+            df_display["NAME"] = df_display["NAME"].apply(
+                lambda t: re.sub("<[^<]+?>", "", t) if isinstance(t, str) else t
+            )
+
+        if "GLOBAL_PRICE" in df_display.columns and "GLOBAL_SALE_PRICE" in df_display.columns:
+            def _local_p(row):
+                sp, rp = row.get("GLOBAL_SALE_PRICE"), row.get("GLOBAL_PRICE")
+                val = sp if pd.notna(sp) and str(sp).strip() != "" else rp
+                return format_local_price(val, country_validator.country)
+            df_display.insert(
+                df_display.columns.get_loc("GLOBAL_PRICE") + 1 if "GLOBAL_PRICE" in df_display.columns else len(df_display.columns),
+                "Local Price",
+                df_display.apply(_local_p, axis=1),
+            )
+            
+        if img_col:
+            img_s = df_display[img_col].copy() if img_col in df_display.columns else pd.Series("", index=df_display.index)
+            mask_empty = img_s.isna() | (img_s.astype(str).str.strip() == "")
+            for fallback in ["MainImage", "Image", "IMAGE1_ZIP", "Url", "url", "main_image", "MAIN_IMAGE"]:
+                if not mask_empty.any(): break
+                if fallback in df_display.columns:
+                    fallback_s = df_display[fallback]
+                    valid_fallback = fallback_s.notna() & (fallback_s.astype(str).str.strip() != "")
+                    update_mask = mask_empty & valid_fallback
+                    img_s.loc[update_mask] = fallback_s[update_mask]
+                    mask_empty = img_s.isna() | (img_s.astype(str).str.strip() == "")
+            names = df_display.get("NAME", pd.Series([""] * len(df_display))).fillna("").astype(str).values
+            brands = df_display.get("BRAND", pd.Series([""] * len(df_display))).fillna("").astype(str).values
+            imgs = img_s.fillna("").astype(str).values
+            res = []
+            for n, b, i in zip(names, brands, imgs):
+                zip_img = _get_image_from_zip(n, b, i)
+                if zip_img:
+                    res.append(zip_img)
+                elif i.startswith("http"):
+                    res.append(i.replace("http://", "https://", 1))
+                else:
+                    res.append(None)
+            df_display.insert(0, "_Image_Preview_Cached", res)
+
         st.session_state.display_df_cache[cache_key] = df_display
     else:
         df_display = st.session_state.display_df_cache[cache_key]
@@ -941,58 +993,12 @@ def render_flag_expander(
         df_view = df_view.sort_values("CATEGORY", na_position="last")
     df_view = df_view.reset_index(drop=True)
 
-    if "NAME" in df_view.columns:
-        df_view["NAME"] = df_view["NAME"].apply(
-            lambda t: re.sub("<[^<]+?>", "", t) if isinstance(t, str) else t
-        )
 
-    def get_img(row):
-        sid = row.get("PRODUCT_SET_SID")
-        name = row.get("NAME", "")
-        brand = row.get("BRAND", "")
-        
-        img_val = ""
-        if img_col and img_col in row:
-            img_val = row.get(img_col, "")
-            
-        if pd.isna(img_val) or not str(img_val).strip():
-            for fallback in ["MainImage", "Image", "IMAGE1_ZIP", "Url", "url", "main_image", "MAIN_IMAGE"]:
-                if fallback in row and pd.notna(row[fallback]) and str(row[fallback]).strip():
-                    img_val = row[fallback]
-                    break
-
-        if pd.isna(img_val):
-            img_val = ""
-            
-        zip_img = _get_image_from_zip(name, brand, img_val)
-        if zip_img:
-            return zip_img
-            
-        if str(img_val).startswith("http"):
-            return str(img_val).replace("http://", "https://", 1)
-            
-        return None
-    if "GLOBAL_PRICE" in df_view.columns and "GLOBAL_SALE_PRICE" in df_view.columns:
-
-        def _local_p(row):
-            sp, rp = row.get("GLOBAL_SALE_PRICE"), row.get("GLOBAL_PRICE")
-            val = sp if pd.notna(sp) and str(sp).strip() != "" else rp
-            return format_local_price(val, country_validator.country)
-
-        df_view.insert(
-            df_view.columns.get_loc("GLOBAL_PRICE") + 1
-            if "GLOBAL_PRICE" in df_view.columns
-            else len(df_view.columns),
-            "Local Price",
-            df_view.apply(_local_p, axis=1),
-        )
 
     def style_rows(row):
         if row.get("Is_Zip"):
             return ["color: #ff4b4b; font-weight: 900;"] * len(row)
         return [""] * len(row)
-
-    df_styled = df_view.style.apply(style_rows, axis=1)
 
     _filters_active = bool(search_term or seller_filter)
     sel_all_col, sel_clear_col, _sel_spacer = st.columns([1, 1, 3])
@@ -1045,11 +1051,14 @@ def render_flag_expander(
         }
 
     # Wire up the Show Image Previews toggle
-    if show_table_images and img_col:
-        df_view.insert(0, "_Image_Preview", df_view.apply(get_img, axis=1))
-        _col_cfg["_Image_Preview"] = st.column_config.ImageColumn("Preview", width="small")
-    elif "_Image_Preview" in df_view.columns:
-        df_view = df_view.drop(columns=["_Image_Preview"])
+    if show_table_images and "_Image_Preview_Cached" in df_view.columns:
+        df_view.insert(0, "_Image_Preview", df_view["_Image_Preview_Cached"])
+        _col_cfg["_Image_Preview"] = st.column_config.ImageColumn(
+            "Preview", help="Main Image Preview"
+        )
+        
+    if "_Image_Preview_Cached" in df_view.columns:
+        df_view = df_view.drop(columns=["_Image_Preview_Cached"])
 
     df_styled = df_view.style.apply(style_rows, axis=1)
 
@@ -3178,11 +3187,7 @@ def visual_review_modal(support_files):
     fr = st.session_state.final_report
     data = st.session_state.all_data_map
     all_rows = st.session_state.get("all_data_rows", data)
-    committed_rej_sids = {
-        k.replace("quick_rej_", "")
-        for k in st.session_state.keys()
-        if k.startswith("quick_rej_") and "reason" not in k
-    }
+    committed_rej_sids = set(st.session_state.get("quick_rejects", {}).keys())
 
     poor_img_rej_sids = set(
         fr[
@@ -3435,7 +3440,8 @@ def visual_review_modal(support_files):
             review_data = review_data[review_data.get("color_mismatch", pd.Series(False, index=review_data.index)).astype(bool)]
         else:
             def has_flag(sid, w):
-                return curr_flag in w or (sid in committed_rej_sids and str(st.session_state.get(f"quick_rej_reason_{sid}", "")).replace("_", " ").lower() == curr_flag.replace("_", " ").lower())
+                qrs = st.session_state.get("quick_rejects", {})
+                return curr_flag in w or (sid in qrs and str(qrs.get(sid, "")).replace("_", " ").lower() == curr_flag.replace("_", " ").lower())
             review_data = review_data[review_data.apply(lambda r: has_flag(r["ProductSetSid"], r["_warnings"]), axis=1)]
 
     if curr_sort:
@@ -3592,10 +3598,11 @@ def visual_review_modal(support_files):
             _prefetch_cache.move_to_end(_prefetch_cache_key)
             prefetch_urls = _prefetch_cache[_prefetch_cache_key]
 
+        qrs = st.session_state.get("quick_rejects", {})
         rejected_state = {
-            sid.strip(): st.session_state[f"quick_rej_reason_{sid.strip()}"]
+            sid.strip(): qrs[sid.strip()]
             for sid in page_data["PRODUCT_SET_SID"].astype(str)
-            if st.session_state.get(f"quick_rej_{sid.strip()}")
+            if sid.strip() in qrs
         }
 
         for _sid_raw in page_data.get(
@@ -3666,7 +3673,7 @@ def visual_review_modal(support_files):
         }})();
         </script>
         """
-        st.iframe(_sync_html, height=0)
+        st.iframe(_sync_html, height=1)
     st.markdown("---")
 
     pg_cols_bot = st.columns([1, 2, 1], vertical_alignment="bottom", gap="small")
