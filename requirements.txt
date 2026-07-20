@@ -18,3 +18,4 @@ fastapi
 uvicorn[standard]
 redis>=5.0.0
 python-multipart
+python-docx
