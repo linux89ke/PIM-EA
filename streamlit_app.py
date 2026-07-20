@@ -654,6 +654,9 @@ FLAG_RELEVANT_COLS = {
     "Missing COLOR": ["CATEGORY_CODE", "NAME", "COLOR"],
     "Missing Weight/Volume": ["CATEGORY_CODE", "NAME"],
     "Incomplete Smartphone Name": ["CATEGORY_CODE", "NAME"],
+    "Specs Inconsistency": ["CATEGORY_CODE", "NAME", "DESCRIPTION", "SHORT_DESCRIPTION"],
+    "Brand Image Mismatch": ["BRAND", "NAME", "Brand_Detected_On_Product", "SELLER_NAME"],
+    "Off-Platform Contact": ["NAME", "DESCRIPTION", "SHORT_DESCRIPTION", "SELLER_NAME"],
     "Duplicate product": ["NAME", "SELLER_NAME", "BRAND", "CATEGORY_CODE"],
     "Perfume Tester": ["CATEGORY_CODE", "NAME"],
     "Discount too high": ["GLOBAL_PRICE", "GLOBAL_SALE_PRICE"],
@@ -1789,8 +1792,11 @@ def check_brand_image_mismatch(
 
 # ── Off-platform contact detection ──────────────────────────────────────────
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
-# Hard evidence: phone numbers (KE/NG formats + generic international),
-# WhatsApp mentions/links, URLs.
+# Hard evidence: phone numbers (KE/NG formats + generic international), URLs,
+# and unambiguous wa.me links. Bare "whatsapp" is handled separately below —
+# it's ambiguous on its own (a smartwatch/earbuds listing legitimately says
+# "WhatsApp notification support"), so it doesn't belong in this always-hard
+# bucket.
 _OFFPLATFORM_HARD_RE = re.compile(
     r"(?:"
     r"\+?254[\s\-]?[17]\d{2}[\s\-]?\d{3}[\s\-]?\d{3}"          # Kenya intl
@@ -1799,7 +1805,6 @@ _OFFPLATFORM_HARD_RE = re.compile(
     r"|\b0[789][01]\d[\s\-]?\d{3}[\s\-]?\d{4}\b"               # Nigeria local 080x xxx xxxx
     r"|\+\d{10,14}\b"                                          # generic international
     r"|wa\.me/\S+"
-    r"|whats\s*app"
     r"|https?://\S+"
     r"|\bwww\.\S+"
     r")",
@@ -1812,6 +1817,34 @@ _OFFPLATFORM_SOFT_RE = re.compile(
     r"(?:\bcall\s+us\b|\bcontact\s+(?:us|the\s+seller|seller)\b"
     r"|\border\s+(?:directly|via|through)\b|\bdm\s+us\b|\binbox\s+us\b"
     r"|\bfollow\s+us\s+on\b|\bfind\s+us\s+on\b|\bvisit\s+our\b)",
+    re.IGNORECASE,
+)
+
+# WhatsApp needs its own three-way classification because the bare word is
+# common in two very different contexts:
+#   1. A genuine off-platform solicitation ("chat us on WhatsApp", a phone
+#      number sitting right next to it, or a wa.me link — already covered
+#      above) → hard evidence.
+#   2. A device FEATURE description ("WhatsApp notification support",
+#      "compatible with WhatsApp calls" on a smartwatch/earbuds listing) →
+#      not evidence of anything; must not be flagged at all.
+#   3. Anything else — WhatsApp mentioned with no feature context and no
+#      clear solicitation wording → ambiguous, worth a human glance but not
+#      an automatic reject, so it's soft evidence only.
+_WHATSAPP_ANY_RE = re.compile(r"whats\s*app", re.IGNORECASE)
+_WHATSAPP_FEATURE_CTX_RE = re.compile(
+    r"whats\s*app\s*(?:\w+\s+){0,2}(?:notification|notifications|call|calls|calling"
+    r"|support|compatib\w*|sync\w*|enabled|feature\w*|message\w*|alert\w*|chat\w*)"
+    r"|(?:notification|notifications|call|calls|calling|support|compatib\w*|sync\w*"
+    r"|enabled|feature\w*|receive|reply\s+to|read)\s*(?:\w+\s+){0,2}whats\s*app",
+    re.IGNORECASE,
+)
+_WHATSAPP_CONTACT_RE = re.compile(
+    r"wa\.me/\S+"
+    r"|whats\s*app[^.!?\n]{0,40}\+?\d[\d\s\-]{6,}\d"           # "whatsapp ... 0712 345 678"
+    r"|\+?\d[\d\s\-]{6,}\d[^.!?\n]{0,40}whats\s*app"           # "0712 345 678 ... whatsapp"
+    r"|whats\s*app\s*(?:us\b|number|no\.?\s*:?\s*\d|:\s*\d)"
+    r"|(?:chat|message|msg|contact|order|dm|reach)\s+(?:with\s+)?(?:us\s+)?(?:on|via|through)?\s*whats\s*app",
     re.IGNORECASE,
 )
 
@@ -1843,7 +1876,11 @@ def check_offplatform_contact(data: pd.DataFrame, **kwargs) -> pd.DataFrame:
     # Cheap vectorized pre-filter: which rows have a hit in ANY column.
     pre_mask = pd.Series(False, index=data.index)
     for c in text_cols:
-        pre_mask |= col_text[c].str.contains(_OFFPLATFORM_HARD_RE, na=False) | col_text[c].str.contains(_OFFPLATFORM_SOFT_RE, na=False)
+        pre_mask |= (
+            col_text[c].str.contains(_OFFPLATFORM_HARD_RE, na=False)
+            | col_text[c].str.contains(_OFFPLATFORM_SOFT_RE, na=False)
+            | col_text[c].str.contains(_WHATSAPP_ANY_RE, na=False)
+        )
     if not pre_mask.any():
         return pd.DataFrame(columns=data.columns)
 
@@ -1856,9 +1893,19 @@ def check_offplatform_contact(data: pd.DataFrame, **kwargs) -> pd.DataFrame:
             # Allowlist the platform's own domains/CDNs so legit image URLs pass.
             hard = sorted({m.strip() for m in _OFFPLATFORM_HARD_RE.findall(text)
                            if "jumia" not in m.lower() and "wsrv.nl" not in m.lower()})
-            if hard:
-                hard_by_col.append((c, hard))
             soft = sorted({m.strip() for m in _OFFPLATFORM_SOFT_RE.findall(text)})
+
+            # WhatsApp: classify separately (see comment on the regexes above)
+            # instead of treating every bare mention as automatic hard evidence.
+            if _WHATSAPP_CONTACT_RE.search(text):
+                hard.append("whatsapp")
+            elif _WHATSAPP_ANY_RE.search(text) and not _WHATSAPP_FEATURE_CTX_RE.search(text):
+                soft.append("whatsapp mention")
+            # else: bare feature-context mention ("WhatsApp notification
+            # support") — not evidence of anything, deliberately not flagged.
+
+            if hard:
+                hard_by_col.append((c, sorted(set(hard))))
             if soft:
                 soft_by_col.append((c, soft))
 
@@ -2264,6 +2311,129 @@ def check_incomplete_smartphone_name(
     return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
 
 
+# ── Specs inconsistency (phones / tablets / computers) ─────────────────────
+_SPEC_ANY_RE = re.compile(r"\d+\s*(?:gb|tb)\b", re.IGNORECASE)
+_SPEC_CATEGORY_KEYWORDS_RE = re.compile(
+    r"phone|smartphone|tablet|laptop|desktop|computer|notebook|macbook|chromebook",
+    re.IGNORECASE,
+)
+_SPEC_RAM_RE1 = re.compile(r"(\d+)\s*gb\s*ram\b", re.IGNORECASE)
+# The colon/dash is REQUIRED (not optional) here — that's what distinguishes
+# a genuine "RAM: 8GB" label from "RAM" appearing as a bare dangling word
+# between two unrelated numbers, as in "8GB RAM 128GB ROM" (where "RAM
+# 128GB" would otherwise misread the STORAGE value as RAM's). A stricter
+# lookbehind was tried instead but that also broke the legitimate case of
+# two colon-labeled specs listed back-to-back ("ROM: 64GB RAM: 8GB"), since
+# RAM there is *also* preceded by another spec's "GB " — punctuation, not
+# position, is the reliable signal.
+_SPEC_RAM_RE2 = re.compile(r"\bram\s*[:\-]\s*(\d+)\s*gb\b", re.IGNORECASE)
+_SPEC_STORAGE_GB_RE1 = re.compile(r"(\d+)\s*gb\s*(?:rom|storage|internal(?:\s+storage)?|memory)\b", re.IGNORECASE)
+_SPEC_STORAGE_TB_RE1 = re.compile(r"(\d+)\s*tb\s*(?:rom|storage|internal(?:\s+storage)?|memory)\b", re.IGNORECASE)
+# Same reasoning, mirrored for storage labels.
+_SPEC_STORAGE_RE2 = re.compile(r"\b(?:rom|storage|internal(?:\s+storage)?|memory)\s*[:\-]\s*(\d+)\s*gb\b", re.IGNORECASE)
+_SPEC_COMBO_RE = re.compile(r"\b(\d+)\s*(?:gb)?\s*[/+]\s*(\d+)\s*gb\b", re.IGNORECASE)
+
+
+def _extract_ram_storage(text: str, allow_combo: bool = False) -> tuple:
+    """Pulls every RAM/Storage value mentioned in `text` (already lowercased),
+    normalized to GB. Returns (ram_values, storage_values) as sets — a set
+    (not a single value) because a field can legitimately state more than one
+    without being wrong, e.g. "RAM 8GB" appearing twice, or a combo pattern
+    agreeing with an explicit one.
+
+    allow_combo enables the "6/128GB" -> RAM=6, Storage=128 convention. It's
+    a reliable shorthand in product TITLES but not in free-form description
+    prose, where "Available in 4GB/8GB RAM variants" would otherwise be
+    misread as RAM=4/Storage=8 instead of two RAM options — so callers only
+    pass allow_combo=True for the NAME field.
+    """
+    ram = {int(m.group(1)) for m in _SPEC_RAM_RE1.finditer(text)}
+    ram |= {int(m.group(1)) for m in _SPEC_RAM_RE2.finditer(text)}
+    storage = {int(m.group(1)) for m in _SPEC_STORAGE_GB_RE1.finditer(text)}
+    storage |= {int(m.group(1)) * 1024 for m in _SPEC_STORAGE_TB_RE1.finditer(text)}
+    storage |= {int(m.group(1)) for m in _SPEC_STORAGE_RE2.finditer(text)}
+    if allow_combo:
+        for m in _SPEC_COMBO_RE.finditer(text):
+            ram.add(int(m.group(1)))
+            storage.add(int(m.group(2)))
+    return ram, storage
+
+
+def check_specs_inconsistency(
+    data: pd.DataFrame, spec_category_codes: List[str] = None, **kwargs
+) -> pd.DataFrame:
+    """
+    For phones/tablets/computers, cross-checks the RAM/Storage spec stated in
+    the NAME (title) against DESCRIPTION and SHORT_DESCRIPTION — catches the
+    classic copy-paste error where a listing's title says "8GB RAM" but the
+    description (often reused from a different variant/SKU) says "4GB RAM".
+
+    Only flags when the title's value doesn't appear AT ALL among a field's
+    mentioned values — a description listing multiple variants ("available
+    in 4GB/8GB") is not treated as a mismatch as long as the title's value is
+    one of them, which keeps this from firing on legitimate variant blurbs.
+    """
+    if not {"NAME", "CATEGORY_CODE"}.issubset(data.columns):
+        return pd.DataFrame(columns=data.columns)
+    text_cols = [c for c in ("DESCRIPTION", "SHORT_DESCRIPTION") if c in data.columns]
+    if not text_cols:
+        return pd.DataFrame(columns=data.columns)
+
+    # Scope: explicit category codes (if configured) OR a category-path
+    # keyword match, unioned — works out of the box with no support-file
+    # setup, but still respects a precise code list when one is supplied.
+    in_scope = pd.Series(False, index=data.index)
+    if spec_category_codes:
+        cat_codes = set(clean_category_code(c) for c in spec_category_codes)
+        in_scope |= data["_cat_clean"].isin(cat_codes)
+    if "CATEGORY" in data.columns:
+        in_scope |= data["CATEGORY"].astype(str).str.contains(_SPEC_CATEGORY_KEYWORDS_RE, na=False)
+    target = data[in_scope].copy()
+    if target.empty:
+        return pd.DataFrame(columns=data.columns)
+
+    # Cheap vectorized pre-filter: title must mention a spec number at all,
+    # otherwise there's nothing to cross-check against.
+    name_lower = target["NAME"].astype(str).str.lower()
+    target = target[name_lower.str.contains(_SPEC_ANY_RE, na=False)]
+    if target.empty:
+        return pd.DataFrame(columns=data.columns)
+    name_lower = name_lower.loc[target.index]
+
+    # HTML-strip only this (usually small) candidate set, not the whole file.
+    col_text = {
+        c: target[c].astype(str).str.replace(_HTML_TAG_RE, " ", regex=True).str.lower()
+        for c in text_cols
+    }
+
+    def _fmt(vals: set) -> str:
+        return "/".join(f"{v}GB" for v in sorted(vals))
+
+    comments: dict = {}
+    for idx in target.index:
+        name_ram, name_storage = _extract_ram_storage(name_lower.loc[idx], allow_combo=True)
+        if not name_ram and not name_storage:
+            continue
+        mismatches = []
+        for c in text_cols:
+            text = col_text[c].loc[idx]
+            if not text.strip():
+                continue
+            f_ram, f_storage = _extract_ram_storage(text, allow_combo=False)
+            if name_ram and f_ram and not (name_ram & f_ram):
+                mismatches.append(f"RAM: title says {_fmt(name_ram)}, {c} says {_fmt(f_ram)}")
+            if name_storage and f_storage and not (name_storage & f_storage):
+                mismatches.append(f"Storage: title says {_fmt(name_storage)}, {c} says {_fmt(f_storage)}")
+        if mismatches:
+            comments[idx] = "Specs inconsistency — " + " | ".join(mismatches)
+
+    if not comments:
+        return pd.DataFrame(columns=data.columns)
+    flagged = data.loc[list(comments.keys())].copy()
+    flagged["Comment_Detail"] = flagged.index.map(comments)
+    return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
+
+
 _SIZE_UNIT_PATTERN = re.compile(
     r"(?<![\w.])"
     r"(\d+(?:[.,]\d+)?)"
@@ -2552,6 +2722,7 @@ if _reg is not None:
             "check_missing_color": check_missing_color,
             "check_weight_volume_in_name": check_weight_volume_in_name,
             "check_incomplete_smartphone_name": check_incomplete_smartphone_name,
+            "check_specs_inconsistency": check_specs_inconsistency,
             "check_duplicate_products": check_duplicate_products,
             "check_fda": check_fda,
         }
@@ -2786,6 +2957,15 @@ def validate_products(
             },
         ),
         (
+            "Specs Inconsistency",
+            check_specs_inconsistency,
+            {
+                "spec_category_codes": support_files.get(
+                    "smartphone_category_codes", []
+                )
+            },
+        ),
+        (
             "Duplicate product",
             check_duplicate_products,
             {
@@ -2995,7 +3175,7 @@ def derive_status_report(data, results, support_files, country_validator):
         "Suspected counterfeit Jerseys", "Prohibited products", "Unnecessary words in NAME",
         "Single-word NAME", "Generic BRAND Issues", "Fashion brand issues", "BRAND name repeated in NAME",
         "Wrong Variation", "Generic branded products with genuine brands", "Missing COLOR",
-        "Missing Weight/Volume", "Incomplete Smartphone Name", "Duplicate product", "Discount too high",
+        "Missing Weight/Volume", "Incomplete Smartphone Name", "Specs Inconsistency", "Duplicate product", "Discount too high",
         "Suspicious Discount", "NG - Gift Card Seller", "NG - TV Brand Seller", "NG - HP Toners Seller",
         "NG - Apple Seller", "NG - Xmas Tree Seller", "NG - Rice Brand Seller", "GH - Smart Glasses with Camera",
         "MA - Marque Interdite", "Powerbank Not Authorized"

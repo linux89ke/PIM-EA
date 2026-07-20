@@ -358,6 +358,23 @@ def check_kebs_banned_products(data: pd.DataFrame) -> pd.DataFrame:
         name_pat = re.compile(r'^' + re.escape(b) + r'\b', re.IGNORECASE) if len(b) >= 4 else None
         _brand_patterns[b] = (pat, name_pat)
 
+    # Many KEBS brand entries are short, common words fragmented out of a
+    # longer real name — e.g. "soft" from "Soft & Beautiful", "fair" from
+    # "Fair & White", "dream", "secret", "claire", "island". Matching those
+    # against NAME unconditionally (the old behavior) flags completely
+    # unrelated, legitimate products — "Nivea Soft Body Lotion" gets read as
+    # the banned brand "Soft" even though BRAND clearly says Nivea. The
+    # NAME-based fallback is only trustworthy when the seller's declared
+    # BRAND is itself generic/evasive (the same gate check_suspected_fake_perfume
+    # and the sneaker/jersey counterfeit checks already use before trusting a
+    # brand word found only in NAME) — otherwise the declared BRAND field is
+    # definitive and should win.
+    _KEBS_GENERIC_BRAND_MARKERS = {
+        "", "nan", "none", "generic", "fashion", "unbranded", "no brand",
+        "original", "new", "designers collection", "smart collection",
+    }
+    target["_brand_is_generic"] = target["_brand_l"].isin(_KEBS_GENERIC_BRAND_MARKERS)
+
     # Vectorized pre-filter: two combined-regex scans (C speed) find the rows
     # that could possibly match, so the Python loop below — which preserves the
     # exact longest-name-first / reason-selection semantics — only runs on that
@@ -373,8 +390,13 @@ def check_kebs_banned_products(data: pd.DataFrame) -> pd.DataFrame:
     if meaningful_brands:
         _brand_start_pattern = r'^(?:' + "|".join(re.escape(b) for b in meaningful_brands) + r')(?:\b|$)'
         _cand_mask |= (
-            (target["_brand_l"].str.contains(_brand_start_pattern, regex=True, na=False)
-             | target["_name_l"].str.contains(_brand_start_pattern, regex=True, na=False))
+            (
+                target["_brand_l"].str.contains(_brand_start_pattern, regex=True, na=False)
+                | (
+                    target["_brand_is_generic"]
+                    & target["_name_l"].str.contains(_brand_start_pattern, regex=True, na=False)
+                )
+            )
             & target["_name_l"].str.contains(_SKIN_PRODUCT_TYPES, na=False)
         )
     target = target[_cand_mask]
@@ -417,9 +439,13 @@ def check_kebs_banned_products(data: pd.DataFrame) -> pd.DataFrame:
                 pat, name_pat = _brand_patterns[b]
                 brand_match = pat.match(brand_val)
 
-                # OR the name starts with the banned brand word
+                # OR the name starts with the banned brand word — only trusted
+                # when the seller's declared BRAND is itself generic/evasive
+                # (see _KEBS_GENERIC_BRAND_MARKERS above). A specific declared
+                # BRAND is definitive: "Nivea Soft Body Lotion" is Nivea, not
+                # the banned brand "Soft", no matter what NAME says.
                 name_brand_match = False
-                if not brand_match and name_pat is not None:
+                if not brand_match and name_pat is not None and row["_brand_is_generic"]:
                     name_brand_match = bool(name_pat.match(name_val))
 
                 if brand_match or name_brand_match:

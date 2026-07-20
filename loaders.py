@@ -811,6 +811,10 @@ def load_flags_mapping(filename="reason.xlsx") -> Dict[str, dict]:
             "1000033 - Keywords in your content/ Product name / description has been blacklisted",
             "The product name/description appears to contain a phone number, WhatsApp link, website, or wording directing buyers off-platform. Kindly remove all off-platform contact details.",
         ),
+        "Specs Inconsistency": (
+            "1000008 - Kindly Improve Product Name Description",
+            "The RAM/Storage spec stated in the product title does not match what's stated in the description. Kindly correct the description to match the exact variant being sold.",
+        ),
     }
 
     default_mapping = {

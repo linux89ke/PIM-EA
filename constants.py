@@ -157,6 +157,7 @@ REASON_MAP = {
     "REJECT_SMARTPHONE_NAME": "Incomplete Smartphone Name",
     "REJECT_BRAND_MISMATCH": "Brand Image Mismatch",
     "REJECT_OFFPLATFORM":    "Off-Platform Contact",
+    "REJECT_SPECS_INCONSISTENCY": "Specs Inconsistency",
     "OTHER_CUSTOM":          "Other Reason (Custom)"
 }
 

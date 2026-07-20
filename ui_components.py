@@ -786,6 +786,7 @@ def render_flag_expander(
     base_display_cols = [
         "PRODUCT_SET_SID",
         "NAME",
+        "Detected Issue",
         "BRAND",
         "CATEGORY",
         "COLOR",
@@ -821,7 +822,14 @@ def render_flag_expander(
         current_display_cols.append(img_col)
 
     if cache_key not in st.session_state.display_df_cache:
-        _extra_cols = [c for c in current_display_cols if c in data.columns]
+        # "Detected Issue" isn't a product column — it's final_report's
+        # Comment (what a check found + which field, e.g. "Off-platform
+        # contact detected — DESCRIPTION: 'whatsapp, 0712...'"), carried
+        # through df_flagged_sids. Keep it in scope here even though the
+        # data.columns filter below wouldn't otherwise include it — this
+        # table previously showed the flag NAME but never the reason a
+        # reviewer would need to act on it without opening the grid card.
+        _extra_cols = [c for c in current_display_cols if c in data.columns or c == "Detected Issue"]
         if "CATEGORY_CODE" in data.columns and "CATEGORY_CODE" not in _extra_cols:
             _extra_cols.append("CATEGORY_CODE")
 
@@ -838,12 +846,21 @@ def render_flag_expander(
                 else df_flagged_sids
             )
             df_flagged_sids["Is_Manual"] = False
+        if "Comment" not in df_flagged_sids.columns:
+            df_flagged_sids = df_flagged_sids.copy()
+            df_flagged_sids["Comment"] = ""
         df_display = pd.merge(
-            df_flagged_sids[["ProductSetSid", "Is_Zip"]],
+            df_flagged_sids[["ProductSetSid", "Is_Zip", "Comment"]].rename(
+                columns={"Comment": "Detected Issue"}
+            ),
             data,
             left_on="ProductSetSid",
             right_on="PRODUCT_SET_SID",
             how="left",
+        )
+        _di = df_display["Detected Issue"].astype(str).str.strip()
+        df_display["Detected Issue"] = _di.where(
+            ~_di.str.lower().isin(["nan", "none", "", "manual rejection", "rejected"]), ""
         )
         _extra_cols_cleaned = [c for c in _extra_cols if c in df_display.columns]
         if "IMAGE1_ZIP" in df_display.columns:
@@ -1050,6 +1067,11 @@ def render_flag_expander(
             "Source": st.column_config.TextColumn("Source", width="small", pinned=True, help="Product came from a ZIP/prefetch upload"),
             "PRODUCT_SET_SID": st.column_config.TextColumn(pinned=True),
             "NAME": st.column_config.TextColumn(pinned=True),
+            "Detected Issue": st.column_config.TextColumn(
+                "Detected Issue",
+                width="large",
+                help="What the check found and which field it was found in (e.g. NAME, DESCRIPTION)",
+            ),
             "PARENTSKU": st.column_config.TextColumn(),
             "SELLER_SKU": st.column_config.TextColumn(),
             "SID": st.column_config.TextColumn(),
@@ -1623,6 +1645,7 @@ def build_fast_grid_html(
     <option value="Prohibited Words" {_sel('Prohibited Words', curr_flag)}>{labels_dict.get('filter_prohibited', 'Prohibited')}</option>
     <option value="Brand Image Mismatch" {_sel('Brand Image Mismatch', curr_flag)}>Brand Image Mismatch</option>
     <option value="Off-Platform Contact" {_sel('Off-Platform Contact', curr_flag)}>Off-Platform Contact</option>
+    <option value="Specs Inconsistency" {_sel('Specs Inconsistency', curr_flag)}>Specs Inconsistency</option>
     <option disabled>── {labels_dict.get('grp_prefetch', 'Prefetch')} ──</option>
     <option value="Category Check" {_sel('Category Check', curr_flag)}>Category Check</option>
     <option value="Warranty Check" {_sel('Warranty Check', curr_flag)}>Warranty Check</option>
@@ -1666,6 +1689,7 @@ def build_fast_grid_html(
     <option value="REJECT_UNNECESSARY_WORDS">Unnecessary Words in Name</option>
     <option value="REJECT_SINGLE_WORD">Single-word Name</option>
     <option value="REJECT_SMARTPHONE_NAME">Incomplete Smartphone Name</option>
+    <option value="REJECT_SPECS_INCONSISTENCY">Specs Inconsistency</option>
     <option value="REJECT_WEIGHT_VOL">Missing Weight/Volume</option>
     <option value="REJECT_TITLE_LANG">Title Not in English</option>
     <option value="REJECT_OFFPLATFORM">Off-Platform Contact</option>
@@ -2407,6 +2431,7 @@ function buildCardActionsHtml(safeSid, warnings, cardData) {{
     'Fashion brand issues':        ['REJECT_FASHION_BRAND',   'Fashion Brand Issues'],
     'Missing Weight/Volume':       ['REJECT_WEIGHT_VOL',      'Missing Weight/Volume'],
     'Incomplete Smartphone Name':  ['REJECT_SMARTPHONE_NAME', 'Incomplete Smartphone Name'],
+    'Specs Inconsistency':         ['REJECT_SPECS_INCONSISTENCY', 'Specs Inconsistency'],
   }};
   var defaultCode  = 'REJECT_POOR_IMAGE';
   var defaultLabel = LABELS.poor_img;
@@ -2445,6 +2470,7 @@ function buildCardActionsHtml(safeSid, warnings, cardData) {{
     ['REJECT_FASHION_BRAND', 'Fashion Brand Issues'],
     ['REJECT_WEIGHT_VOL',    'Missing Weight/Volume'],
     ['REJECT_SMARTPHONE_NAME','Incomplete Smartphone Name'],
+    ['REJECT_SPECS_INCONSISTENCY', 'Specs Inconsistency'],
     ['REJECT_WARRANTY',      'Product Warranty'],
     ['REJECT_VARIATION',     'Wrong Variation'],
     ['REJECT_TITLE_LANG',    'Title Not in English'],
