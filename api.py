@@ -107,14 +107,26 @@ def _run_full_pipeline(
     file_bytes: bytes,
     filename: str,
     country: str,
+    progress_state: dict | None = None,
 ) -> dict[str, Any]:
     from data_utils import standardize_input_data, propagate_metadata, filter_by_country, _repair_mojibake, _detect_and_read_csv
     from loaders import load_support_files_lazy
     from streamlit_app import CountryValidator, validate_products, PREFETCH_MAP, _prefetch_key_from_status_col, _prefetch_reason_from_row
 
+    # progress_state is a plain dict shared with the async caller (running in
+    # a different thread via ThreadPoolExecutor) so the /status endpoint can
+    # report which stage is running instead of a static "Processing…" message
+    # for the whole job. Dict writes of primitives are safe without a lock
+    # under the GIL — the caller only ever reads, never mutates.
+    def _stage(msg: str, pct: int):
+        if progress_state is not None:
+            progress_state["message"] = msg
+            progress_state["pct"] = pct
+
+    _stage("Reading file…", 12)
     buf = BytesIO(file_bytes)
     zip_qc_results = pd.DataFrame()
-    
+
     # 1. Multi-format Reader
     if filename.lower().endswith('.zip'):
         with zipfile.ZipFile(buf) as zf:
@@ -138,6 +150,7 @@ def _run_full_pipeline(
         raise ValueError("File is empty.")
 
     # 2. Preparation
+    _stage("Repairing text encoding…", 18)
     raw_data = _repair_mojibake(raw_data)
     data_std = standardize_input_data(raw_data)
     data_prop = propagate_metadata(data_std)
@@ -157,35 +170,57 @@ def _run_full_pipeline(
 
     data_unique = data_filtered.drop_duplicates(subset=['PRODUCT_SET_SID'], keep='first')
     data_has_warranty = all(c in data_unique.columns for c in ['PRODUCT_WARRANTY', 'WARRANTY_DURATION'])
+    _stage("Loading rule files…", 25)
     support_files = load_support_files_lazy()
 
-    # 3. Validation
-    final_report, results = validate_products(data_unique, support_files, cv, data_has_warranty)
+    # 3. Validation — on_progress reports which specific check is running
+    # (e.g. "Checking: Wrong Category") so /status shows real stage info
+    # instead of a static message for the whole job, matching what the
+    # in-process Streamlit path already shows via its own progress bar.
+    def _on_check_progress(flag_name: str, i: int, total: int):
+        pct = 25 + int(i / max(total, 1) * 55)  # validation spans ~25%-80%
+        _stage(f"Checking: {flag_name}", pct)
 
-    # 4. ZIP Rejection Mapping
+    final_report, results = validate_products(
+        data_unique, support_files, cv, data_has_warranty, on_progress=_on_check_progress,
+    )
+
+    # 4. ZIP Rejection Mapping — melt to find the (usually small) set of
+    #    'rejected' entries instead of scanning every row × status column in
+    #    Python (same vectorized approach as streamlit_app's ZIP path).
+    _stage("Applying prefetched ZIP results…", 85)
     if not zip_qc_results.empty:
         sid_col = next((c for c in ['PRODUCT_SET_SID', 'ProductSetSid', 'SID'] if c in zip_qc_results.columns), None)
         if sid_col:
             status_cols = [c for c in zip_qc_results.columns if 'status' in c.lower()]
             fmap = support_files.get('flags_mapping', {})
             fr_sid_map = pd.Series(final_report.index, index=final_report['ProductSetSid'].astype(str).str.strip()).to_dict()
-            
-            for _, r in zip_qc_results.iterrows():
-                sid = str(r[sid_col]).strip()
-                if sid not in fr_sid_map: continue
-                idx = fr_sid_map[sid]
-                
-                for col in status_cols:
-                    if str(r[col]).lower().strip() == 'rejected':
+
+            if status_cols:
+                melted = zip_qc_results[[sid_col] + status_cols].melt(id_vars=sid_col, var_name='col', value_name='val')
+                rejected_entries = melted[melted['val'].astype(str).str.lower().str.strip() == 'rejected']
+                if not rejected_entries.empty:
+                    qc_indexed = zip_qc_results.set_index(sid_col)
+                    updates: dict = {}  # fr index -> (flag, reason_code, comment)
+                    for sid_raw, col in zip(rejected_entries[sid_col], rejected_entries['col']):
+                        sid = str(sid_raw).strip()
+                        if sid not in fr_sid_map: continue
                         pre_key = _prefetch_key_from_status_col(col)
                         flag = PREFETCH_MAP.get(pre_key)
-                        if flag:
-                            mapped_info = fmap.get(flag, {})
-                            reason = _prefetch_reason_from_row(r, col, zip_qc_results.columns)
-                            final_report.at[idx, 'Status'] = 'Rejected'
-                            final_report.at[idx, 'FLAG'] = flag + " (Prefetched)"
-                            final_report.at[idx, 'Reason'] = mapped_info.get('reason', '1000007 - Other Reason')
-                            final_report.at[idx, 'Comment'] = reason if (reason and reason.lower() != 'rejected') else mapped_info.get('comment', 'Rejected')
+                        if not flag: continue
+                        r = qc_indexed.loc[sid_raw]
+                        if isinstance(r, pd.DataFrame): r = r.iloc[0]
+                        mapped_info = fmap.get(flag, {})
+                        reason = _prefetch_reason_from_row(r, col, zip_qc_results.columns)
+                        comment = reason if (reason and reason.lower() != 'rejected') else mapped_info.get('comment', 'Rejected')
+                        updates[fr_sid_map[sid]] = (flag + " (Prefetched)", mapped_info.get('reason', '1000007 - Other Reason'), comment)
+
+                    if updates:
+                        idxs = list(updates.keys())
+                        final_report.loc[idxs, 'Status'] = 'Rejected'
+                        final_report.loc[idxs, 'FLAG'] = [updates[i][0] for i in idxs]
+                        final_report.loc[idxs, 'Reason'] = [updates[i][1] for i in idxs]
+                        final_report.loc[idxs, 'Comment'] = [updates[i][2] for i in idxs]
 
     # 5. Summary
     rej = final_report[final_report["Status"] == "Rejected"]
@@ -243,6 +278,7 @@ def _run_full_pipeline(
         
         if zf: zf.close()
 
+    _stage("Finalizing report…", 98)
     return {
         "report": pickle.dumps(final_report),
         "data": pickle.dumps(data_unique),
@@ -253,11 +289,30 @@ async def _validation_task(job_id, file_bytes, filename, country, result_key):
     r = await get_redis()
     async def _up(s, p, m, rk=None):
         await r.setex(_job_key(job_id), JOB_TTL, pickle.dumps({"job_id":job_id,"status":s,"progress":p,"message":m,"result_key":rk or ""}))
-    
+
     await _up("running", 10, "Processing pipeline…")
+
+    # Shared with _run_full_pipeline running on a worker thread. Plain dict
+    # writes/reads of primitives are safe without a lock under the GIL — the
+    # pipeline is the sole writer, the heartbeat below is the sole reader.
+    progress_state = {"message": "Processing pipeline…", "pct": 10}
+
+    async def _heartbeat():
+        # Refreshes the job status key frequently — both to keep it alive
+        # (JOB_TTL) during long-running pipelines, and so /status reflects
+        # which specific check is currently running (see _stage() calls in
+        # _run_full_pipeline) instead of a static message for the whole job.
+        try:
+            while True:
+                await asyncio.sleep(2)
+                await _up("running", progress_state["pct"], progress_state["message"])
+        except asyncio.CancelledError:
+            pass
+
+    hb_task = asyncio.create_task(_heartbeat())
     try:
         loop = asyncio.get_running_loop()
-        res = await loop.run_in_executor(_executor, _run_full_pipeline, file_bytes, filename, country)
+        res = await loop.run_in_executor(_executor, _run_full_pipeline, file_bytes, filename, country, progress_state)
         pipe = r.pipeline()
         pipe.setex(result_key + ":report", RESULT_TTL, res["report"])
         pipe.setex(result_key + ":data", RESULT_TTL, res["data"])
@@ -267,6 +322,15 @@ async def _validation_task(job_id, file_bytes, filename, country, result_key):
     except Exception as e:
         logger.exception("Failed")
         await _up("error", 0, str(e))
+    finally:
+        hb_task.cancel()
+        try:
+            await hb_task
+        except asyncio.CancelledError:
+            pass
+        # Release the in-flight claim so a later resubmission (e.g. after cache
+        # invalidation) isn't permanently blocked by a stale marker.
+        await r.delete(result_key + ":inflight")
 
 @app.post("/validate", response_model=SubmitResponse)
 async def submit_validation(background_tasks: BackgroundTasks, file: UploadFile = File(...), country: str = Form("Kenya")):
@@ -276,7 +340,17 @@ async def submit_validation(background_tasks: BackgroundTasks, file: UploadFile 
     r = await get_redis()
     if await r.exists(rkey + ":summary"):
         return SubmitResponse(job_id=f"cached-{fhash[:8]}", cache_hit=True, message="Cached")
+
     job_id = str(uuid.uuid4())
+    # Atomically claim the in-flight slot for this file+country. If another
+    # request already claimed it (e.g. two people uploading the same export
+    # at once), reuse that job_id instead of starting a duplicate pipeline run.
+    claimed = await r.set(rkey + ":inflight", job_id, nx=True, ex=JOB_TTL)
+    if not claimed:
+        existing_job_id = await r.get(rkey + ":inflight")
+        if existing_job_id:
+            return SubmitResponse(job_id=existing_job_id.decode(), cache_hit=False, message="Already in progress")
+
     background_tasks.add_task(_validation_task, job_id, file_bytes, file.filename or "up.csv", country, rkey)
     return SubmitResponse(job_id=job_id, cache_hit=False, message="Queued")
 
@@ -313,7 +387,7 @@ async def get_data(country: str, file_hash: str):
 async def invalidate_cache(country: str, file_hash: str):
     r = await get_redis()
     rkey = _result_key(file_hash, country)
-    await r.delete(rkey + ":report", rkey + ":data", rkey + ":summary")
+    await r.delete(rkey + ":report", rkey + ":data", rkey + ":summary", rkey + ":inflight")
     return {"deleted": True}
 
 @app.get("/health")

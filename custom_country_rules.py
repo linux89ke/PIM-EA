@@ -1,4 +1,9 @@
+import logging
+
 import pandas as pd
+
+logger = logging.getLogger(__name__)
+
 
 def _clean_text(val) -> str:
     if val is None:
@@ -103,6 +108,7 @@ def load_health_beauty_codes() -> set:
                     hb_codes.add(str(int(r[1])))
         return hb_codes
     except Exception:
+        logger.exception("load_health_beauty_codes: failed to load category_map.xlsx — Health & Beauty checks will see an empty code set")
         return set()
 
 
@@ -202,6 +208,7 @@ def load_kebs_hb_codes() -> set:
 
         return kebs_codes
     except Exception:
+        logger.exception("load_kebs_hb_codes: failed to load category_map.xlsx — KEBS skin-product check will see an empty code set")
         return set()
 
 
@@ -254,13 +261,14 @@ def load_kebs_banned_products():
 
         return full_products, brand_only
     except Exception:
+        logger.exception(f"load_kebs_banned_products: failed to load {xlsx_path!r}/{csv_path!r} — KEBS banned-product check will see an empty list")
         return [], []
 
 
 # Skin-lightening product type indicators — if a product name contains any of these
 # it is considered a skin-lightening product and will be checked against the brand list.
 _SKIN_PRODUCT_TYPES = re.compile(
-    r"\b(cream|creme|lotion|gel|soap|serum|milk|toner|bleach|balm|oil|lemon|lait|lait corp|"
+    r"\b(?:cream|creme|lotion|gel|soap|serum|milk|toner|bleach|balm|oil|lemon|lait|lait corp|"
     r"fade|skin|lightening|whitening|brightening|complexion|beauty|medicated|clarifying|"
     r"moisturiz|moisturis|body|face|treatment)\b",
     re.IGNORECASE,
@@ -342,6 +350,37 @@ def check_kebs_banned_products(data: pd.DataFrame) -> pd.DataFrame:
         key=len, reverse=True
     )
 
+    # Precompile the per-brand match patterns once (was previously recompiled
+    # for every product row × every brand — O(rows * brands) re.compile calls).
+    _brand_patterns = {}
+    for b in meaningful_brands:
+        pat = re.compile(r'^' + re.escape(b) + r'(\b|$)', re.IGNORECASE)
+        name_pat = re.compile(r'^' + re.escape(b) + r'\b', re.IGNORECASE) if len(b) >= 4 else None
+        _brand_patterns[b] = (pat, name_pat)
+
+    # Vectorized pre-filter: two combined-regex scans (C speed) find the rows
+    # that could possibly match, so the Python loop below — which preserves the
+    # exact longest-name-first / reason-selection semantics — only runs on that
+    # (usually tiny) candidate subset instead of every H&B row.
+    _cand_mask = pd.Series(False, index=target.index)
+    _full_name_pattern = "|".join(
+        re.escape(e["full_name_lower"]) for e in full_products_sorted if len(e["full_name_lower"]) >= 5
+    )
+    if _full_name_pattern:
+        # A substring of NAME is always a substring of _combined (brand + " " + name),
+        # so scanning _combined covers both Step-1 checks in the loop.
+        _cand_mask |= target["_combined"].str.contains(_full_name_pattern, regex=True, na=False)
+    if meaningful_brands:
+        _brand_start_pattern = r'^(?:' + "|".join(re.escape(b) for b in meaningful_brands) + r')(?:\b|$)'
+        _cand_mask |= (
+            (target["_brand_l"].str.contains(_brand_start_pattern, regex=True, na=False)
+             | target["_name_l"].str.contains(_brand_start_pattern, regex=True, na=False))
+            & target["_name_l"].str.contains(_SKIN_PRODUCT_TYPES, na=False)
+        )
+    target = target[_cand_mask]
+    if target.empty:
+        return pd.DataFrame(columns=data.columns)
+
     results = []
     seen_sids = set()
 
@@ -375,13 +414,12 @@ def check_kebs_banned_products(data: pd.DataFrame) -> pd.DataFrame:
         if not matched_reason:
             for b in meaningful_brands:
                 # BRAND field must start with or equal the banned brand
-                pat = re.compile(r'^' + re.escape(b) + r'(\b|$)', re.IGNORECASE)
+                pat, name_pat = _brand_patterns[b]
                 brand_match = pat.match(brand_val)
 
                 # OR the name starts with the banned brand word
                 name_brand_match = False
-                if not brand_match and len(b) >= 4:
-                    name_pat = re.compile(r'^' + re.escape(b) + r'\b', re.IGNORECASE)
+                if not brand_match and name_pat is not None:
                     name_brand_match = bool(name_pat.match(name_val))
 
                 if brand_match or name_brand_match:
@@ -471,16 +509,21 @@ def apply_kebs_banned_rule(sid: str, rec: dict, has_status_col: bool, status: st
 
     _GENERIC_KEBS_BRANDS = {"skin", "body", "cream", "clear", "fade", "fair", "hot", "soft", "first", "dream"}
 
+    # Precompile the per-brand match patterns once per call instead of per candidate brand.
+    _brand_patterns = {}
+    for b in meaningful_brands:
+        if b in _GENERIC_KEBS_BRANDS:
+            pat = re.compile(r'^' + re.escape(b) + r'$', re.IGNORECASE)
+            name_pat = re.compile(r'^' + re.escape(b) + r'$', re.IGNORECASE)
+        else:
+            pat = re.compile(r'^' + re.escape(b) + r'(\b|$)', re.IGNORECASE)
+            name_pat = re.compile(r'^' + re.escape(b) + r'\b', re.IGNORECASE)
+        _brand_patterns[b] = (pat, name_pat)
+
     # Step 2: brand-only match + skin-type word
     if not matched_reason:
         for b in meaningful_brands:
-            if b in _GENERIC_KEBS_BRANDS:
-                pat = re.compile(r'^' + re.escape(b) + r'$', re.IGNORECASE)
-                name_pat = re.compile(r'^' + re.escape(b) + r'$', re.IGNORECASE)
-            else:
-                pat = re.compile(r'^' + re.escape(b) + r'(\b|$)', re.IGNORECASE)
-                name_pat = re.compile(r'^' + re.escape(b) + r'\b', re.IGNORECASE)
-            
+            pat, name_pat = _brand_patterns[b]
             if pat.match(brand_val) or name_pat.match(name_val):
                 if _SKIN_PRODUCT_TYPES.search(name_val):
                     matched_reason = brand_only_map.get(b, "Banned by KEBS.")

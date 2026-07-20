@@ -192,6 +192,15 @@ def check_nigeria_books(data: pd.DataFrame, ng_rules: Dict) -> pd.DataFrame:
     d = data.copy()
     d["_name_l"]   = d["NAME"].astype(str).str.strip().str.lower()
     d["_seller_l"] = d["SELLER_NAME"].astype(str).str.strip().str.lower()
+    # Vectorized pre-filter: one combined-regex scan (C speed) finds the rows
+    # whose NAME contains ANY book title, so the per-row × per-title Python
+    # loop below only runs on that (usually tiny) subset instead of the whole
+    # catalog. The inner loop is unchanged, preserving the original
+    # first-match-in-rules-order semantics.
+    _any_book_pattern = "|".join(re.escape(b) for b in book_rules if b)
+    if not _any_book_pattern: return pd.DataFrame(columns=data.columns)
+    d = d[d["_name_l"].str.contains(_any_book_pattern, regex=True, na=False)]
+    if d.empty: return pd.DataFrame(columns=data.columns)
     flagged_idx, comment_map = [], {}
     for idx, row in d.iterrows():
         name_l, seller_l = row["_name_l"], row["_seller_l"]

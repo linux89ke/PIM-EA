@@ -9,7 +9,6 @@ import traceback
 import sqlite3
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.linear_model import LogisticRegression
 # SentenceTransformers removed — TF-IDF used exclusively
 
 
@@ -313,6 +312,17 @@ class CategoryMatcherEngine:
         self.categories = []
         self._tfidf_built = False
         self.learning_db = {}
+        # Corrections added via apply_learned_correction(auto_save=False) that
+        # haven't been flushed to the DB yet. save_learning_db() only inserts
+        # these — not the full learning_db — so a batch of N approvals no
+        # longer re-inserts the entire correction history N times over.
+        self._pending_corrections: dict = {}
+        # Negative learning: categories a human explicitly REJECTED for a
+        # product name. Excluded from future suggestions, and products
+        # re-listed under a known-rejected category are auto-flagged.
+        self.negative_db: dict = {}        # clean_name -> {lowercased rejected categories}
+        self.negative_reasons: dict = {}   # (clean_name, category_lower) -> human reason text
+        self._pending_negatives: list = [] # (clean_name, category, reason) awaiting flush
         self.compiled_rules = {}  # Store JSON rules directly in the engine
         self.correction_classifier = None
         self.correction_vectorizer = None
@@ -328,9 +338,24 @@ class CategoryMatcherEngine:
           - An already-compiled dict (from a prior compile_rules_from_json call)
         """
         if isinstance(rules, list):
+            # compile_rules_from_json builds a regex per category, which is
+            # expensive and the rules rarely change between runs — memoize on a
+            # content hash so repeat calls with the same rules are a no-op.
+            import hashlib
+            try:
+                _rules_key = hashlib.md5(
+                    (json.dumps(rules, sort_keys=True, default=str)
+                     + "|" + json.dumps(sorted((code_to_path or {}).keys()))).encode()
+                ).hexdigest()
+            except Exception:
+                _rules_key = None
+            if _rules_key is not None and _rules_key == getattr(self, "_compiled_rules_key", None):
+                return
             self.compiled_rules = compile_rules_from_json(rules, code_to_path or {})
+            self._compiled_rules_key = _rules_key
         else:
             self.compiled_rules = rules or {}
+            self._compiled_rules_key = None
 
     def _init_db(self):
         try:
@@ -341,6 +366,15 @@ class CategoryMatcherEngine:
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         name TEXT,
                         category TEXT,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                c.execute('''
+                    CREATE TABLE IF NOT EXISTS category_negatives (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT,
+                        category TEXT,
+                        reason TEXT,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
@@ -357,6 +391,28 @@ class CategoryMatcherEngine:
                     self._retrain_correction_classifier(df)
         except Exception as e:
             logger.warning(f"Failed to load category learning DB: {e}")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                ndf = pd.read_sql_query("SELECT name, category, reason FROM category_negatives", conn)
+            if not ndf.empty:
+                ndf['category_l'] = ndf['category'].astype(str).str.strip().str.lower()
+                self.negative_db = {n: set(g) for n, g in ndf.groupby('name')['category_l']}
+                self.negative_reasons = {
+                    (n, cl): str(r).strip()
+                    for n, cl, r in zip(ndf['name'], ndf['category_l'], ndf['reason'].fillna(''))
+                    if str(r).strip()
+                }
+                logger.info(f"[NegLearn] Loaded {len(ndf)} category negatives for {len(self.negative_db)} names")
+        except Exception as e:
+            logger.warning(f"Failed to load category negatives: {e}")
+
+    # Hard ceiling on training rows — prevents the classifier from ever
+    # attempting to fit on the full (unbounded) correction history.
+    _MAX_TRAIN_ROWS = 50_000
+    # Categories with fewer than this many examples are dropped before
+    # fitting — LogisticRegression/SGDClassifier need >=2 per class anyway,
+    # and very rare classes add memory/compute cost for near-zero benefit.
+    _MIN_EXAMPLES_PER_CATEGORY = 2
 
     def _retrain_correction_classifier(self, df=None):
         if df is None:
@@ -374,20 +430,60 @@ class CategoryMatcherEngine:
             df = df[(df["name"] != "") & (df["category"] != "")]
             if df.empty or len(df["category"].unique()) < 2:
                 return
+
             df = df.groupby("name", as_index=False)["category"].last()
+
+            # --- drop categories with too few examples for stable fitting ---
+            counts = df["category"].value_counts()
+            keep_cats = counts[counts >= self._MIN_EXAMPLES_PER_CATEGORY].index
+            df = df[df["category"].isin(keep_cats)]
+            if df.empty or len(df["category"].unique()) < 2:
+                return
+
+            # --- cap total training rows so we never allocate against the
+            #     full unbounded correction history (this is what caused
+            #     the 19.4 GiB allocation failure) ---
+            if len(df) > self._MAX_TRAIN_ROWS:
+                # Sample proportionally across categories rather than a flat
+                # random sample, so rare-but-kept categories aren't wiped out.
+                df = (
+                    df.groupby("category", group_keys=False)
+                    .apply(lambda g: g.sample(
+                        n=max(1, int(len(g) / len(df) * self._MAX_TRAIN_ROWS)),
+                        random_state=42,
+                    ))
+                )
+                # Re-check class count survived the proportional sample
+                if len(df["category"].unique()) < 2:
+                    return
+
             df['clean_name'] = df['name'].apply(clean_text)
-            self.correction_vectorizer = TfidfVectorizer(ngram_range=(1, 2), max_features=3000, dtype=np.float32)
+            self.correction_vectorizer = TfidfVectorizer(
+                ngram_range=(1, 2), max_features=3000, dtype=np.float32
+            )
             X = self.correction_vectorizer.fit_transform(df['clean_name'])
             y = df['category']
-            self.correction_classifier = LogisticRegression(
+
+            # SGDClassifier with log_loss scales to large sample counts and
+            # many classes without densifying internally the way saga/OvR
+            # LogisticRegression can with class_weight='balanced'.
+            from sklearn.linear_model import SGDClassifier
+            self.correction_classifier = SGDClassifier(
+                loss='log_loss',
                 class_weight='balanced',
-                max_iter=300,
-                solver='saga',
-                n_jobs=-1,
+                max_iter=1000,
+                tol=1e-3,
+                n_jobs=1,
+                random_state=42,
             )
             self.correction_classifier.fit(X, y)
         except Exception as e:
             logger.warning(f"Failed to retrain correction classifier: {e}")
+
+    # Cap on rows kept in the corrections table. When exceeded, oldest rows
+    # are pruned (by id) after each insert so the table — and therefore
+    # future retraining cost — stays bounded indefinitely.
+    _MAX_DB_ROWS = 200_000
 
     def apply_learned_correction(self, name: str, category: str, auto_save=True):
         clean_n = clean_text(name)
@@ -398,23 +494,174 @@ class CategoryMatcherEngine:
                 with sqlite3.connect(self.db_path) as conn:
                     c = conn.cursor()
                     c.execute("INSERT INTO category_corrections (name, category) VALUES (?, ?)", (clean_n, category))
+                    c.execute("SELECT COUNT(*) FROM category_corrections")
+                    total = c.fetchone()[0]
+                    if total > self._MAX_DB_ROWS:
+                        excess = total - self._MAX_DB_ROWS
+                        c.execute(
+                            "DELETE FROM category_corrections WHERE id IN "
+                            "(SELECT id FROM category_corrections ORDER BY id ASC LIMIT ?)",
+                            (excess,),
+                        )
                     conn.commit()
                 self._retrain_correction_classifier()
             except Exception as e:
                 logger.warning(f"Failed to save correction to DB: {e}")
+        else:
+            self._pending_corrections[clean_n] = category
+
+    def add_negative_correction(self, name: str, category: str, reason: str = "", auto_save=False):
+        """
+        Record that `category` was human-rejected for this product name.
+        Negatives are excluded from future suggestions, and products re-listed
+        under a known-rejected category are auto-flagged by check_wrong_category.
+        """
+        clean_n = clean_text(name)
+        cat = str(category).strip()
+        if not clean_n or not cat or cat.lower() in ('nan', 'none'):
+            return
+        cat_l = cat.lower()
+        bucket = self.negative_db.setdefault(clean_n, set())
+        if cat_l in bucket:
+            return
+        bucket.add(cat_l)
+        reason_txt = str(reason or "").strip()
+        if reason_txt and reason_txt.lower() not in ('nan', 'none', 'rejected'):
+            self.negative_reasons[(clean_n, cat_l)] = reason_txt[:500]
+        self._pending_negatives.append((clean_n, cat, reason_txt[:500]))
+        if auto_save:
+            self.save_learning_db()
 
     def save_learning_db(self):
-        if not self.learning_db: return
+        # Only flush corrections queued since the last save (not the whole
+        # learning_db, which also holds everything already persisted at load
+        # time) — otherwise every batch-approve/reject re-inserts the entire
+        # correction history into SQLite each time this is called.
+        if not self._pending_corrections and not self._pending_negatives: return
+        had_corrections = bool(self._pending_corrections)
         try:
             with sqlite3.connect(self.db_path) as conn:
                 c = conn.cursor()
                 c.execute("BEGIN TRANSACTION")
-                for name, cat in self.learning_db.items():
+                for name, cat in self._pending_corrections.items():
                     c.execute("INSERT INTO category_corrections (name, category) VALUES (?, ?)", (name, cat))
+                for name, cat, reason in self._pending_negatives:
+                    c.execute("INSERT INTO category_negatives (name, category, reason) VALUES (?, ?, ?)", (name, cat, reason))
+                for table in ("category_corrections", "category_negatives"):
+                    c.execute(f"SELECT COUNT(*) FROM {table}")
+                    total = c.fetchone()[0]
+                    if total > self._MAX_DB_ROWS:
+                        excess = total - self._MAX_DB_ROWS
+                        c.execute(
+                            f"DELETE FROM {table} WHERE id IN "
+                            f"(SELECT id FROM {table} ORDER BY id ASC LIMIT ?)",
+                            (excess,),
+                        )
                 conn.commit()
-            self._retrain_correction_classifier()
+            self._pending_corrections = {}
+            self._pending_negatives = []
+            if had_corrections:
+                self._retrain_correction_classifier()
         except Exception as e:
             logger.warning(f"Failed to batch save learning DB: {e}")
+
+    # ── Admin: inspect / undo learned data ─────────────────────────────────
+    # The engine silently reshapes its own suggestions based on what gets
+    # written here (predict_category_from_learning / negative exclusion), so
+    # a reviewer needs a way to see what was taught and undo a bad entry
+    # (e.g. a mis-click that permanently poisons a suggestion) without going
+    # into the SQLite file by hand.
+
+    def list_corrections(self, limit: int = 500) -> pd.DataFrame:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                return pd.read_sql_query(
+                    "SELECT id, name, category, timestamp FROM category_corrections "
+                    "ORDER BY id DESC LIMIT ?", conn, params=(limit,),
+                )
+        except Exception as e:
+            logger.warning(f"list_corrections failed: {e}")
+            return pd.DataFrame(columns=["id", "name", "category", "timestamp"])
+
+    def list_negatives(self, limit: int = 500) -> pd.DataFrame:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                return pd.read_sql_query(
+                    "SELECT id, name, category, reason, timestamp FROM category_negatives "
+                    "ORDER BY id DESC LIMIT ?", conn, params=(limit,),
+                )
+        except Exception as e:
+            logger.warning(f"list_negatives failed: {e}")
+            return pd.DataFrame(columns=["id", "name", "category", "reason", "timestamp"])
+
+    def counts(self) -> tuple:
+        """Returns (corrections_count, negatives_count) for a quick summary."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                c.execute("SELECT COUNT(*) FROM category_corrections")
+                n_corr = c.fetchone()[0]
+                c.execute("SELECT COUNT(*) FROM category_negatives")
+                n_neg = c.fetchone()[0]
+                return (n_corr, n_neg)
+        except Exception as e:
+            logger.warning(f"counts() failed: {e}")
+            return (0, 0)
+
+    def delete_corrections(self, ids: list) -> int:
+        """Delete rows by id from category_corrections and refresh in-memory state."""
+        if not ids: return 0
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                c.executemany("DELETE FROM category_corrections WHERE id = ?", [(i,) for i in ids])
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"delete_corrections failed: {e}")
+            return 0
+        # Rebuild explicitly rather than via load_learning_db(), which only
+        # repopulates learning_db inside `if not df.empty` — so deleting the
+        # last remaining correction would leave the stale in-memory dict
+        # non-empty even though the table is now empty.
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                df = pd.read_sql_query("SELECT name, category FROM category_corrections", conn)
+            self.learning_db = df.groupby('name')['category'].last().to_dict() if not df.empty else {}
+            self.correction_classifier = None
+            self.correction_vectorizer = None
+            if not df.empty:
+                self._retrain_correction_classifier(df)
+        except Exception as e:
+            logger.warning(f"delete_corrections: failed to rebuild learning_db: {e}")
+        return len(ids)
+
+    def delete_negatives(self, ids: list) -> int:
+        """Delete rows by id from category_negatives and refresh in-memory state."""
+        if not ids: return 0
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                c.executemany("DELETE FROM category_negatives WHERE id = ?", [(i,) for i in ids])
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"delete_negatives failed: {e}")
+            return 0
+        self.negative_db = {}
+        self.negative_reasons = {}
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                ndf = pd.read_sql_query("SELECT name, category, reason FROM category_negatives", conn)
+            if not ndf.empty:
+                ndf['category_l'] = ndf['category'].astype(str).str.strip().str.lower()
+                self.negative_db = {n: set(g) for n, g in ndf.groupby('name')['category_l']}
+                self.negative_reasons = {
+                    (n, cl): str(r).strip()
+                    for n, cl, r in zip(ndf['name'], ndf['category_l'], ndf['reason'].fillna(''))
+                    if str(r).strip()
+                }
+        except Exception as e:
+            logger.warning(f"delete_negatives: failed to reload negative_db: {e}")
+        return len(ids)
 
     def build_tfidf_index(self, categories_list: list):
         """Builds a TF-IDF index for category matching."""
@@ -432,21 +679,26 @@ class CategoryMatcherEngine:
             self._tfidf_built = True
             logger.info(f'[TF-IDF] Built index for {len(self.categories)} categories')
         except Exception as e:
-            logger.warning(f"Failed to build TF-IDF index: {e}")
+            logger.warning(f"Failed to build TF-IDF index — wrong-category detection disabled for this run: {e}", exc_info=True)
 
     def predict_category_from_learning(self, name: str) -> str:
         clean_n = clean_text(name)
+        neg = self.negative_db.get(clean_n, set())
         if clean_n in self.learning_db:
-            return self.learning_db[clean_n]
+            cand = self.learning_db[clean_n]
+            if str(cand).strip().lower() not in neg:
+                return cand
         if self.correction_classifier and self.correction_vectorizer:
             try:
                 vec = self.correction_vectorizer.transform([clean_n])
                 probs = self.correction_classifier.predict_proba(vec)[0]
                 max_prob_idx = np.argmax(probs)
-                if probs[max_prob_idx] > 0.6: 
-                    return self.correction_classifier.classes_[max_prob_idx]
-            except Exception:
-                pass
+                if probs[max_prob_idx] > 0.6:
+                    cand = self.correction_classifier.classes_[max_prob_idx]
+                    if str(cand).strip().lower() not in neg:
+                        return cand
+            except Exception as e:
+                logger.debug(f"predict_category_from_learning: classifier prediction failed for {clean_n!r}: {e}")
         return None
 
     def get_category_with_fallback(self, name: str, kw_map: dict = None, categories_list: list = None) -> str:
@@ -461,9 +713,9 @@ class CategoryMatcherEngine:
                     best_idx = int(np.argmax(similarities))
                     if similarities[best_idx] > 0.35:
                         return self.categories[best_idx]
-            except Exception:
-                pass
-                
+            except Exception as e:
+                logger.debug(f"get_category_with_fallback: TF-IDF lookup failed for {name!r}: {e}")
+
         if kw_map:
             name_lower = str(name).lower()
             for kw, cat in kw_map.items():
@@ -494,13 +746,20 @@ class CategoryMatcherEngine:
             best_score = -1.0
             name_lower = str(name).lower()
             
+            _neg = self.negative_db.get(name_clean, set())
             for idx in top_indices:
                 cat_path = self.categories[idx]
                 base_score = float(similarities[idx])
                 boost = 0.0
-                
+
                 # 1. Convert the engine's category path to lowercase
                 cat_path_lower = cat_path.lower()
+
+                # Never re-suggest a category a human already rejected for this name
+                if _neg and (cat_path_lower.strip() in _neg
+                             or cat_path_lower.split('>')[-1].strip() in _neg
+                             or cat_path_lower.split('/')[-1].strip() in _neg):
+                    continue
                 
                 # 2. Check the JSON rules — try full path first, then leaf name as fallback.
                 #    This handles both: rules keyed by full path ("automobile > car care > car polishes & waxes")
@@ -564,6 +823,7 @@ class CategoryMatcherEngine:
             best_category = ""
             best_score = -1.0
             name_lower = names[orig_idx].lower()
+            _neg = self.negative_db.get(clean_text(names[orig_idx]), set()) if self.negative_db else set()
 
             for idx in top_indices:
                 base_score = float(similarities[idx])
@@ -571,6 +831,11 @@ class CategoryMatcherEngine:
                 boost = 0.0
 
                 cat_path_lower = cat_path.lower()
+                # Never re-suggest a category a human already rejected for this name
+                if _neg and (cat_path_lower.strip() in _neg
+                             or cat_path_lower.split('>')[-1].strip() in _neg
+                             or cat_path_lower.split('/')[-1].strip() in _neg):
+                    continue
                 leaf_lower = cat_path_lower.split('>')[-1].strip()
                 rule = self.compiled_rules.get(cat_path_lower) or self.compiled_rules.get(leaf_lower)
                 if rule:
@@ -751,6 +1016,10 @@ def check_wrong_category(data: pd.DataFrame, categories_list: list, compiled_rul
                   'as', 'it', 'non', 'amp', 'new', 'set', 'pack'}
     _MIN_TOKEN_LEN = 4
 
+    # Negative learning: clean names computed once, only when negatives exist.
+    _neg_db = engine.negative_db
+    _all_clean = [clean_text(n) for n in all_names] if _neg_db else None
+
     for row_i in range(len(all_indices)):
         idx = all_indices[row_i]
         current_cat = all_cats[row_i]
@@ -758,6 +1027,23 @@ def check_wrong_category(data: pd.DataFrame, categories_list: list, compiled_rul
 
         if not current_cat or current_cat.lower() in ('nan', 'none', ''):
             continue
+
+        # A human previously rejected this exact (name, category) pairing —
+        # flag immediately with the stored reason, regardless of TF-IDF score.
+        if _neg_db:
+            _neg = _neg_db.get(_all_clean[row_i])
+            if _neg:
+                _cur_l = current_cat.strip().lower()
+                _cur_leaf = _get_leaf(current_cat)
+                if _cur_l in _neg or _cur_leaf in _neg:
+                    _rsn = (engine.negative_reasons.get((_all_clean[row_i], _cur_l))
+                            or engine.negative_reasons.get((_all_clean[row_i], _cur_leaf)))
+                    flagged_indices.append(idx)
+                    comment_map[idx] = (
+                        f"Category '{current_cat}' was previously rejected for this product"
+                        + (f" — {_rsn}" if _rsn else "")
+                    )
+                    continue
 
         if 'miscellaneous' in current_cat.lower():
             flagged_indices.append(idx)
@@ -905,7 +1191,9 @@ def check_wrong_category(data: pd.DataFrame, categories_list: list, compiled_rul
 
     results_df = data.loc[flagged_indices].copy()
     results_df['Comment_Detail'] = results_df.index.map(comment_map)
-    # Map the suggested category for display in the UI
-    results_df['Suggested_Category'] = [batch_predictions[all_indices.index(i)] for i in results_df.index]
+    # Map the suggested category for display in the UI (dict lookup instead of a
+    # list.index() scan per row, which was O(n^2) over large flagged sets)
+    _idx_to_prediction = dict(zip(all_indices, batch_predictions))
+    results_df['Suggested_Category'] = [_idx_to_prediction[i] for i in results_df.index]
     
     return results_df[data.columns.tolist() + ['Comment_Detail', 'Suggested_Category']].drop_duplicates(subset=['PRODUCT_SET_SID'])

@@ -143,6 +143,20 @@ REASON_MAP = {
     "REJECT_FDA":            "FDA",
     "REJECT_TITLE_LANG":     "Title Language Check",
     "REJECT_FAKE_PERFUME":   "Suspected Fake Perfume",
+    "REJECT_SUSPICIOUS_DISCOUNT": "Suspicious Discount",
+    "REJECT_REFURB":         "Seller Not approved to sell Refurb",
+    "REJECT_BOOKS_SELLER":   "Seller Approve to sell books",
+    "REJECT_PERFUME_SELLER": "Seller Approved to Sell Perfume",
+    "REJECT_PERFUME_TESTER": "Perfume Tester",
+    "REJECT_SNEAKERS":       "Counterfeit Sneakers",
+    "REJECT_JERSEYS":        "Suspected counterfeit Jerseys",
+    "REJECT_UNNECESSARY_WORDS": "Unnecessary words in NAME",
+    "REJECT_SINGLE_WORD":    "Single-word NAME",
+    "REJECT_GENERIC_BRAND":  "Generic BRAND Issues",
+    "REJECT_FASHION_BRAND":  "Fashion brand issues",
+    "REJECT_SMARTPHONE_NAME": "Incomplete Smartphone Name",
+    "REJECT_BRAND_MISMATCH": "Brand Image Mismatch",
+    "REJECT_OFFPLATFORM":    "Off-Platform Contact",
     "OTHER_CUSTOM":          "Other Reason (Custom)"
 }
 

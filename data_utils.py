@@ -8,6 +8,7 @@ import hashlib
 import logging
 import os
 import unicodedata
+import uuid
 import pandas as pd
 from io import BytesIO
 from typing import Dict, List, Set, Tuple, Optional
@@ -32,7 +33,11 @@ logger = logging.getLogger(__name__)
 def save_df_parquet(df, filename):
     try:
         os.makedirs(PARQUET_CACHE_DIR, exist_ok=True)
-        df.to_parquet(os.path.join(PARQUET_CACHE_DIR, filename))
+        pq_path = os.path.join(PARQUET_CACHE_DIR, filename)
+        # Write to a temp file then rename, so concurrent readers/writers never see a partial file.
+        tmp_path = f"{pq_path}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        df.to_parquet(tmp_path)
+        os.replace(tmp_path, pq_path)
     except Exception as e:
         logger.warning(f"Failed to save parquet {filename}: {e}")
 
@@ -304,10 +309,20 @@ def _repair_mojibake(df: pd.DataFrame) -> pd.DataFrame:
         return _ILLEGAL_XML_RE.sub('', val)
 
     for col in df.select_dtypes(include='object').columns:
-        # We apply the _fix_row function to each column. 
-        # This safely attempts encoding fixes using strict errors (in _fix_row), 
-        # preventing data corruption like dropping valid en-dashes.
-        df[col] = df[col].astype(str).apply(_fix_row)
+        s = df[col].astype(str)
+        # Mojibake only exists in values containing non-ASCII characters, and
+        # the XML-control-char strip only matters for values containing them.
+        # One vectorized regex scan per column finds both, so the per-cell
+        # Python repair runs only on the (usually tiny) subset of rows that
+        # actually need it instead of every cell of every column.
+        non_ascii = s.str.contains(r'[^\x00-\x7F]', regex=True, na=False)
+        has_ctrl = s.str.contains(_ILLEGAL_XML_RE, na=False)
+        if non_ascii.any():
+            s.loc[non_ascii] = s.loc[non_ascii].map(_fix_row)
+        ctrl_only = has_ctrl & ~non_ascii
+        if ctrl_only.any():
+            s.loc[ctrl_only] = s.loc[ctrl_only].str.replace(_ILLEGAL_XML_RE, '', regex=True)
+        df[col] = s
     return df
 
 

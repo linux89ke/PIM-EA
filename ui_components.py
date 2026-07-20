@@ -305,7 +305,7 @@ def render_kpi_bar(final_report: pd.DataFrame):
     approved = int((final_report["Status"] == "Approved").sum())
     rejected = int((final_report["Status"] == "Rejected").sum())
     zip_rej = (
-        int((final_report["Is_Zip"] == True).sum())
+        int(((final_report["Is_Zip"] == True) & (final_report["Status"] == "Rejected")).sum())
         if "Is_Zip" in final_report.columns
         else 0
     )
@@ -954,7 +954,7 @@ def render_flag_expander(
         )
     with c2:
         _seller_key = f"f_{title}"
-        _seller_options = sorted(df_display["SELLER_NAME"].astype(str).unique()) if "SELLER_NAME" in df_display.columns else []
+        _seller_options = sorted(df_display["SELLER_NAME"].dropna().astype(str).unique()) if "SELLER_NAME" in df_display.columns else []
         seller_filter = st.multiselect(
             "Filter by Seller",
             _seller_options,
@@ -993,25 +993,49 @@ def render_flag_expander(
         df_view = df_view.sort_values("CATEGORY", na_position="last")
     df_view = df_view.reset_index(drop=True)
 
+    if "Is_Zip" in df_view.columns:
+        # Visible marker for ZIP/prefetch-origin rows — the red/bold styling below
+        # (style_rows) is color-only and invisible to colorblind users, so surface
+        # the same signal as a text badge too.
+        df_view.insert(0, "Source", df_view["Is_Zip"].map(lambda v: "⚡ ZIP" if v else ""))
 
+    if df_view.empty and not df_display.empty:
+        st.info("No products match your current filters. Try clearing the search, seller, or category filters above.")
+
+    # Cap the table at one page of rows. style_rows below is a row-wise Python
+    # Styler callback, so styling an unbounded df_view re-styled thousands of
+    # rows on every keystroke/rerun in large flag buckets.
+    _FLAG_TABLE_PAGE_SIZE = 500
+    _total_view_rows = len(df_view)
+    _flag_pg = 0
+    if _total_view_rows > _FLAG_TABLE_PAGE_SIZE:
+        _num_pages = (_total_view_rows + _FLAG_TABLE_PAGE_SIZE - 1) // _FLAG_TABLE_PAGE_SIZE
+        _flag_pg = st.selectbox(
+            "Table page",
+            options=list(range(_num_pages)),
+            format_func=lambda p: f"Page {p + 1} of {_num_pages} (rows {p * _FLAG_TABLE_PAGE_SIZE + 1:,}–{min((p + 1) * _FLAG_TABLE_PAGE_SIZE, _total_view_rows):,} of {_total_view_rows:,})",
+            key=f"flag_tbl_pg_{title}",
+        )
+        df_view = df_view.iloc[_flag_pg * _FLAG_TABLE_PAGE_SIZE:(_flag_pg + 1) * _FLAG_TABLE_PAGE_SIZE].reset_index(drop=True)
 
     def style_rows(row):
         if row.get("Is_Zip"):
             return ["color: #ff4b4b; font-weight: 900;"] * len(row)
         return [""] * len(row)
 
+    # Page number is part of the selection key so a positional selection made
+    # on one page can never silently target different products on another page.
+    _df_key = f"df_{title}_{st.session_state.get(f'df_ver_{title}', 0)}_p{_flag_pg}"
+
     _filters_active = bool(search_term or seller_filter)
     sel_all_col, sel_clear_col, _sel_spacer = st.columns([1, 1, 3])
     with sel_all_col:
         _sel_all_label = f"Select All ({len(df_view)} filtered)" if _filters_active else f"Select All ({len(df_view)})"
         if st.button(_sel_all_label, key=f"selall_{title}", disabled=df_view.empty, help="Select every row currently shown below"):
-            st.session_state[f"df_{title}_{st.session_state.get(f'df_ver_{title}', 0)}"] = {"selection": {"rows": list(range(len(df_view)))}}
+            st.session_state[_df_key] = {"selection": {"rows": list(range(len(df_view)))}}
     with sel_clear_col:
         if st.button("Clear Selection", key=f"selclear_{title}"):
-            st.session_state[f"df_{title}_{st.session_state.get(f'df_ver_{title}', 0)}"] = {"selection": {"rows": []}}
-
-
-    _df_key = f"df_{title}_{st.session_state.get(f'df_ver_{title}', 0)}"
+            st.session_state[_df_key] = {"selection": {"rows": []}}
     df_kwargs = {
         "hide_index": True,
         "width": "stretch",
@@ -1023,6 +1047,7 @@ def render_flag_expander(
         df_kwargs["height"] = 150
 
     _col_cfg = {
+            "Source": st.column_config.TextColumn("Source", width="small", pinned=True, help="Product came from a ZIP/prefetch upload"),
             "PRODUCT_SET_SID": st.column_config.TextColumn(pinned=True),
             "NAME": st.column_config.TextColumn(pinned=True),
             "PARENTSKU": st.column_config.TextColumn(),
@@ -1477,6 +1502,15 @@ def build_fast_grid_html(
         if ai_caption.lower() in ("nan", "none", ""):
             ai_caption = ""
 
+        # Generic reason snippet for any flag with a Comment (Brand Image
+        # Mismatch, Off-Platform Contact, etc). cat_reason keeps its own
+        # dedicated field/styling for Category Check since it's richer
+        # (includes suggested category); this is the fallback for everything
+        # else so a reviewer isn't left guessing why a card is flagged.
+        flag_comment = str(row.get("Comment", "")).strip()
+        if flag_comment.lower() in ("nan", "none", "", "manual rejection", "rejected"):
+            flag_comment = ""
+
         cards_data.append(
             {
                 "sid": sid,
@@ -1519,6 +1553,7 @@ def build_fast_grid_html(
                 "cat_reason": cat_reason,
                 "suggested_cat": suggested_cat,
                 "ai_caption": ai_caption,
+                "flag_comment": flag_comment,
                 "is_zip": sid in _zip_sid_set,
                 "zip_override": str(_zip_override_map.get(sid, "")),
             }
@@ -1586,6 +1621,8 @@ def build_fast_grid_html(
     <option value="BRAND name repeated in NAME" {_sel('BRAND name repeated in NAME', curr_flag)}>{labels_dict.get('filter_brand_name', 'Brand Name')}</option>
     <option value="Unnecessary words" {_sel('Unnecessary words', curr_flag)}>{labels_dict.get('filter_unneeded', 'Unneeded')}</option>
     <option value="Prohibited Words" {_sel('Prohibited Words', curr_flag)}>{labels_dict.get('filter_prohibited', 'Prohibited')}</option>
+    <option value="Brand Image Mismatch" {_sel('Brand Image Mismatch', curr_flag)}>Brand Image Mismatch</option>
+    <option value="Off-Platform Contact" {_sel('Off-Platform Contact', curr_flag)}>Off-Platform Contact</option>
     <option disabled>── {labels_dict.get('grp_prefetch', 'Prefetch')} ──</option>
     <option value="Category Check" {_sel('Category Check', curr_flag)}>Category Check</option>
     <option value="Warranty Check" {_sel('Warranty Check', curr_flag)}>Warranty Check</option>
@@ -1604,6 +1641,42 @@ def build_fast_grid_html(
     <option value="Title Language Check - Other" {_sel('Title Language Check - Other', curr_flag)}>Title: Language Other</option>
   </select>
 '''
+
+    # Additional rejection reasons that already have a reason-code/comment
+    # backing them (REASON_MAP + flags_mapping) but were previously missing
+    # from the manual reject dropdown — reviewers could not select them by
+    # hand even though the app fully supports them end-to-end.
+    extra_reason_options_html = '''
+    <optgroup label="Category / Brand">
+    <option value="REJECT_BRAND_IN_NAME">Brand Repeated In Name</option>
+    <option value="REJECT_GENERIC_BRAND">Generic Brand Issues</option>
+    <option value="REJECT_FASHION_BRAND">Fashion Brand Issues</option>
+    <option value="REJECT_FAKE_PERFUME">Suspected Fake Perfume</option>
+    <option value="REJECT_BRAND_MISMATCH">Brand Image Mismatch</option>
+    </optgroup>
+    <optgroup label="Seller Approval">
+    <option value="REJECT_REFURB">Seller Not Approved (Refurb)</option>
+    <option value="REJECT_BOOKS_SELLER">Seller Not Approved (Books)</option>
+    <option value="REJECT_PERFUME_SELLER">Seller Not Approved (Perfume)</option>
+    <option value="REJECT_PERFUME_TESTER">Perfume Tester</option>
+    <option value="REJECT_SNEAKERS">Counterfeit Sneakers</option>
+    <option value="REJECT_JERSEYS">Counterfeit Jerseys</option>
+    </optgroup>
+    <optgroup label="Content / Title">
+    <option value="REJECT_UNNECESSARY_WORDS">Unnecessary Words in Name</option>
+    <option value="REJECT_SINGLE_WORD">Single-word Name</option>
+    <option value="REJECT_SMARTPHONE_NAME">Incomplete Smartphone Name</option>
+    <option value="REJECT_WEIGHT_VOL">Missing Weight/Volume</option>
+    <option value="REJECT_TITLE_LANG">Title Not in English</option>
+    <option value="REJECT_OFFPLATFORM">Off-Platform Contact</option>
+    </optgroup>
+    <optgroup label="Other">
+    <option value="REJECT_WARRANTY">Product Warranty</option>
+    <option value="REJECT_VARIATION">Wrong Variation</option>
+    <option value="REJECT_SUSPICIOUS_DISCOUNT">Suspicious Discount</option>
+    </optgroup>
+'''
+
     _cols_btns_parts = []
     for _n in [5, 6, 7]:
         _active = _n == cols_per_row
@@ -1686,6 +1759,14 @@ def build_fast_grid_html(
 
   .sel-count{{font-weight:700;color:{O};font-size:13px;min-width:80px;}}
   .reason-sel{{flex:1;min-width:160px;padding:6px 10px;border:1px solid #ccc;border-radius:4px;font-size:12px;background:#fff;cursor:pointer;}}
+  .rsearch-wrap{{position:relative;flex:1;min-width:200px;max-width:260px;}}
+  .rsearch-input{{width:100%;padding:6px 10px;border:1px solid #ccc;border-radius:4px;font-size:12px;background:#fff;cursor:text;box-sizing:border-box;}}
+  .rsearch-input:focus{{outline:2px solid {O};outline-offset:-1px;}}
+  .rsearch-panel{{position:absolute;top:calc(100% + 4px);left:0;width:280px;max-height:320px;overflow-y:auto;background:#fff;border:1px solid #ccc;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.18);z-index:100000;padding:4px 0;}}
+  .rsearch-group-label{{padding:6px 10px 3px;font-size:10px;font-weight:800;color:#9ca3af;text-transform:uppercase;letter-spacing:.03em;}}
+  .rsearch-item{{padding:7px 12px;font-size:12px;color:#1f2937;cursor:pointer;white-space:normal;}}
+  .rsearch-item:hover, .rsearch-item.rsearch-hl{{background:{O};color:#fff;}}
+  .rsearch-empty{{padding:10px 12px;font-size:12px;color:#9ca3af;}}
   .batch-btn{{padding:7px 14px;background:{O};color:#fff;border:none;border-radius:4px;font-weight:700;font-size:12px;cursor:pointer;}}
   .batch-btn:hover{{opacity:.88;}}
   .desel-btn{{padding:7px 12px;background:#fff;color:#555;border:1px solid #ccc;border-radius:4px;font-size:12px;cursor:pointer;}}
@@ -1980,6 +2061,7 @@ def build_fast_grid_html(
     <option value="REJECT_COLOR">{labels_dict.get('missing_color', 'Missing Color')}</option>
     <option value="REJECT_FDA">FDA</option>
     <option value="REJECT_DUPLICATE">{labels_dict.get('sort_duplicates', 'Duplicate')}</option>
+    {extra_reason_options_html}
     <option value="OTHER_CUSTOM">{labels_dict.get('other_custom', 'Other (Custom)')}</option>
   </select>
   <button class="batch-btn" onclick="doBatchReject('top')">{labels_dict["batch_reject"]}</button>
@@ -2039,6 +2121,7 @@ def build_fast_grid_html(
     <option value="REJECT_COLOR">{labels_dict["missing_color"]}</option>
     <option value="REJECT_FDA">FDA</option>
     <option value="REJECT_DUPLICATE">{labels_dict["sort_duplicates"]}</option>
+    {extra_reason_options_html}
     <option value="OTHER_CUSTOM">Other Reason (Custom)</option>
   </select>
   <button class="batch-btn" onclick="doBatchReject('bottom')">{labels_dict["batch_reject"]}</button>
@@ -2119,6 +2202,10 @@ window._gridSelected = window._gridSelected || {{}};
 window._stagedRejections = window._stagedRejections || {{}};
 window.currentZoomSid = null;
 window._imageIssues = window._imageIssues || {{}};
+// URLs whose images have already loaded once in this iframe session. Cards with
+// a cached URL are re-rendered fully visible (no shimmer/fade), so page
+// turns don't flicker for images the browser already has.
+window._loadedImgs = window._loadedImgs || new Set();
 CARDS.forEach(c => {{
   if (c.warnings && c.warnings.length) {{
     if (!window._imageIssues[c.sid]) window._imageIssues[c.sid] = [];
@@ -2187,6 +2274,12 @@ function updateParentPagination() {{
 }}
 
 function onImgLoad(img, sid) {{
+  // If data-lazy-src is still pending, this onload was for the PLACEHOLDER,
+  // not the real image. Ignore it: marking img-loaded here faded in the gray
+  // placeholder, then the real src swap hard-popped over it (double flash),
+  // and the placeholder's dimensions could add bogus Low-Resolution warnings.
+  if (img.dataset.lazySrc) return;
+  window._loadedImgs.add(img.getAttribute('src'));
   img.classList.remove('skeleton');
   img.classList.add('img-loaded');
   var wrap = img.closest('.card-img-wrap');
@@ -2223,7 +2316,11 @@ function getLazyObserver() {{
 function activateLazyImages() {{
   var observer = getLazyObserver();
   if (!observer) return;
-  document.querySelectorAll('img.card-img[data-lazy-src]').forEach(function(img) {{
+  // Only observe images we haven't already handed to the observer — this used
+  // to rescan and re-observe the whole document on every render chunk (O(n²)
+  // with 500 cards/page).
+  document.querySelectorAll('img.card-img[data-lazy-src]:not([data-lz-obs])').forEach(function(img) {{
+    img.setAttribute('data-lz-obs', '1');
     observer.observe(img);
   }});
 }}
@@ -2294,6 +2391,22 @@ function buildCardActionsHtml(safeSid, warnings, cardData) {{
     'Product Name Brand Name – Other':                                    ['REJECT_BRAND_IN_NAME', 'Brand in Name (Other)'],
     'Title Language Check - Not In English':                              ['REJECT_TITLE_LANG',    'Title Language'],
     'Title Language Check - Other':                                       ['REJECT_TITLE_LANG',    'Title Language (Other)'],
+    'Suspected Fake Perfume':      ['REJECT_FAKE_PERFUME',   'Suspected Fake Perfume'],
+    'Suspicious Discount':         ['REJECT_SUSPICIOUS_DISCOUNT', 'Suspicious Discount'],
+    'Brand Image Mismatch':        ['REJECT_BRAND_MISMATCH', 'Brand Image Mismatch'],
+    'Off-Platform Contact':        ['REJECT_OFFPLATFORM',    'Off-Platform Contact'],
+    'Seller Not approved to sell Refurb':  ['REJECT_REFURB',         'Seller Not Approved (Refurb)'],
+    'Seller Approve to sell books':        ['REJECT_BOOKS_SELLER',   'Seller Not Approved (Books)'],
+    'Seller Approved to Sell Perfume':     ['REJECT_PERFUME_SELLER', 'Seller Not Approved (Perfume)'],
+    'Perfume Tester':              ['REJECT_PERFUME_TESTER',  'Perfume Tester'],
+    'Counterfeit Sneakers':        ['REJECT_SNEAKERS',        'Counterfeit Sneakers'],
+    'Suspected counterfeit Jerseys': ['REJECT_JERSEYS',       'Counterfeit Jerseys'],
+    'Unnecessary words in NAME':   ['REJECT_UNNECESSARY_WORDS', 'Unnecessary Words in Name'],
+    'Single-word NAME':            ['REJECT_SINGLE_WORD',     'Single-word Name'],
+    'Generic BRAND Issues':        ['REJECT_GENERIC_BRAND',   'Generic Brand Issues'],
+    'Fashion brand issues':        ['REJECT_FASHION_BRAND',   'Fashion Brand Issues'],
+    'Missing Weight/Volume':       ['REJECT_WEIGHT_VOL',      'Missing Weight/Volume'],
+    'Incomplete Smartphone Name':  ['REJECT_SMARTPHONE_NAME', 'Incomplete Smartphone Name'],
   }};
   var defaultCode  = 'REJECT_POOR_IMAGE';
   var defaultLabel = LABELS.poor_img;
@@ -2316,6 +2429,26 @@ function buildCardActionsHtml(safeSid, warnings, cardData) {{
     ['REJECT_WRONG_BRAND',   escapeHtml(LABELS.wrong_brand)],
     ['REJECT_FDA',           'FDA'],
     ['REJECT_DUPLICATE',     'Duplicate Product'],
+    ['REJECT_BRAND_IN_NAME', 'Brand Repeated In Name'],
+    ['REJECT_FAKE_PERFUME',  'Suspected Fake Perfume'],
+    ['REJECT_BRAND_MISMATCH','Brand Image Mismatch'],
+    ['REJECT_OFFPLATFORM',   'Off-Platform Contact'],
+    ['REJECT_REFURB',        'Seller Not Approved (Refurb)'],
+    ['REJECT_BOOKS_SELLER',  'Seller Not Approved (Books)'],
+    ['REJECT_PERFUME_SELLER','Seller Not Approved (Perfume)'],
+    ['REJECT_PERFUME_TESTER','Perfume Tester'],
+    ['REJECT_SNEAKERS',      'Counterfeit Sneakers'],
+    ['REJECT_JERSEYS',       'Counterfeit Jerseys'],
+    ['REJECT_UNNECESSARY_WORDS', 'Unnecessary Words in Name'],
+    ['REJECT_SINGLE_WORD',   'Single-word Name'],
+    ['REJECT_GENERIC_BRAND', 'Generic Brand Issues'],
+    ['REJECT_FASHION_BRAND', 'Fashion Brand Issues'],
+    ['REJECT_WEIGHT_VOL',    'Missing Weight/Volume'],
+    ['REJECT_SMARTPHONE_NAME','Incomplete Smartphone Name'],
+    ['REJECT_WARRANTY',      'Product Warranty'],
+    ['REJECT_VARIATION',     'Wrong Variation'],
+    ['REJECT_TITLE_LANG',    'Title Not in English'],
+    ['REJECT_SUSPICIOUS_DISCOUNT', 'Suspicious Discount'],
     ['OTHER_CUSTOM',         'Other Reason (Custom)'],
   ];
   var optionsHtml = opts.map(function(o) {{
@@ -2362,7 +2495,10 @@ function getHighlightedName(card) {{
 
   words.sort((a,b) => b.length - a.length);
   var regex = new RegExp('(' + words.map(w => w.replace(/[.*+?^${{}}()|[\\]\\\\]/g, '\\\\$&')).join('|') + ')', 'gi');
-  var hName = name.replace(regex, '<span class="hlt">$1</span>');
+  // Escape the name BEFORE inserting highlight <span> markup \u2014 product names are
+  // seller-supplied data, so without this a name containing raw HTML/script would
+  // execute in the reviewer's browser via innerHTML.
+  var hName = escapeHtml(name).replace(regex, '<span class="hlt">$1</span>');
 
   return hName;
 }}
@@ -2399,6 +2535,12 @@ function renderCard(card) {{
   var colorMismatchHtml = card.color_mismatch ? `<div class="co" style="color:#b45309;border-color:#fde68a;" title="${{escapeHtml(card.color_mismatch)}}">⚠ ${{escapeHtml(card.color_mismatch)}}</div>` : '';
   var catReasonHtml = (card.cat_reason && (card.warnings||[]).some(w => w.includes('Category'))) ?
     `<div class="co" style="color:#9333ea;font-size:10px;white-space:normal;line-height:1.3;" title="${{escapeHtml(card.cat_reason)}}">${{escapeHtml(card.cat_reason.length > 80 ? card.cat_reason.slice(0,80)+'…' : card.cat_reason)}}</div>` : '';
+  // Generic reason snippet for any other flag that has a Comment (Brand Image
+  // Mismatch, Off-Platform Contact, Restricted Brands, etc) — only shown when
+  // the richer category-specific reason above isn't already covering it, so
+  // reviewers can see WHY a card is flagged without opening the flag table.
+  var flagCommentHtml = (!catReasonHtml && card.flag_comment) ?
+    `<div class="co" style="color:#b91c1c;font-size:10px;white-space:normal;line-height:1.3;" title="${{escapeHtml(card.flag_comment)}}">${{escapeHtml(card.flag_comment.length > 90 ? card.flag_comment.slice(0,90)+'…' : card.flag_comment)}}</div>` : '';
   var suggestedCatHtml = card.suggested_cat ? `<div class="co" style="color:#0369a1;" title="AI suggests: ${{escapeHtml(card.suggested_cat)}}">→ ${{escapeHtml(card.suggested_cat.length > 50 ? card.suggested_cat.slice(0,50)+'…' : card.suggested_cat)}}</div>` : '';
   var aiBrandHtml = (card.brand_detected && card.brand_detected.toLowerCase() !== card.brand.toLowerCase()) ? `<div class="ai-brand-pill" title="AI detected brand: ${{escapeHtml(card.brand_detected)}}">🏷 AI Brand: ${{escapeHtml(card.brand_detected)}}</div>` : '';
   var brandDetectedHtml = (isBrandImgRej && card.brand_detected) ? '<div class="co" style="background:#E8F5E9;color:#2E7D32;border:1px solid #C8E6C9;" title="Brand Detected: ' + escapeHtml(card.brand_detected) + '">Detected Brand: ' + escapeHtml(card.brand_detected) + '</div>' : '';
@@ -2415,12 +2557,17 @@ function renderCard(card) {{
     </svg></button>`;
 
   var imgIdx = CARDS.indexOf(card);
-  var isEager = imgIdx < {cols_per_row * 2};
+  // Already loaded once this session → render it fully visible immediately:
+  // direct src, no shimmer, no 0.4s fade. This is what stops the whole grid
+  // from flickering on page turns when the browser already has the images.
+  var isCachedImg = window._loadedImgs.has(safeImgSrcForHtml);
+  var isEager = isCachedImg || imgIdx < {cols_per_row * 2};
   var loadingAttr = isEager ? 'eager' : 'lazy';
   var priorityAttr = isEager ? 'fetchpriority="high"' : 'fetchpriority="low"';
   var imgSrcAttr = isEager
     ? `src="${{safeImgSrcForHtml}}"`
     : `src="${{PLACEHOLDER}}" data-lazy-src="${{safeImgSrcForHtml}}"`;
+  var loadedCls = isCachedImg ? ' img-loaded' : '';
 
   var overlayHtml = '', actHtml = '';
     if (isCommitted) {{
@@ -2460,12 +2607,12 @@ function renderCard(card) {{
 
   var dataAttrs = 'data-sid="' + escapeHtml(String(card.data_sid||'')) + '" data-name="' + escapeHtml(String(card.data_name||'')) + '" data-brand="' + escapeHtml(String(card.data_brand||'')) + '" data-cat="' + escapeHtml(String(card.data_cat||'')) + '"';
   return `<div class="${{cls}}" id="card-${{escapeHtml(sid)}}" ${{dataAttrs}} tabindex="0" onclick="window.toggleSelect('${{safeSid}}',event)">
-    <div class="card-img-wrap">
+    <div class="card-img-wrap${{loadedCls}}">
       ${{priceHtml}}
       <div class="warn-wrap">${{warnHtml}}</div>
       <div id="debug-${{escapeHtml(sid)}}" class="debug-hud"></div>
       <img class="card-img-placeholder" src="${{PLACEHOLDER}}" alt="">
-      <img class="card-img" ${{imgSrcAttr}} decoding="async" loading="${{loadingAttr}}" ${{priorityAttr}} referrerpolicy="no-referrer"
+      <img class="card-img${{loadedCls}}" ${{imgSrcAttr}} decoding="async" loading="${{loadingAttr}}" ${{priorityAttr}} referrerpolicy="no-referrer"
             onload="onImgLoad(this,'${{safeSid}}')" onerror="onImgError(this,'${{safeSid}}')">
       ${{zoomHtml}}
       ${{overlayHtml}}
@@ -2484,6 +2631,7 @@ function renderCard(card) {{
       ${{aiColorHtml}}
       ${{colorMismatchHtml}}
       ${{catReasonHtml}}
+      ${{flagCommentHtml}}
       ${{suggestedCatHtml}}
       ${{brandDetectedHtml}}
     </div>
@@ -2724,30 +2872,46 @@ function renderAll() {{
   var cards = getDisplayCards();
   var countEl = document.getElementById('grid-count');
   if (countEl) countEl.textContent = cards.length + ' products' + (window._currentFilter ? ' (filtered)' : '');
-  
+
   var grid = document.getElementById('card-grid');
-  grid.innerHTML = ''; // clear quickly
-  
+
+  // Drop observations on the nodes we're about to replace so the observer
+  // doesn't accumulate dead entries across page turns.
+  if (_lazyObserver) _lazyObserver.disconnect();
+
+  if (cards.length === 0) {{
+    var hasFilters = !!(PAGE_STATE.search || '').trim() || (PAGE_STATE.sellers||[]).length || (PAGE_STATE.categories||[]).length || window._currentFilter;
+    grid.innerHTML = '<div class="empty-state"><div><div class="title">No products match your filters</div>' +
+      '<div class="desc">' + (hasFilters ? 'Try clearing the search, seller, or category filters.' : 'There are no products to show here.') + '</div></div>' +
+      (hasFilters ? '<div class="actions"><button class="toolbar-btn small" onclick="window.resetAllFilters()">Clear filters</button></div>' : '') +
+      '</div>';
+    return;
+  }}
+
+  // Build the page's HTML in rAF-spaced chunks (keeps the main thread
+  // responsive for 500-card pages) but insert it in ONE swap at the end.
+  // The old approach cleared the grid immediately (blank flash + page height
+  // collapse + scroll jump) and then painted 50 cards per frame — 10 visible
+  // "waves" of cards popping in on every page turn.
   var chunkSize = 50;
   var idx = 0;
-  
-  function renderChunk() {{
+  var parts = [];
+
+  function buildChunk() {{
     if (seq !== _renderSeq) return; // aborted by newer render
-    if (idx >= cards.length) return;
-    
     var chunk = cards.slice(idx, idx + chunkSize);
-    grid.insertAdjacentHTML('beforeend', chunk.map(renderCard).join(''));
-    activateLazyImages();
-    
+    parts.push(chunk.map(renderCard).join(''));
     idx += chunkSize;
     if (idx < cards.length) {{
-      requestAnimationFrame(renderChunk);
+      requestAnimationFrame(buildChunk);
     }} else {{
+      grid.innerHTML = parts.join('');
+      activateLazyImages();
       updateSelCount();
     }}
   }}
-  
-  renderChunk();
+
+  buildChunk();
 }}
 
 function replaceCard(sid) {{
@@ -2924,9 +3088,10 @@ window.doBatchReject = function(pos) {{
   var br = sel.value;
   if (br === 'OTHER_CUSTOM') {{
     showCustomReasonPanel(function(cmt) {{
-      if (!cmt) {{ sel.value = "REJECT_POOR_IMAGE"; return; }}
+      if (!cmt) {{ sel.value = "REJECT_POOR_IMAGE"; sel.dispatchEvent(new Event('change', {{bubbles: true}})); return; }}
       _applyBatchReject("Other Reason (Custom): " + cmt);
       sel.value = "REJECT_POOR_IMAGE";
+      sel.dispatchEvent(new Event('change', {{bubbles: true}}));
     }});
     return;
   }}
@@ -3098,6 +3263,155 @@ document.addEventListener('keydown', function(e) {{
   var el = document.getElementById(id);
   if (el) el.addEventListener('change', function() {{ _lastReason = this.value; }});
 }});
+
+// Searchable reject-reason dropdown. The dropdown grew past 30 options once
+// every check got a manual reason — scrolling a native <select> that long is
+// real friction for a reviewer doing hundreds of rejects a day. This layers a
+// search box + "Recently used" section on top of the existing <select>
+// without touching how selections are read: the underlying <select>'s value
+// is still what doBatchReject() reads, so nothing downstream had to change.
+var RECENT_REASONS_KEY = 'pimqc_recent_reasons';
+function _getRecentReasons() {{
+  try {{ return JSON.parse(sessionStorage.getItem(RECENT_REASONS_KEY) || '[]'); }}
+  catch(e) {{ return []; }}
+}}
+function _pushRecentReason(value, label) {{
+  var recent = _getRecentReasons().filter(function(r) {{ return r.value !== value; }});
+  recent.unshift({{value: value, label: label}});
+  recent = recent.slice(0, 5);
+  try {{ sessionStorage.setItem(RECENT_REASONS_KEY, JSON.stringify(recent)); }} catch(e) {{}}
+}}
+
+function enhanceReasonSelect(selectId) {{
+  var sel = document.getElementById(selectId);
+  if (!sel || sel.dataset.rsearchEnhanced) return;
+  sel.dataset.rsearchEnhanced = '1';
+
+  // Flatten <option>/<optgroup> into {{value, label, group}} once, in DOM order.
+  var items = [];
+  Array.prototype.forEach.call(sel.children, function(node) {{
+    if (node.tagName === 'OPTGROUP') {{
+      Array.prototype.forEach.call(node.children, function(opt) {{
+        items.push({{value: opt.value, label: opt.textContent, group: node.label}});
+      }});
+    }} else if (node.tagName === 'OPTION') {{
+      items.push({{value: node.value, label: node.textContent, group: null}});
+    }}
+  }});
+  var byValue = {{}};
+  items.forEach(function(it) {{ byValue[it.value] = it; }});
+
+  sel.style.display = 'none';
+  var wrap = document.createElement('div');
+  wrap.className = 'rsearch-wrap';
+  var input = document.createElement('input');
+  input.className = 'rsearch-input';
+  input.type = 'text';
+  input.placeholder = 'Search reasons…';
+  input.autocomplete = 'off';
+  var panel = document.createElement('div');
+  panel.className = 'rsearch-panel';
+  panel.style.display = 'none';
+  wrap.appendChild(input);
+  wrap.appendChild(panel);
+  sel.parentNode.insertBefore(wrap, sel.nextSibling);
+
+  var initial = byValue[sel.value];
+  if (initial) input.value = initial.label;
+
+  var hlIndex = -1;
+  var visibleItems = [];
+
+  function renderPanel() {{
+    var q = input.value.trim().toLowerCase();
+    var recent = q ? [] : _getRecentReasons().filter(function(r) {{ return byValue[r.value]; }});
+    var filtered = items.filter(function(it) {{
+      return !q || it.label.toLowerCase().indexOf(q) !== -1;
+    }});
+    visibleItems = [];
+    var html = '';
+    if (recent.length) {{
+      html += '<div class="rsearch-group-label">Recently used</div>';
+      recent.forEach(function(it) {{ visibleItems.push(it); }});
+    }}
+    var lastGroup = recent.length ? '\\u0000' : null;
+    filtered.forEach(function(it) {{
+      if (it.group !== lastGroup) {{ lastGroup = it.group; }}
+      visibleItems.push(it);
+    }});
+    if (!visibleItems.length) {{
+      panel.innerHTML = '<div class="rsearch-empty">No matching reasons</div>';
+      return;
+    }}
+    var seenGroup = null;
+    var idx = 0;
+    visibleItems.forEach(function(it, i) {{
+      var isRecent = recent.indexOf(it) !== -1;
+      var group = isRecent ? 'Recently used' : it.group;
+      if (group !== seenGroup && !isRecent) {{
+        html += '<div class="rsearch-group-label">' + escapeHtml(group || 'Other') + '</div>';
+      }}
+      seenGroup = isRecent ? seenGroup : group;
+      html += '<div class="rsearch-item" data-idx="' + i + '">' + escapeHtml(it.label) + '</div>';
+    }});
+    panel.innerHTML = html;
+    hlIndex = -1;
+  }}
+
+  function openPanel() {{ renderPanel(); panel.style.display = 'block'; }}
+  function closePanel() {{
+    panel.style.display = 'none';
+    var curr = byValue[sel.value];
+    input.value = curr ? curr.label : '';
+  }}
+  function selectItem(it) {{
+    sel.value = it.value;
+    sel.dispatchEvent(new Event('change', {{bubbles: true}}));
+    input.value = it.label;
+    _pushRecentReason(it.value, it.label);
+    panel.style.display = 'none';
+  }}
+  function setHighlight(i) {{
+    var nodes = panel.querySelectorAll('.rsearch-item');
+    nodes.forEach(function(n) {{ n.classList.remove('rsearch-hl'); }});
+    if (i >= 0 && i < nodes.length) {{
+      nodes[i].classList.add('rsearch-hl');
+      nodes[i].scrollIntoView({{block: 'nearest'}});
+    }}
+    hlIndex = i;
+  }}
+
+  // Keep the visible search box in sync whenever the underlying select's
+  // value changes from elsewhere (e.g. doBatchReject resetting it after the
+  // custom-reason panel closes) — selectItem() also fires 'change', so this
+  // is the single source of truth for the display text.
+  sel.addEventListener('change', function() {{
+    if (panel.style.display !== 'none') return; // avoid fighting live typing
+    var curr = byValue[sel.value];
+    input.value = curr ? curr.label : '';
+  }});
+
+  input.addEventListener('focus', openPanel);
+  input.addEventListener('input', openPanel);
+  input.addEventListener('keydown', function(e) {{
+    if (e.key === 'ArrowDown') {{ e.preventDefault(); if (panel.style.display === 'none') openPanel(); setHighlight(Math.min(hlIndex + 1, visibleItems.length - 1)); }}
+    else if (e.key === 'ArrowUp') {{ e.preventDefault(); setHighlight(Math.max(hlIndex - 1, 0)); }}
+    else if (e.key === 'Enter') {{ e.preventDefault(); if (hlIndex >= 0 && visibleItems[hlIndex]) selectItem(visibleItems[hlIndex]); else if (visibleItems.length === 1) selectItem(visibleItems[0]); }}
+    else if (e.key === 'Escape') {{ closePanel(); input.blur(); }}
+  }});
+  panel.addEventListener('mousedown', function(e) {{
+    var itemEl = e.target.closest('.rsearch-item');
+    if (!itemEl) return;
+    e.preventDefault();
+    var it = visibleItems[parseInt(itemEl.dataset.idx, 10)];
+    if (it) selectItem(it);
+  }});
+  document.addEventListener('click', function(e) {{
+    if (!wrap.contains(e.target)) closePanel();
+  }});
+}}
+enhanceReasonSelect('batch-reason-top');
+enhanceReasonSelect('batch-reason-bottom');
 
 (function() {{
   var _gs = document.getElementById('grid-search');
@@ -3388,6 +3702,13 @@ def visual_review_modal(support_files):
     # instead of a dict lookup.
     _fr_flag_map = dict(zip(fr["ProductSetSid"].astype(str), fr["FLAG"])) if "FLAG" in fr.columns else {}
     _fr_comment_map = dict(zip(fr["ProductSetSid"].astype(str), fr["Comment"])) if "Comment" in fr.columns else {}
+    # Carry the flag's specific Comment (e.g. "Restricted brand 'Nike' detected
+    # on product image..." from Brand Image Mismatch, or the matched phone/URL
+    # from Off-Platform Contact) through to the card so reviewers see WHY a
+    # product was flagged without leaving the grid — previously only the
+    # Category Check reason had a dedicated slot on the card.
+    if _fr_comment_map:
+        review_data["Comment"] = review_data["ProductSetSid"].astype(str).map(_fr_comment_map)
     _zip_index = st.session_state.get("_zip_sid_index")
     _zip_status_cols = st.session_state.get("_zip_status_cols", [])
     _zip_prefetch_map = st.session_state.get("_zip_prefetch_map", {})
@@ -3606,19 +3927,28 @@ def visual_review_modal(support_files):
             if sid.strip() in qrs
         }
 
-        for _sid_raw in page_data.get(
+        _page_sids = page_data.get(
             "PRODUCT_SET_SID", page_data.get("ProductSetSid", pd.Series())
-        ).astype(str):
+        ).astype(str)
+        _needs_poor_img_lookup = any(
+            s.strip() in poor_img_rej_sids and s.strip() not in rejected_state for s in _page_sids
+        )
+        if _needs_poor_img_lookup:
+            # Single stripped-key dict built once for this page instead of a full
+            # fr[...] scan repeated per row (was O(page_size * len(fr))).
+            _fr_flag_map_stripped = dict(zip(fr["ProductSetSid"].astype(str).str.strip(), fr["FLAG"])) if "FLAG" in fr.columns else {}
+            _fr_comment_map_stripped = dict(zip(fr["ProductSetSid"].astype(str).str.strip(), fr["Comment"])) if "Comment" in fr.columns else {}
+        else:
+            _fr_flag_map_stripped = {}
+            _fr_comment_map_stripped = {}
+
+        for _sid_raw in _page_sids:
             _sid = _sid_raw.strip()
             if _sid in poor_img_rej_sids and _sid not in rejected_state:
-                _row_fr = fr[fr["ProductSetSid"].astype(str).str.strip() == _sid]
-                if not _row_fr.empty:
-                    _flag = str(_row_fr.iloc[0]["FLAG"])
-                    _comment = str(_row_fr.iloc[0]["Comment"])
-                    if "Brand Image Check" in _flag or "Brand Image Check" in _comment:
-                        rejected_state[_sid] = "Brand Image Check"
-                    else:
-                        rejected_state[_sid] = "Poor images"
+                _flag = str(_fr_flag_map_stripped.get(_sid, ""))
+                _comment = str(_fr_comment_map_stripped.get(_sid, ""))
+                if "Brand Image Check" in _flag or "Brand Image Check" in _comment:
+                    rejected_state[_sid] = "Brand Image Check"
                 else:
                     rejected_state[_sid] = "Poor images"
 

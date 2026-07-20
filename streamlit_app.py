@@ -181,7 +181,16 @@ st.iframe(
         }
         setTimeout(colorExpander, 100);
         setTimeout(colorExpander, 500);
-        setInterval(colorExpander, 1500);
+        // Poll for ~15s to catch styling changes the MutationObserver below
+        // might miss right after load, then stop — a forever-running
+        // setInterval here was burning CPU for the entire session even
+        // though the observer already handles ongoing DOM changes.
+        var _pollCount = 0;
+        var _pollId = setInterval(function() {
+            colorExpander();
+            _pollCount++;
+            if (_pollCount >= 10) clearInterval(_pollId);
+        }, 1500);
         try {
             var obs = new MutationObserver(function() { colorExpander(); });
             obs.observe(window.parent.document.body, { childList: true, subtree: true });
@@ -250,7 +259,7 @@ PREFETCH_REASON_COLUMNS = {
     "image_quality_check": ["Image_Quality_Check_Reason"],
     "brand_image_check": ["Brand_Image_Check_Reason"],
 }
-PROCESSING_CACHE_VERSION = "prefetch_context_v4"
+PROCESSING_CACHE_VERSION = "prefetch_context_v5"  # bumped: fake-perfume color-word fix + new validators
 PREFETCH_VALIDATOR_SKIP_MAP = {
     "category_check": ["Wrong Category", "Category Check"],
     "warranty_check": ["Product Warranty", "Warranty Check"],
@@ -1023,6 +1032,27 @@ def check_restricted_brands(
         return pd.DataFrame(columns=data.columns)
 
     d = data.copy()
+
+    # Exclude categories that should never be flagged for restricted brands.
+    # PS5 / PlayStation game titles legitimately contain brand-like keywords.
+    _EXCLUDED_CATEGORY_FRAGMENTS = (
+        "ps 5 games",
+        "ps5 games",
+        "playstation 5",
+        "playstation5",
+    )
+    if "CATEGORY" in d.columns:
+        _cat_lower = d["CATEGORY"].astype(str).str.lower()
+        _cat_excl_mask = _cat_lower.apply(
+            lambda c: any(f in c for f in _EXCLUDED_CATEGORY_FRAGMENTS)
+        )
+        d = d[~_cat_excl_mask].copy()
+    if "CATEGORY_CODE" in d.columns and "code_to_path" in (data.attrs or {}):
+        pass  # code_to_path lookup not available here; CATEGORY column is the source of truth
+
+    if d.empty:
+        return pd.DataFrame(columns=data.columns)
+
     if "_brand_norm" not in d.columns:
         d["_brand_norm"] = _normalize_series(d.get("BRAND", pd.Series("", index=d.index)))
     if "_name_norm" not in d.columns:
@@ -1642,12 +1672,16 @@ def check_suspected_fake_perfume(
     # like "Splash Perfume Mist 236ml … Fragrance Body Mist".
     # Keep a model term only if it is:
     #   • multi-word (contains a space), OR
-    #   • a single word with ≥ 5 characters
+    #   • a single word with ≥ 5 characters that is NOT a color name — models
+    #     like "Green" (Coach) or "Amber" are also everyday color variants
+    #     ("… Mist - Green 1PC"), so a single color word is not evidence of a
+    #     fake. Multi-word models like "Green Tea" remain distinctive and kept.
     # Brand-level terms (legit_brand_terms) are always kept — they are proper
     # nouns specific enough to be reliable signals (Chanel, Dior, Givenchy…).
+    color_words = {str(c).strip().lower() for c in kwargs.get("color_words") or []}
     safe_model_terms = {
         t for t in model_terms
-        if " " in t or len(t) >= 5
+        if " " in t or (len(t) >= 5 and t not in color_words)
     }
 
     all_terms = legit_brand_terms | safe_model_terms
@@ -1689,6 +1723,158 @@ def check_suspected_fake_perfume(
     return flagged.drop(columns=["_pfume_match"]).drop_duplicates(
         subset=["PRODUCT_SET_SID"]
     )
+
+
+def check_brand_image_mismatch(
+    data: pd.DataFrame, country_rules: list = None, **kwargs
+) -> pd.DataFrame:
+    """
+    Compare the brand the image AI detected on the product photo
+    (Brand_Detected_On_Product, merged in from the ZIP QC file) with the
+    declared BRAND.
+
+    Two tiers, distinguished in Comment_Detail:
+      • detected brand is a restricted brand and the seller is not approved
+        for it → strong counterfeit signal
+      • plain mismatch (image shows one brand, listing declares another)
+    A row passes when either brand contains the other as a whole word
+    ("samsung galaxy" vs "Samsung" is fine).
+    """
+    if "Brand_Detected_On_Product" not in data.columns or "BRAND" not in data.columns:
+        return pd.DataFrame(columns=data.columns)
+
+    det = data["Brand_Detected_On_Product"].astype(str).str.strip()
+    valid = det.ne("") & ~det.str.lower().isin(("nan", "none", "no brand", "unknown", "n/a"))
+    d = data[valid].copy()
+    if d.empty:
+        return pd.DataFrame(columns=data.columns)
+
+    d["_det_l"] = det[valid].str.lower()
+    d["_decl_l"] = d["BRAND"].astype(str).str.strip().str.lower()
+
+    def _brands_agree(decl: str, detected: str) -> bool:
+        if not detected:
+            return True
+        if decl == detected:
+            return True
+        if not decl or decl in ("nan", "none"):
+            return False
+        return bool(
+            re.search(r"\b" + re.escape(detected) + r"\b", decl)
+            or re.search(r"\b" + re.escape(decl) + r"\b", detected)
+        )
+
+    # Only rows with a detected brand reach this Python loop — a small subset.
+    mismatch_mask = [not _brands_agree(a, b) for a, b in zip(d["_decl_l"], d["_det_l"])]
+    flagged = d[pd.Series(mismatch_mask, index=d.index)].copy()
+    if flagged.empty:
+        return pd.DataFrame(columns=data.columns)
+
+    # brand (normalized) -> approved sellers (normalized), from Restricted_Brands.xlsx
+    restricted_map = {r["brand"]: r.get("sellers", set()) for r in (country_rules or [])}
+
+    def _build_comment(row):
+        det_raw = str(row["Brand_Detected_On_Product"]).strip()
+        decl_raw = str(row["BRAND"]).strip()
+        det_norm = normalize_text(det_raw)
+        seller_norm = normalize_text(row.get("SELLER_NAME", ""))
+        if det_norm in restricted_map and seller_norm not in restricted_map[det_norm]:
+            return (f"Restricted brand '{det_raw}' detected on product image but listing "
+                    f"brand is '{decl_raw}' — seller not approved for {det_raw}")
+        return f"Image shows '{det_raw}' but listing brand is '{decl_raw}'"
+
+    flagged["Comment_Detail"] = flagged.apply(_build_comment, axis=1)
+    return flagged.drop(columns=["_det_l", "_decl_l"]).drop_duplicates(subset=["PRODUCT_SET_SID"])
+
+
+# ── Off-platform contact detection ──────────────────────────────────────────
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+# Hard evidence: phone numbers (KE/NG formats + generic international),
+# WhatsApp mentions/links, URLs.
+_OFFPLATFORM_HARD_RE = re.compile(
+    r"(?:"
+    r"\+?254[\s\-]?[17]\d{2}[\s\-]?\d{3}[\s\-]?\d{3}"          # Kenya intl
+    r"|\b07[\s\-]?\d{2}[\s\-]?\d{3}[\s\-]?\d{3}\b"             # Kenya local 07xx xxx xxx
+    r"|\+?234[\s\-]?[789]\d{2}[\s\-]?\d{3}[\s\-]?\d{4}"        # Nigeria intl
+    r"|\b0[789][01]\d[\s\-]?\d{3}[\s\-]?\d{4}\b"               # Nigeria local 080x xxx xxxx
+    r"|\+\d{10,14}\b"                                          # generic international
+    r"|wa\.me/\S+"
+    r"|whats\s*app"
+    r"|https?://\S+"
+    r"|\bwww\.\S+"
+    r")",
+    re.IGNORECASE,
+)
+# Soft signals: divert-the-buyer wording without a number/link. Deliberately
+# phrase-based ("follow us on", not bare "tiktok") so products like ring
+# lights "for TikTok videos" don't false-positive.
+_OFFPLATFORM_SOFT_RE = re.compile(
+    r"(?:\bcall\s+us\b|\bcontact\s+(?:us|the\s+seller|seller)\b"
+    r"|\border\s+(?:directly|via|through)\b|\bdm\s+us\b|\binbox\s+us\b"
+    r"|\bfollow\s+us\s+on\b|\bfind\s+us\s+on\b|\bvisit\s+our\b)",
+    re.IGNORECASE,
+)
+
+
+def check_offplatform_contact(data: pd.DataFrame, **kwargs) -> pd.DataFrame:
+    """
+    Detect sellers hiding contact details (phones, WhatsApp, URLs) or
+    divert-the-buyer wording in NAME/DESCRIPTION/SHORT_DESCRIPTION — the
+    standard pattern for taking buyers off-platform.
+
+    HTML tags are stripped before scanning so markup attributes (styles,
+    color hex codes) can't false-positive the phone patterns. Matches are
+    tracked per-column (not on one merged blob) so Comment_Detail — the only
+    field the pipeline actually carries through to the report/card/export —
+    can say exactly WHAT was found and WHICH field it was found in, instead
+    of just "something matched somewhere in this product".
+    """
+    text_cols = [c for c in ("NAME", "DESCRIPTION", "SHORT_DESCRIPTION") if c in data.columns]
+    if not text_cols or "PRODUCT_SET_SID" not in data.columns:
+        return pd.DataFrame(columns=data.columns)
+
+    # Per-column stripped/lowered text — kept separate (not concatenated)
+    # so a match can be attributed back to its specific source field.
+    col_text = {
+        c: data[c].astype(str).str.replace(_HTML_TAG_RE, " ", regex=True).str.lower()
+        for c in text_cols
+    }
+
+    # Cheap vectorized pre-filter: which rows have a hit in ANY column.
+    pre_mask = pd.Series(False, index=data.index)
+    for c in text_cols:
+        pre_mask |= col_text[c].str.contains(_OFFPLATFORM_HARD_RE, na=False) | col_text[c].str.contains(_OFFPLATFORM_SOFT_RE, na=False)
+    if not pre_mask.any():
+        return pd.DataFrame(columns=data.columns)
+
+    comments: dict = {}
+    for idx in data.index[pre_mask]:
+        hard_by_col: list = []  # [(column, [matched terms])]
+        soft_by_col: list = []
+        for c in text_cols:
+            text = col_text[c].loc[idx]
+            # Allowlist the platform's own domains/CDNs so legit image URLs pass.
+            hard = sorted({m.strip() for m in _OFFPLATFORM_HARD_RE.findall(text)
+                           if "jumia" not in m.lower() and "wsrv.nl" not in m.lower()})
+            if hard:
+                hard_by_col.append((c, hard))
+            soft = sorted({m.strip() for m in _OFFPLATFORM_SOFT_RE.findall(text)})
+            if soft:
+                soft_by_col.append((c, soft))
+
+        if hard_by_col:
+            where = " | ".join(f"{c}: '{', '.join(terms[:3])}'" for c, terms in hard_by_col)
+            comments[idx] = f"Off-platform contact detected — {where}"
+        elif soft_by_col:
+            where = " | ".join(f"{c}: '{', '.join(terms[:3])}'" for c, terms in soft_by_col)
+            comments[idx] = f"Possible off-platform wording — {where}"
+
+    if not comments:
+        return pd.DataFrame(columns=data.columns)
+
+    flagged = data.loc[list(comments.keys())].copy()
+    flagged["Comment_Detail"] = flagged.index.map(comments)
+    return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
 
 
 def check_unnecessary_words(data: pd.DataFrame, pattern: re.Pattern) -> pd.DataFrame:
@@ -2353,6 +2539,8 @@ if _reg is not None:
             "check_counterfeit_sneakers": check_counterfeit_sneakers,
             "check_counterfeit_jerseys": check_counterfeit_jerseys,
             "check_suspected_fake_perfume": check_suspected_fake_perfume,
+            "check_brand_image_mismatch": check_brand_image_mismatch,
+            "check_offplatform_contact": check_offplatform_contact,
             "check_prohibited_products": check_prohibited_products,
             "check_unnecessary_words": check_unnecessary_words,
             "check_single_word_name": check_single_word_name,
@@ -2508,7 +2696,18 @@ def validate_products(
                 "perfume_category_codes": support_files.get(
                     "perfume_category_codes", []
                 ),
+                "color_words": support_files.get("colors", []),
             },
+        ),
+        (
+            "Brand Image Mismatch",
+            check_brand_image_mismatch,
+            {"country_rules": support_files.get("restricted_brands_all", {}).get(country_validator.country, [])},
+        ),
+        (
+            "Off-Platform Contact",
+            check_offplatform_contact,
+            {},
         ),
         (
             "Prohibited products",
@@ -3129,6 +3328,53 @@ with st.sidebar:
 
         st.rerun()
 
+    # ── AI Learning admin ────────────────────────────────────────────────
+    # The category matcher silently reshapes its own suggestions based on
+    # what gets written to cat_learning.db (approved corrections, rejected
+    # negatives) — this gives a reviewer visibility into what it "knows" and
+    # a way to undo a bad entry (e.g. a mis-click that permanently excludes
+    # a category from suggestions for one product name).
+    if _CAT_MATCHER_AVAILABLE:
+        st.markdown("---")
+        st.header("🧠 AI Learning")
+        _learn_engine = _get_cat_matcher_engine()
+        _n_corr, _n_neg = _learn_engine.counts()
+        _lc1, _lc2 = st.columns(2)
+        _lc1.metric("Corrections", _n_corr, help="Approved (name → category) pairs the matcher learned from")
+        _lc2.metric("Negatives", _n_neg, help="Categories a human explicitly rejected for a product name — excluded from future suggestions")
+        with st.expander("Manage learned data", expanded=False):
+            _learn_tab_corr, _learn_tab_neg = st.tabs(["Corrections", "Negatives"])
+            with _learn_tab_corr:
+                _corr_df = _learn_engine.list_corrections()
+                if _corr_df.empty:
+                    st.caption("No learned corrections yet.")
+                else:
+                    _corr_sel = st.dataframe(
+                        _corr_df, hide_index=True, width='stretch', height=220,
+                        selection_mode="multi-row", on_select="rerun", key="corr_admin_df",
+                    )
+                    _corr_rows = _corr_sel.selection.rows if _corr_sel and _corr_sel.selection else []
+                    if st.button(f"Delete selected ({len(_corr_rows)})", key="del_corr_btn", disabled=not _corr_rows):
+                        _ids = _corr_df.iloc[_corr_rows]["id"].tolist()
+                        _n = _learn_engine.delete_corrections(_ids)
+                        st.toast(f"Deleted {_n} correction(s)", icon="🗑")
+                        st.rerun()
+            with _learn_tab_neg:
+                _neg_df = _learn_engine.list_negatives()
+                if _neg_df.empty:
+                    st.caption("No learned negatives yet.")
+                else:
+                    _neg_sel = st.dataframe(
+                        _neg_df, hide_index=True, width='stretch', height=220,
+                        selection_mode="multi-row", on_select="rerun", key="neg_admin_df",
+                    )
+                    _neg_rows = _neg_sel.selection.rows if _neg_sel and _neg_sel.selection else []
+                    if st.button(f"Delete selected ({len(_neg_rows)})", key="del_neg_btn", disabled=not _neg_rows):
+                        _ids = _neg_df.iloc[_neg_rows]["id"].tolist()
+                        _n = _learn_engine.delete_negatives(_ids)
+                        st.toast(f"Deleted {_n} negative(s)", icon="🗑")
+                        st.rerun()
+
 st.header(f":material/upload_file: {_t('upload_files')}", anchor=False)
 current_country = st.session_state.get("selected_country", get_default_country())
 
@@ -3206,6 +3452,37 @@ function selectCountry(name) {{
 """
 st.iframe(_flag_selector_html, height=85)
 
+def _reset_report_state(*, clear_uploaded_files: bool = False, clear_zip_cache: bool = False, extra_key_prefixes: tuple = ()):
+    """Resets validation results/grid state. Used by every "start fresh" action
+    (country switch, clear-all-files, uploader emptied, new file signature) so
+    they can't drift apart and leave stale grid/cache data behind after one of
+    them — previously each call site hand-copied a slightly different subset
+    of this reset, which was a real source of "stale data after switching
+    country" style bugs."""
+    st.session_state.final_report = pd.DataFrame()
+    st.session_state.all_data_map = pd.DataFrame()
+    st.session_state.all_data_rows = pd.DataFrame()
+    st.session_state.file_mode = None
+    st.session_state.intersection_sids = set()
+    st.session_state.intersection_count = 0
+    st.session_state.grid_page = 0
+    st.session_state.pop("_grid_page_contexts", None)
+    st.session_state.pop("_grid_last_ctx", None)
+    st.session_state.exports_cache = {}
+    st.session_state.display_df_cache = {}
+    st.session_state.pop("_grid_review_data_cache", None)
+    st.session_state.pop("_grid_warm_urls", None)
+    if clear_uploaded_files:
+        st.session_state.cached_uploaded_files = []
+    if clear_zip_cache:
+        st.session_state.zip_image_store = {}
+        st.session_state.zip_image_index = {}
+        st.session_state.zip_image_source_bytes = None
+    _prefixes = ("quick_rej_", "grid_chk_", "toast_") + tuple(extra_key_prefixes)
+    _dead_keys = [k for k in st.session_state.keys() if k.startswith(_prefixes)]
+    for k in _dead_keys: del st.session_state[k]
+
+
 _country_bridge = st.text_input("country_bridge", value="", placeholder="COUNTRY_BRIDGE_DO_NOT_USE", key=f"country_bridge_{st.session_state.get('country_bridge_counter', 0)}", label_visibility="collapsed")
 if "country_bridge_counter" not in st.session_state: st.session_state.country_bridge_counter = 0
 country_choice = _country_bridge.strip() if _country_bridge.strip() in _countries else None
@@ -3214,11 +3491,7 @@ if country_choice and country_choice != current_country:
     st.session_state.selected_country = country_choice
     set_country_pref(country_choice)
     st.session_state.last_processed_files = None
-    st.session_state.final_report = pd.DataFrame()
-    st.session_state.all_data_map = pd.DataFrame()
-    st.session_state.all_data_rows = pd.DataFrame()
-    st.session_state.exports_cache = {}
-    st.session_state.display_df_cache = {}
+    _reset_report_state()
     st.session_state.ui_lang = "fr" if country_choice in ["Morocco", "Senegal", "Ivory Coast"] else "en"
     st.session_state.country_bridge_counter += 1
     st.toast(f"Switching to {country_choice}…", icon=":material/public:")
@@ -3236,30 +3509,26 @@ if _has_files:
         st.rerun()
 
 if "uploader_key" not in st.session_state: st.session_state.uploader_key = 0
+if "confirm_clear_files" not in st.session_state: st.session_state.confirm_clear_files = False
 if _has_files:
-    if st.button("✕ Clear all files", key="clear_files_btn", type="secondary", help="Remove all uploaded files and reset the tool"):
-        st.session_state.cached_uploaded_files = []
-        st.session_state.final_report = pd.DataFrame()
-        st.session_state.all_data_map = pd.DataFrame()
-        st.session_state.all_data_rows = pd.DataFrame()
-        st.session_state.file_mode = None
-        st.session_state.exports_cache = {}
-        st.session_state.display_df_cache = {}
-        st.session_state.zip_image_store = {}
-        st.session_state.zip_image_index = {}
-        st.session_state.zip_image_source_bytes = None
-        st.session_state.last_processed_files = "empty"
-        st.session_state.intersection_sids = set()
-        st.session_state.intersection_count = 0
-        st.session_state.grid_page = 0
-        st.session_state.pop("_grid_page_contexts", None)
-        st.session_state.pop("_grid_last_ctx", None)
-        st.session_state.pop("_grid_review_data_cache", None)
-        st.session_state.pop("_grid_warm_urls", None)
-        _dead_keys = [k for k in st.session_state.keys() if k.startswith(("quick_rej_", "grid_chk_", "toast_", "_sf_"))]
-        for k in _dead_keys: del st.session_state[k]
-        st.session_state.uploader_key += 1
-        st.rerun()
+    if not st.session_state.confirm_clear_files:
+        if st.button("✕ Clear all files", key="clear_files_btn", type="secondary", help="Remove all uploaded files and reset the tool"):
+            st.session_state.confirm_clear_files = True
+            st.rerun()
+    else:
+        st.warning("This will remove all uploaded files and the current report. This can't be undone.")
+        _cc1, _cc2 = st.columns(2)
+        with _cc1:
+            if st.button("Yes, clear everything", key="confirm_clear_files_btn", type="primary", width='stretch'):
+                st.session_state.confirm_clear_files = False
+                _reset_report_state(clear_uploaded_files=True, clear_zip_cache=True, extra_key_prefixes=("_sf_",))
+                st.session_state.last_processed_files = "empty"
+                st.session_state.uploader_key += 1
+                st.rerun()
+        with _cc2:
+            if st.button("Cancel", key="cancel_clear_files_btn", width='stretch'):
+                st.session_state.confirm_clear_files = False
+                st.rerun()
 
 uploaded_files = st.file_uploader("Upload files", type=["csv", "xlsx", "zip"], accept_multiple_files=True, key=f"daily_files_{st.session_state.uploader_key}", label_visibility="collapsed")
 
@@ -3274,14 +3543,8 @@ elif uploaded_files is not None and len(uploaded_files) == 0 and st.session_stat
     _prev_uploader_key = st.session_state.get("_last_uploader_key", -1)
     _curr_uploader_key = st.session_state.uploader_key
     if _prev_uploader_key == _curr_uploader_key:
-        st.session_state.cached_uploaded_files = []
-        st.session_state.final_report = pd.DataFrame()
-        st.session_state.all_data_map = pd.DataFrame()
-        st.session_state.all_data_rows = pd.DataFrame()
-        st.session_state.file_mode = None
-        st.session_state.exports_cache = {}
-        st.session_state.display_df_cache = {}
-        st.session_state.zip_image_store = {}
+        _reset_report_state(clear_uploaded_files=True, clear_zip_cache=True)
+        st.session_state.last_processed_files = "empty"
         st.session_state._uploader_had_files = False
 st.session_state._last_uploader_key = st.session_state.uploader_key
 
@@ -3289,48 +3552,42 @@ _large_file_threshold = 5_000
 _large_file_skip_validations = [
     "Image Stretched", "Image Blurry", "Image Mismatch", "Image Infringing", "Image Too Many things displayed",
 ]
-_total_estimated_rows = 0
-for _fc in st.session_state.get("cached_uploaded_files", []):
-    try:
-        _peek = BytesIO(_fc["bytes"])
-        _name_lower = _fc["name"].lower()
-        if _name_lower.endswith(".zip"):
-            with zipfile.ZipFile(_peek) as _zf:
-                _qc_info = next((info for info in _zf.infolist() if "qc_results" in info.filename.lower() and info.filename.lower().endswith((".xlsx", ".xls", ".csv"))), None)
-                if _qc_info:
-                    if _qc_info.filename.lower().endswith(".csv"): _total_estimated_rows += _zf.read(_qc_info).count(b"\n")
-                    else: _total_estimated_rows += max(1, _qc_info.file_size // 500)
-                else: _total_estimated_rows += max(1, len(_fc["bytes"]) // 500)
-        elif _name_lower.endswith(".xlsx"):
-            _total_estimated_rows += pd.read_excel(_peek, engine="openpyxl", nrows=1, dtype=str).shape[0]
-            _total_estimated_rows += max(0, len(_fc["bytes"]) // 500 - 1)
-        else:
-            _total_estimated_rows += _fc["bytes"].count(b"\n")
-    except Exception:
-        pass
-
-if _total_estimated_rows > _large_file_threshold:
-    st.info(f"**Large file detected** (~{_total_estimated_rows:,} rows estimated) — validation may take 30–60 seconds. Image checks run in parallel to keep things fast.", icon=":material/hourglass_top:")
 
 _files_for_processing = st.session_state.get("cached_uploaded_files", [])
 process_signature = (str(sorted([f["name"] + hashlib.md5(f["bytes"]).hexdigest() for f in _files_for_processing])) + f"_{country_validator.code}" if _files_for_processing else "empty")
 
+# Row-count estimation re-opens every uploaded ZIP/Excel file, so only redo it
+# when the uploaded file set actually changes rather than on every rerun (click,
+# keystroke, etc. all trigger a Streamlit rerun of this whole script).
+if st.session_state.get("_row_estimate_sig") != process_signature:
+    _total_estimated_rows = 0
+    for _fc in _files_for_processing:
+        try:
+            _peek = BytesIO(_fc["bytes"])
+            _name_lower = _fc["name"].lower()
+            if _name_lower.endswith(".zip"):
+                with zipfile.ZipFile(_peek) as _zf:
+                    _qc_info = next((info for info in _zf.infolist() if "qc_results" in info.filename.lower() and info.filename.lower().endswith((".xlsx", ".xls", ".csv"))), None)
+                    if _qc_info:
+                        if _qc_info.filename.lower().endswith(".csv"): _total_estimated_rows += _zf.read(_qc_info).count(b"\n")
+                        else: _total_estimated_rows += max(1, _qc_info.file_size // 500)
+                    else: _total_estimated_rows += max(1, len(_fc["bytes"]) // 500)
+            elif _name_lower.endswith(".xlsx"):
+                _total_estimated_rows += pd.read_excel(_peek, engine="openpyxl", nrows=1, dtype=str).shape[0]
+                _total_estimated_rows += max(0, len(_fc["bytes"]) // 500 - 1)
+            else:
+                _total_estimated_rows += _fc["bytes"].count(b"\n")
+        except Exception:
+            pass
+    st.session_state._row_estimate_sig = process_signature
+    st.session_state._row_estimate_cache = _total_estimated_rows
+
+_total_estimated_rows = st.session_state.get("_row_estimate_cache", 0)
+if _total_estimated_rows > _large_file_threshold:
+    st.info(f"**Large file detected** (~{_total_estimated_rows:,} rows estimated) — validation may take 30–60 seconds. Image checks run in parallel to keep things fast.", icon=":material/hourglass_top:")
+
 if st.session_state.get("last_processed_files") != process_signature:
-    st.session_state.final_report = pd.DataFrame()
-    st.session_state.all_data_map = pd.DataFrame()
-    st.session_state.all_data_rows = pd.DataFrame()
-    st.session_state.file_mode = None
-    st.session_state.intersection_sids = set()
-    st.session_state.intersection_count = 0
-    st.session_state.grid_page = 0
-    st.session_state.pop("_grid_page_contexts", None)
-    st.session_state.pop("_grid_last_ctx", None)
-    st.session_state.exports_cache = {}
-    st.session_state.display_df_cache = {}
-    st.session_state.pop("_grid_review_data_cache", None)
-    st.session_state.pop("_grid_warm_urls", None)
-    keys_to_delete = [k for k in st.session_state.keys() if k.startswith(("quick_rej_", "grid_chk_", "toast_"))]
-    for k in keys_to_delete: del st.session_state[k]
+    _reset_report_state()
 
     if process_signature == "empty":
         st.session_state.last_processed_files = "empty"
@@ -3474,6 +3731,45 @@ if st.session_state.get("last_processed_files") != process_signature:
                         if len(det_names) > 1 or (det_names and det_names[0] != country_validator.country):
                             st.toast(f"Multiple countries detected: {', '.join(det_names)}", icon=":material/info:")
 
+                        # ── Country mismatch guard ─────────────────────────────
+                        # filter_by_country only hard-stops when ZERO rows match.
+                        # If the file is dominated by another country but a few
+                        # rows match the selected one, we'd silently validate a
+                        # tiny slice and the user would never know. Block and ask.
+                        _code_to_name = {"KE": "Kenya", "UG": "Uganda", "NG": "Nigeria", "GH": "Ghana",
+                                         "MA": "Morocco", "EG": "Egypt", "SN": "Senegal", "CI": "Ivory Coast"}
+                        if ("ACTIVE_STATUS_COUNTRY" in data_prop.columns
+                                and st.session_state.get("_country_override_sig") != process_signature):
+                            _cc = data_prop["ACTIVE_STATUS_COUNTRY"].astype(str).str.strip().str.upper().value_counts()
+                            if len(_cc):
+                                _dom_code = _cc.index[0]
+                                _dom_share = _cc.iloc[0] / max(len(data_prop), 1)
+                                _dom_name = _code_to_name.get(_dom_code)
+                                _sel_share = len(data_filtered) / max(len(data_prop), 1)
+                                if (_dom_name and _dom_name != country_validator.country
+                                        and _dom_share >= 0.5 and _sel_share < 0.5):
+                                    _status.update(label="Country mismatch detected", state="error", expanded=True)
+                                    st.warning(
+                                        f"This file looks like **{_dom_name}** — {_cc.iloc[0]:,} of {len(data_prop):,} rows "
+                                        f"say `{_dom_code}`, but you selected **{country_validator.country}** "
+                                        f"(only {len(data_filtered):,} matching rows would be validated).",
+                                        icon=":material/flag:",
+                                    )
+                                    _g1, _g2 = st.columns(2)
+                                    with _g1:
+                                        if st.button(f"Switch to {_dom_name} and Reprocess", type="primary",
+                                                     icon=":material/swap_horiz:", key="cmg_switch"):
+                                            st.session_state.selected_country = _dom_name
+                                            set_country_pref(_dom_name)
+                                            st.session_state.country_bridge_counter += 1
+                                            st.rerun()
+                                    with _g2:
+                                        if st.button(f"Process as {country_validator.country} anyway "
+                                                     f"({len(data_filtered):,} rows)", key="cmg_continue"):
+                                            st.session_state._country_override_sig = process_signature
+                                            st.rerun()
+                                    st.stop()
+
                         actual_counts = data_filtered.groupby("PRODUCT_SET_SID")["PRODUCT_SET_SID"].transform("count")
                         if "COUNT_VARIATIONS" in data_filtered.columns:
                             file_counts = pd.to_numeric(data_filtered["COUNT_VARIATIONS"], errors="coerce").fillna(1)
@@ -3583,6 +3879,21 @@ if st.session_state.get("last_processed_files") != process_signature:
                                 for _name, _cat in zip(valid_learning["NAME"], valid_learning["CATEGORY"]):
                                     engine.apply_learned_correction(str(_name).strip(), str(_cat).strip(), auto_save=False)
                                     _learned_count += 1
+
+                                # Negative learning: category-rejected rows teach the
+                                # engine which (name, category) pairings a human said NO
+                                # to — those categories are never re-suggested, and
+                                # re-listings under them get auto-flagged.
+                                if "Category_Check_Status" in status_cols and {"NAME", "CATEGORY"}.issubset(qc_zip.columns):
+                                    _cat_rej_sids = set(rejected_entries.loc[rejected_entries["col"] == "Category_Check_Status", _sid_col_qc])
+                                    if _cat_rej_sids:
+                                        _rej_rows = qc_zip[qc_zip[_sid_col_qc].isin(_cat_rej_sids)]
+                                        _rsn_series = (_rej_rows["Category_Check_Rejection_Reason"]
+                                                       if "Category_Check_Rejection_Reason" in qc_zip.columns
+                                                       else pd.Series([""] * len(_rej_rows), index=_rej_rows.index))
+                                        for _name, _cat, _rsn in zip(_rej_rows["NAME"], _rej_rows["CATEGORY"], _rsn_series):
+                                            engine.add_negative_correction(str(_name).strip(), str(_cat).strip(), str(_rsn).strip(), auto_save=False)
+                                            _learned_count += 1
 
                             qc_zip_indexed = qc_zip.set_index(_sid_col_qc)
                             for mrow in rejected_entries.to_dict("records"):
@@ -3823,8 +4134,10 @@ if st.session_state.get("last_processed_files") != process_signature:
                         _status.update(label=f"Done — {_app_count:,} approved, {_rej_count:,} rejected", state="complete", expanded=False)
 
             except Exception as e:
-                st.error(f"Processing error: {e}")
-                st.code(traceback.format_exc())
+                logger.exception("Processing error while validating uploaded file(s)")
+                st.error(f"Something went wrong while processing your file(s): {e}\n\nTry re-uploading the file, or contact support if this keeps happening.")
+                with st.expander("Technical details (for support)", expanded=False):
+                    st.code(traceback.format_exc())
                 st.session_state.last_processed_files = "error"
 
 @st.fragment
@@ -3913,6 +4226,47 @@ def get_enriched_results(fr_df, data_df):
     if fr_df.empty: return pd.DataFrame()
     return pd.merge(fr_df, data_df[["PRODUCT_SET_SID", "SELLER_NAME", "BRAND"]], left_on="ProductSetSid", right_on="PRODUCT_SET_SID", how="left")
 
+
+@st.cache_data(show_spinner=False, hash_funcs={pd.DataFrame: df_hash})
+def _build_dashboard_figures(fr_meta: pd.DataFrame, manual_hours: float):
+    """Builds the dashboard's aggregates/plotly figures. Cached (keyed on the cheap
+    df_hash signature, not a full-object hash) so repeated fragment reruns — e.g. a
+    keystroke in Quick SID Lookup — don't rebuild a groupby + 5 charts every time
+    the underlying data hasn't actually changed."""
+    app_df = fr_meta[fr_meta["Status"] == "Approved"]
+    rej_df = fr_meta[fr_meta["Status"] == "Rejected"]
+
+    fig_bar = None
+    if not app_df.empty or not rej_df.empty:
+        cat_stats = fr_meta.groupby("BRAND")["Status"].value_counts(normalize=True).unstack().fillna(0)
+        if "Approved" in cat_stats.columns:
+            top_cats = cat_stats.sort_values("Approved", ascending=False).head(10)
+            fig_bar = px.bar(top_cats, y=top_cats.index, x="Approved", orientation="h", title="Top 10 Brands by Approval Rate", labels={"Approved": "Approval Rate"}, color_discrete_sequence=[JUMIA_COLORS["success_green"]])
+            fig_bar.update_layout(height=300, margin=dict(t=30, l=10, r=10, b=10))
+
+    mix_df = pd.DataFrame({"Status": ["Approved", "Rejected"], "Count": [len(app_df), len(rej_df)]})
+    fig_mix = px.pie(mix_df, values="Count", names="Status", hole=0.5, color="Status", color_discrete_map={"Approved": "#22c55e", "Rejected": "#ef4444"}, title="Validation Mix")
+    fig_mix.update_layout(showlegend=False, margin=dict(t=40, b=0, l=0, r=0), height=280)
+
+    fig_flags = None
+    if not rej_df.empty:
+        flag_counts = rej_df["FLAG"].value_counts().head(8).reset_index()
+        flag_counts.columns = ["Flag", "Count"]
+        fig_flags = px.bar(flag_counts, x="Count", y="Flag", orientation="h", title="Top Issues Breakdown", color="Count", color_continuous_scale="Reds")
+        fig_flags.update_layout(showlegend=False, margin=dict(t=40, b=0, l=0, r=0), height=280, yaxis={"categoryorder": "total ascending"}, coloraxis_showscale=False)
+
+    fig_seller = None
+    if not rej_df.empty:
+        seller_rej = rej_df["SELLER_NAME"].value_counts().head(10).reset_index()
+        seller_rej.columns = ["Seller", "Rejections"]
+        fig_seller = px.bar(seller_rej, x="Rejections", y="Seller", orientation="h", title="Sellers at Risk (Rejection Count)", color="Rejections", color_continuous_scale="Oranges")
+        fig_seller.update_layout(margin=dict(t=40, b=0, l=0, r=0), height=300, yaxis={"categoryorder": "total ascending"}, coloraxis_showscale=False)
+
+    fig_savings = go.Figure(go.Indicator(mode="gauge+number", value=manual_hours, title={"text": "Hours Saved (Estimate)", "font": {"size": 14}}, gauge={"axis": {"range": [None, max(manual_hours * 1.5, 10)]}, "bar": {"color": "#00e5b0"}, "steps": [{"range": [0, manual_hours * 0.5], "color": "rgba(0,229,176,0.1)"}, {"range": [manual_hours * 0.5, manual_hours], "color": "rgba(0,229,176,0.2)"}]}))
+    fig_savings.update_layout(height=300, margin=dict(t=60, b=20, l=30, r=30))
+
+    return len(app_df), len(rej_df), fig_bar, fig_mix, fig_flags, fig_seller, fig_savings
+
 @st.fragment
 def render_main_results():
     if not _files_for_processing or st.session_state.final_report.empty or st.session_state.file_mode == "post_qc":
@@ -3932,49 +4286,29 @@ def render_main_results():
     with st.expander(_t("dashboard"), expanded=False):
         total_count = len(fr)
         auto_count = len(fr[fr["FLAG"] != "Manual review"])
-        auto_rate = (auto_count / total_count * 100) if total_count > 0 else 0
-        app_rate = (len(app_df) / total_count * 100) if total_count > 0 else 0
-        rej_rate = (len(rej_df) / total_count * 100) if total_count > 0 else 0
         manual_hours = (auto_count * 3) / 60
 
         render_summary_header(fr)
+        app_n, rej_n, fig_bar, fig_mix, fig_flags, fig_seller, fig_savings = _build_dashboard_figures(fr_meta, manual_hours)
         g1, g2 = st.columns(2)
         with g1:
-            if not rej_df.empty: render_rejection_donut(fr)
+            if rej_n: render_rejection_donut(fr)
             else: st.info("No rejections to visualize.")
         with g2:
-            if not app_df.empty or not rej_df.empty:
-                cat_stats = fr_meta.groupby("BRAND")["Status"].value_counts(normalize=True).unstack().fillna(0)
-                if "Approved" in cat_stats.columns:
-                    top_cats = cat_stats.sort_values("Approved", ascending=False).head(10)
-                    fig_bar = px.bar(top_cats, y=top_cats.index, x="Approved", orientation="h", title="Top 10 Brands by Approval Rate", labels={"Approved": "Approval Rate"}, color_discrete_sequence=[JUMIA_COLORS["success_green"]])
-                    fig_bar.update_layout(height=300, margin=dict(t=30, l=10, r=10, b=10))
-                    st.plotly_chart(fig_bar, width='stretch', config={"displayModeBar": False})
+            if fig_bar is not None:
+                st.plotly_chart(fig_bar, width='stretch', config={"displayModeBar": False})
         with g1:
-            mix_df = pd.DataFrame({"Status": ["Approved", "Rejected"], "Count": [len(app_df), len(rej_df)]})
-            fig_mix = px.pie(mix_df, values="Count", names="Status", hole=0.5, color="Status", color_discrete_map={"Approved": "#22c55e", "Rejected": "#ef4444"}, title="Validation Mix")
-            fig_mix.update_layout(showlegend=False, margin=dict(t=40, b=0, l=0, r=0), height=280)
             st.plotly_chart(fig_mix, width='stretch', config={"displayModeBar": False})
         with g2:
-            if not rej_df.empty:
-                flag_counts = rej_df["FLAG"].value_counts().head(8).reset_index()
-                flag_counts.columns = ["Flag", "Count"]
-                fig_flags = px.bar(flag_counts, x="Count", y="Flag", orientation="h", title="Top Issues Breakdown", color="Count", color_continuous_scale="Reds")
-                fig_flags.update_layout(showlegend=False, margin=dict(t=40, b=0, l=0, r=0), height=280, yaxis={"categoryorder": "total ascending"}, coloraxis_showscale=False)
+            if fig_flags is not None:
                 st.plotly_chart(fig_flags, width='stretch', config={"displayModeBar": False})
             else: st.info("No rejections to visualize.")
 
         s1, s2 = st.columns(2)
         with s1:
-            if not rej_df.empty:
-                seller_rej = rej_df["SELLER_NAME"].value_counts().head(10).reset_index()
-                seller_rej.columns = ["Seller", "Rejections"]
-                fig_seller = px.bar(seller_rej, x="Rejections", y="Seller", orientation="h", title="Sellers at Risk (Rejection Count)", color="Rejections", color_continuous_scale="Oranges")
-                fig_seller.update_layout(margin=dict(t=40, b=0, l=0, r=0), height=300, yaxis={"categoryorder": "total ascending"}, coloraxis_showscale=False)
+            if fig_seller is not None:
                 st.plotly_chart(fig_seller, width='stretch', config={"displayModeBar": False})
         with s2:
-            fig_savings = go.Figure(go.Indicator(mode="gauge+number", value=manual_hours, title={"text": "Hours Saved (Estimate)", "font": {"size": 14}}, gauge={"axis": {"range": [None, max(manual_hours * 1.5, 10)]}, "bar": {"color": "#00e5b0"}, "steps": [{"range": [0, manual_hours * 0.5], "color": "rgba(0,229,176,0.1)"}, {"range": [manual_hours * 0.5, manual_hours], "color": "rgba(0,229,176,0.2)"}]}))
-            fig_savings.update_layout(height=300, margin=dict(t=60, b=20, l=30, r=30))
             st.plotly_chart(fig_savings, width='stretch', config={"displayModeBar": False})
 
     ut = st.session_state.get("show_undo_toast")
@@ -4004,7 +4338,12 @@ def render_main_results():
                 with v_cols[1]:
                     st.write(f"**Name:** {r.get('NAME')}")
                     st.write(f"**Brand:** {r.get('BRAND')}")
-                    st.write(f"**Current Status:** {fr[fr['ProductSetSid'] == search_sid.strip()]['Status'].iloc[0]}")
+                    # Normalize the same way as the `data` lookup above (str + strip)
+                    # so a type/whitespace mismatch in ProductSetSid can't crash this
+                    # with an IndexError from .iloc[0] on an empty match.
+                    _fr_match = fr[fr["ProductSetSid"].astype(str).str.strip() == search_sid.strip()]
+                    _status_display = _fr_match["Status"].iloc[0] if not _fr_match.empty else "Unknown (not found in report)"
+                    st.write(f"**Current Status:** {_status_display}")
                     if st.button("Approve Now", key="quick_app"):
                         apply_status_change([search_sid], status="Approved", flag="Manual Quick Approve")
                         st.rerun()

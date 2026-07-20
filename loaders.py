@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import uuid
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -18,6 +19,14 @@ logger = logging.getLogger(__name__)
 
 # Module-level cache for compiled regex patterns (avoids re-compilation cost)
 _REGEX_CACHE: dict = {}
+
+
+def _atomic_to_parquet(df: pd.DataFrame, pq_path: str) -> None:
+    """Write a parquet cache file atomically (temp file + rename) so concurrent
+    thread-pool workers rebuilding the same cache can't corrupt it for each other."""
+    tmp_path = f"{pq_path}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    df.to_parquet(tmp_path)
+    os.replace(tmp_path, pq_path)
 
 COUNTRY_TABS = ["KE", "UG", "NG", "GH", "MA"]
 COUNTRY_NAME_TO_TAB = {
@@ -62,12 +71,12 @@ def load_excel_file(filename: str, column: Optional[str] = None):
                 df = pd.read_excel(filename, engine="openpyxl", dtype=str)
                 df.columns = df.columns.astype(str).str.strip()
                 os.makedirs(PARQUET_CACHE_DIR, exist_ok=True)
-                df.to_parquet(pq_path)
+                _atomic_to_parquet(df, pq_path)
         else:
             df = pd.read_excel(filename, engine="openpyxl", dtype=str)
             df.columns = df.columns.astype(str).str.strip()
             os.makedirs(PARQUET_CACHE_DIR, exist_ok=True)
-            df.to_parquet(pq_path)
+            _atomic_to_parquet(df, pq_path)
             
         if column and column in df.columns:
             return df[column].apply(clean_category_code).tolist()
@@ -105,7 +114,7 @@ def safe_excel_read(filename: str, sheet_name, usecols=None) -> pd.DataFrame:
         try:
             os.makedirs(PARQUET_CACHE_DIR, exist_ok=True)
             df.columns = df.columns.astype(str)
-            df.to_parquet(pq_path)
+            _atomic_to_parquet(df, pq_path)
         except Exception as cache_e:
             logger.warning(f"Failed to cache {pq_path}: {cache_e}")
             
@@ -794,6 +803,14 @@ def load_flags_mapping(filename="reason.xlsx") -> Dict[str, dict]:
             "1000007 - Other Reason",
             "Brand name should not be repeated in product name.",
         ),
+        "Brand Image Mismatch": (
+            "1000042 - Kindly follow our product image upload guideline.",
+            "The brand detected on the product image does not match the declared brand. Kindly confirm the correct brand or update the product image.",
+        ),
+        "Off-Platform Contact": (
+            "1000033 - Keywords in your content/ Product name / description has been blacklisted",
+            "The product name/description appears to contain a phone number, WhatsApp link, website, or wording directing buyers off-platform. Kindly remove all off-platform contact details.",
+        ),
     }
 
     default_mapping = {
@@ -834,7 +851,7 @@ def load_flags_mapping(filename="reason.xlsx") -> Dict[str, dict]:
         "سعر المنتج الحالي يختلف بشكل ملحوظ عن متوسط السوق.\n"
         "يرجى مراجعة السعر وتحديثه، أو في حال كنت ترى أن السعر صحيح، يمكنك تقديم طلب مراجعة (Claim) مع تقديم ما يثبت ذلك."
     )
-    for flag_key in ("Wrong Price", "Category Max Price Exceeded"):
+    for flag_key in ("Wrong Price", "Category Max Price Exceeded", "Discount too high", "Suspicious Discount"):
         default_mapping[flag_key] = {
             "reason": pricing_reason_code,
             "en": pricing_en,
@@ -886,12 +903,23 @@ def load_flags_mapping(filename="reason.xlsx") -> Dict[str, dict]:
                     )
                 }
                 if custom_mapping:
-                    ng_keys = {
-                        k: v
-                        for k, v in default_mapping.items()
-                        if k.startswith("NG - ")
-                    }
-                    return {**custom_mapping, **ng_keys}
+                    # Merge on top of default_mapping instead of replacing it —
+                    # reason.xlsx has historically covered only a subset of the
+                    # flags the app can actually produce (e.g. it was missing
+                    # "Perfume Tester", "Suspected Fake Perfume", "Title Language
+                    # Check", and used "Discount too High" where the code looks
+                    # up "Discount too high"). Any flag the spreadsheet doesn't
+                    # cover now keeps its code-defined default instead of
+                    # silently falling back to generic "Other Reason" text.
+                    # Case-insensitive match so spreadsheet casing typos (like
+                    # the "High"/"high" example above) still land on the
+                    # correct canonically-cased key the app looks up by.
+                    merged = dict(default_mapping)
+                    lower_to_canonical = {k.lower(): k for k in merged}
+                    for flag, info in custom_mapping.items():
+                        canonical = lower_to_canonical.get(flag.lower(), flag)
+                        merged[canonical] = info
+                    return merged
     except Exception as e:
         logger.warning(f"load_flags_mapping({filename}): {e}")
 
