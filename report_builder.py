@@ -289,8 +289,21 @@ def build_docx_report(
                     )
                     issue_num += 1
                     doc.add_paragraph(f"These {len(sub)} product(s) {_VERDICT_INTRO[verdict]}")
-                    cols = _doc_columns(check_key, sub)
-                    _add_table(doc, cols, sub[cols].values.tolist(), widths_in=_widths_for(cols))
+                    # AI Error cases (gateway timeouts, bad responses, image
+                    # extraction failures) can number in the hundreds on a
+                    # rough run and are rarely individually actionable — the
+                    # useful signal is the total count above and a couple of
+                    # sample rows, not a full table. Capping keeps the report
+                    # a normal size instead of ballooning on a bad-connection day.
+                    _AI_ERROR_EXAMPLE_CAP = 2
+                    table_rows = sub.head(_AI_ERROR_EXAMPLE_CAP) if verdict == "AI Error" else sub
+                    cols = _doc_columns(check_key, table_rows)
+                    _add_table(doc, cols, table_rows[cols].values.tolist(), widths_in=_widths_for(cols))
+                    if verdict == "AI Error" and len(sub) > _AI_ERROR_EXAMPLE_CAP:
+                        doc.add_paragraph(
+                            f"...showing {_AI_ERROR_EXAMPLE_CAP} of {len(sub)} example(s). "
+                            "The remaining cases follow the same pattern and are omitted here to keep this report a manageable size."
+                        )
                     doc.add_paragraph()
 
     if not any_issue:

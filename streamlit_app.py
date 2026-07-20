@@ -4524,6 +4524,18 @@ def render_main_results():
                     _fr_match = fr[fr["ProductSetSid"].astype(str).str.strip() == search_sid.strip()]
                     _status_display = _fr_match["Status"].iloc[0] if not _fr_match.empty else "Unknown (not found in report)"
                     st.write(f"**Current Status:** {_status_display}")
+
+                    if _status_display == "Rejected" and not _fr_match.empty:
+                        _rej_row = _fr_match.iloc[0]
+                        _flag = str(_rej_row.get("FLAG", "")).strip()
+                        _reason_code = str(_rej_row.get("Reason", "")).strip()
+                        _comment = str(_rej_row.get("Comment", "")).strip()
+                        st.error(f"**Rejection Reason:** {_flag or 'Unknown'}")
+                        if _reason_code and _reason_code.lower() not in ("nan", "none", ""):
+                            st.caption(f"Reason Code: {_reason_code}")
+                        if _comment and _comment.lower() not in ("nan", "none", "", "manual rejection", "rejected"):
+                            st.write(f"**Details:** {_comment}")
+
                     if st.button("Approve Now", key="quick_app"):
                         apply_status_change([search_sid], status="Approved", flag="Manual Quick Approve")
                         st.rerun()
