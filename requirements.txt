@@ -12,7 +12,7 @@ plotly
 imagehash
 opencv-python-headless
 st-styled
-orjson==3.10.3
+orjson
 polars>=0.20.0
 fastapi
 uvicorn[standard]
