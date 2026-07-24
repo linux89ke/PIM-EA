@@ -32,7 +32,15 @@ st.set_page_config(
 # SIDEBAR
 # ─────────────────────────────────────────────────────────────────────────────
 GATEWAY_API_KEY = "jvk_pQ7d0kw8FKwDnlwUzPaV7-IGo6IbT0dAp-vea4hPK2ckB4jPJnHIGctBrwUfIkt5"
-master_rule_file = "QC Check Validaton  (2).xlsx"
+master_rule_file = "QC Check Validaton  (3).xlsx"
+
+# Country code to Excel sheet mapping
+COUNTRY_SHEET_MAP = {
+    "ke": "Mandatory Attributes - KE",
+    "ug": "Mandatory Attributes - UG",
+    "sn": "Mandatory Attributes - French",  # Senegal
+    "ci": "Mandatory Attributes - French",  # Ivory Coast
+}
 
 with st.sidebar:
     st.header("QC Audit Report")
@@ -245,8 +253,15 @@ with st.spinner("Extracting all AI failures and rule bypasses..."):
         country_code = chosen.lower()
         df_raw = df_raw[df_raw[country_col].str.upper() == chosen].copy()
 
-    country_label = "Kenya" if country_code == "ke" else "Uganda"
-    sheet_name = f"Mandatory Attributes - {country_code.upper()}"
+    # Map country code to country label and sheet name
+    country_labels = {
+        "ke": "Kenya",
+        "ug": "Uganda",
+        "sn": "Senegal",
+        "ci": "Ivory Coast",
+    }
+    country_label = country_labels.get(country_code, country_code.upper())
+    sheet_name = COUNTRY_SHEET_MAP.get(country_code, f"Mandatory Attributes - {country_code.upper()}")
     report_date = date.today().strftime("%d %B %Y").lstrip("0")
 
     try:
@@ -550,7 +565,7 @@ with st.container(border=True):
 
                 # Section 1: Dashboard
                 _add_section_heading(doc, "1. Dashboard")
-                _add_body(doc, f"On {report_date}, the automated QC system processed {total:,} catalog entries for Jumia {country_label}. Of these, {cat_approved:,} were approved for category alignment, {cat_rejected:,} were rejected, and {duplicates:,} were flagged as duplicates.")
+                _add_body(doc, f"On {report_date}, the automated QC system processed {total:,} catalog entries for Jumia {country_label}. Of these, {cat_approved:,} were approved for category alignment, and {cat_rejected:,} were rejected across ALL validation checks.")
                 
                 _add_metric_table(doc, [
                     {"label": "Total SKUs", "value": total, "color": _C["dark_blue"]},
