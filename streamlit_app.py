@@ -82,12 +82,15 @@ from data_utils import (
     _get_image_from_zip,
     _normalize_series,
     _repair_mojibake,
+    MANUAL_DECISION_PREFIX,
+    apply_manual_decisions,
     clean_category_code,
     create_match_key,
     create_match_key_vectorized,
     df_hash,
     filter_by_country,
     load_df_parquet,
+    load_manual_decisions,
     propagate_metadata,
     save_df_parquet,
     standardize_input_data,
@@ -119,6 +122,7 @@ from pricing_rules import (
 from translations import LANGUAGES, get_translation
 from ui_components import (
     apply_status_change,
+    checkpoint_final_report,
     flag_pill_header,
     render_exports_section,
     render_flag_expander,
@@ -589,6 +593,10 @@ def prune_cache_dir(directory: str, max_files: int = 500, max_age_days: int = 7)
         files = []
         for p in patterns:
             files.extend(list(Path(directory).glob(p)))
+        # Manual decision journals are never pruned: they hold the only copy of
+        # work a human did by hand, which no amount of recomputation can rebuild.
+        # Everything else here is a derived cache and is safe to discard.
+        files = [f for f in files if not f.name.startswith(MANUAL_DECISION_PREFIX)]
 
         for f in files:
             if (now - f.stat().st_mtime) > max_age_days * 86400:
@@ -597,6 +605,7 @@ def prune_cache_dir(directory: str, max_files: int = 500, max_age_days: int = 7)
         remaining = []
         for p in patterns:
             remaining.extend(list(Path(directory).glob(p)))
+        remaining = [f for f in remaining if not f.name.startswith(MANUAL_DECISION_PREFIX)]
         remaining.sort(key=os.path.getmtime)
 
         for f in remaining[:-max_files]:
@@ -605,8 +614,21 @@ def prune_cache_dir(directory: str, max_files: int = 500, max_age_days: int = 7)
         logger.warning(f"Cache pruning failed for {directory}: {e}")
 
 
-prune_cache_dir(FLAG_CACHE_DIR)
-prune_cache_dir(PARQUET_CACHE_DIR)
+@st.cache_resource(show_spinner=False)
+def _prune_caches_once() -> bool:
+    """Prune the on-disk caches once per process, not once per rerun.
+
+    Streamlit re-executes this whole script on every interaction, and pruning
+    globs + stats + sorts every file in both cache dirs (measured at ~68ms with
+    ~600 files) — pure overhead on every click. Housekeeping at startup is
+    enough; nothing here needs to react to files written mid-session.
+    """
+    prune_cache_dir(FLAG_CACHE_DIR)
+    prune_cache_dir(PARQUET_CACHE_DIR)
+    return True
+
+
+_prune_caches_once()
 
 
 class CountryValidator:
@@ -629,7 +651,7 @@ class CountryValidator:
 
 FLAG_RELEVANT_COLS = {
     "Wrong Category": ["NAME", "CATEGORY", "CATEGORY_CODE"],
-    "Restricted brands": ["NAME", "BRAND", "SELLER_NAME", "CATEGORY_CODE"],
+    "Restricted brands": ["NAME", "BRAND", "SELLER_NAME", "CATEGORY_CODE", "CATEGORY"],
     "Suspected Fake product": ["CATEGORY_CODE", "BRAND", "GLOBAL_SALE_PRICE", "GLOBAL_PRICE"],
     "Seller Not approved to sell Refurb": ["PRODUCT_SET_SID", "CATEGORY_CODE", "SELLER_NAME", "NAME"],
     "Product Warranty": ["PRODUCT_WARRANTY", "WARRANTY_DURATION", "CATEGORY_CODE"],
@@ -654,16 +676,16 @@ FLAG_RELEVANT_COLS = {
     "Missing COLOR": ["CATEGORY_CODE", "NAME", "COLOR"],
     "Missing Weight/Volume": ["CATEGORY_CODE", "NAME"],
     "Incomplete Smartphone Name": ["CATEGORY_CODE", "NAME"],
-    "Specs Inconsistency": ["CATEGORY_CODE", "NAME", "DESCRIPTION", "SHORT_DESCRIPTION"],
+    "Specs Inconsistency": ["CATEGORY_CODE", "NAME", "DESCRIPTION", "SHORT_DESCRIPTION", "CATEGORY"],
     "Brand Image Mismatch": ["BRAND", "NAME", "Brand_Detected_On_Product", "SELLER_NAME"],
     "Off-Platform Contact": ["NAME", "DESCRIPTION", "SHORT_DESCRIPTION", "SELLER_NAME"],
-    "Duplicate product": ["NAME", "SELLER_NAME", "BRAND", "CATEGORY_CODE"],
+    "Duplicate product": ["NAME", "SELLER_NAME", "BRAND", "CATEGORY_CODE", "COLOR", "COLOR_FAMILY", "MAIN_IMAGE"],
     "Perfume Tester": ["CATEGORY_CODE", "NAME"],
     "Discount too high": ["GLOBAL_PRICE", "GLOBAL_SALE_PRICE"],
     "Suspicious Discount": ["GLOBAL_PRICE", "GLOBAL_SALE_PRICE"],
     "Poor images": ["MAIN_IMAGE"],
-    "Image Stretched": ["MAIN_IMAGE"],
-    "Image Blurry": ["MAIN_IMAGE"],
+    "Image Stretched": ["MAIN_IMAGE", "NAME", "BRAND"],
+    "Image Blurry": ["MAIN_IMAGE", "NAME", "BRAND"],
     "Image Mismatch": ["MAIN_IMAGE"],
     "Image Infringing": ["MAIN_IMAGE"],
     "Image Too Many things displayed": ["MAIN_IMAGE"],
@@ -676,25 +698,103 @@ FLAG_RELEVANT_COLS = {
     "NG - Rice Brand Seller": ["CATEGORY_CODE", "BRAND", "SELLER_NAME"],
     "Powerbank Not Authorized": ["CATEGORY_CODE", "NAME", "BRAND"],
     "GH - Smart Glasses with Camera": ["NAME", "CATEGORY_CODE"],
+    "ALL CAPS Product Name": ["NAME"],
+    "Product Name Too Short": ["NAME"],
+    "Variation Name Mismatch": ["NAME"],
+    "Prohibited products": ["NAME", "CATEGORY_CODE"],
+    "FDA": ["CATEGORY_CODE"],
+    # Deliberately NOT listed, so they fall back to hashing the whole frame:
+    #   "KEBS Banned Products", "KEBS FDA", "MA - Marque Interdite"
+    # Their checks live in other modules and were not audited here; guessing
+    # a narrow column set for them would risk serving stale QC verdicts.
 }
 
 
-def compute_flag_input_hash(data: pd.DataFrame, flag_name: str, kwargs: dict) -> str:
-    cols = FLAG_RELEVANT_COLS.get(flag_name, data.columns.tolist())
-    available_cols = [c for c in cols if c in data.columns]
-    if not available_cols:
-        return "empty"
-    df_hash_str = df_hash(data[available_cols])
-    kwargs_repr = ""
-    _skip_keys = {"categories_list", "cat_path_to_code", "code_to_path"}
-    for k, v in kwargs.items():
-        if k == "data" or k in _skip_keys:
-            continue
-        if isinstance(v, pd.DataFrame):
-            kwargs_repr += df_hash(v)
-        else:
-            kwargs_repr += repr(v)
-    return hashlib.md5((df_hash_str + kwargs_repr).encode()).hexdigest()
+# Bump when the cache-key scheme changes, so pickles written by an older scheme
+# can never be read back under a key that now means something different.
+FLAG_CACHE_KEY_VERSION = "fk2"
+
+# Columns every check implicitly depends on: results are keyed by SID, and the
+# row set itself is part of a check's input.
+_ALWAYS_RELEVANT_COLS = ("PRODUCT_SET_SID",)
+
+
+class _ColumnDigests:
+    """Per-column content digests for one DataFrame, computed at most once each.
+
+    Hashing each flag's column subset independently would re-hash shared columns
+    dozens of times (NAME alone is used by ~20 checks). Hashing each column once
+    and composing per-flag keys from those digests costs about the same as the
+    single whole-frame hash it replaces.
+    """
+
+    def __init__(self, df: pd.DataFrame):
+        self._df = df
+        self._cols: Dict[str, str] = {}
+        self._whole: Optional[str] = None
+
+    def _column(self, col: str) -> str:
+        if col not in self._cols:
+            if col in self._df.columns:
+                try:
+                    self._cols[col] = hashlib.md5(
+                        pd.util.hash_pandas_object(self._df[col], index=False).values.tobytes()
+                    ).hexdigest()
+                except Exception:
+                    # Unhashable dtype (object columns holding dicts/lists) —
+                    # fall back to something conservative but still content-based.
+                    self._cols[col] = hashlib.md5(
+                        self._df[col].astype(str).str.cat(sep="\x1f").encode("utf-8", "replace")
+                    ).hexdigest()
+            else:
+                # Absent is itself meaningful: a check behaves differently when a
+                # column is missing, so it must not collide with "present".
+                self._cols[col] = "\x00absent"
+        return self._cols[col]
+
+    def signature(self, cols: Optional[List[str]]) -> str:
+        if cols is None:
+            # Whole-frame fallback for unmapped flags. Composed from the same
+            # per-column digests rather than df_hash(): df_hash memoises into
+            # df.attrs, and DataFrame.copy() carries attrs across, so a frame
+            # copied from an already-hashed one and then modified reports the
+            # ORIGINAL hash. Composing here is both correct and free for
+            # columns another flag already hashed.
+            if self._whole is None:
+                self._whole = hashlib.md5(
+                    "|".join(
+                        f"{c}={self._column(c)}" for c in sorted(self._df.columns)
+                    ).encode()
+                ).hexdigest()
+            return "ALL:" + self._whole
+        wanted = sorted(set(cols) | set(_ALWAYS_RELEVANT_COLS))
+        return "COLS:" + "|".join(f"{c}={self._column(c)}" for c in wanted)
+
+
+def flag_cache_path(
+    name: str,
+    digests: "_ColumnDigests",
+    country_code: str,
+    rules_sig: str,
+) -> str:
+    """Where this flag's result for this exact input is cached.
+
+    The key covers only the columns the check actually reads (per
+    FLAG_RELEVANT_COLS), so editing an unrelated column no longer invalidates
+    every flag. A flag with no mapping falls back to the whole-frame hash.
+
+    country_code is part of the key because several checks resolve
+    country-specific rule sets; without it, the same rows validated for a
+    different country could be served another country's verdicts.
+    """
+    key = "\x1e".join((
+        FLAG_CACHE_KEY_VERSION,
+        name,
+        country_code,
+        rules_sig,
+        digests.signature(FLAG_RELEVANT_COLS.get(name)),
+    ))
+    return os.path.join(FLAG_CACHE_DIR, f"{hashlib.md5(key.encode()).hexdigest()}.pkl")
 
 
 def run_cached_check(func, cache_path, ckwargs):
@@ -737,6 +837,10 @@ class _BoundedDict(OrderedDict):
 _IMAGE_DIM_CACHE = _BoundedDict(maxsize=5000)
 _IMAGE_HASH_CACHE = _BoundedDict(maxsize=5000)
 _IMAGE_DIM_LOCK = threading.Lock()
+# Staging area for the low-resolution advisory produced by check_image_blurry.
+# That check runs on a worker thread, where st.session_state writes are silently
+# dropped; validate_products drains this into session_state on the main thread.
+_IMAGE_BLURRY_COMMENTARY: dict = {}
 
 
 def _compute_phash(img_bytes: bytes) -> str:
@@ -877,8 +981,11 @@ def _fetch_all_image_dimensions(data: pd.DataFrame) -> dict:
 
     with _IMAGE_DIM_LOCK:
         for key, size, ph in results:
-            if size:
-                _IMAGE_DIM_CACHE[key] = size
+            # Record failures too. Without this, a URL that 404s or times out is
+            # absent from the cache, so it lands in `new_urls` again on the next
+            # run and is re-fetched with the full 6s timeout + 2 retries — every
+            # single validation, forever.
+            _IMAGE_DIM_CACHE[key] = size if size else None
             if ph:
                 _IMAGE_HASH_CACHE[key] = ph
     return _IMAGE_DIM_CACHE
@@ -894,7 +1001,13 @@ def check_image_stretched(data: pd.DataFrame, _image_cache: dict = None) -> pd.D
     url_data = _image_cache if _image_cache else _fetch_all_image_dimensions(target)
 
     url_issues = {}
-    for url, (w, h) in url_data.items():
+    # Only this dataset's URLs — _IMAGE_DIM_CACHE is process-wide and holds up
+    # to 5000 entries from earlier runs. A None value marks a fetch that failed.
+    for url in target["MAIN_IMAGE"].astype(str).unique():
+        dims = url_data.get(url)
+        if not dims:
+            continue
+        w, h = dims
         if w > 0:
             ratio = h / w
             if ratio > 1.5:
@@ -921,7 +1034,12 @@ def check_image_blurry(data: pd.DataFrame, _image_cache: dict = None) -> pd.Data
 
     reject_map = {}
     commentary_map = {}
-    for url, (w, h) in url_data.items():
+    # Only this dataset's URLs (see check_image_stretched); None = failed fetch.
+    for url in target["MAIN_IMAGE"].astype(str).unique():
+        dims = url_data.get(url)
+        if not dims:
+            continue
+        w, h = dims
         if w <= 200 and h <= 200:
             reject_map[url] = f"Image too small/blurry ({w}x{h}px) — below 200x200"
         elif w < 250 and h < 250:
@@ -929,18 +1047,19 @@ def check_image_blurry(data: pd.DataFrame, _image_cache: dict = None) -> pd.Data
                 f"Image resolution low ({w}x{h}px) — consider upgrading"
             )
 
-    try:
-        existing = st.session_state.get("_image_blurry_commentary", {})
+    # This runs on a validator worker thread, which has no Streamlit script run
+    # context — st.session_state there reads as empty and silently DISCARDS
+    # writes, so the low-resolution advisory was never populated. Stage it in a
+    # module-level dict; validate_products drains it on the main thread.
+    if commentary_map:
         sid_to_comment = {}
         for row in target.itertuples():
             url = str(getattr(row, "MAIN_IMAGE", ""))
-            sid = str(getattr(row, "PRODUCT_SET_SID", ""))
             if url in commentary_map:
-                sid_to_comment[sid] = commentary_map[url]
-        existing.update(sid_to_comment)
-        st.session_state["_image_blurry_commentary"] = existing
-    except Exception:
-        pass
+                sid_to_comment[str(getattr(row, "PRODUCT_SET_SID", ""))] = commentary_map[url]
+        if sid_to_comment:
+            with _IMAGE_DIM_LOCK:
+                _IMAGE_BLURRY_COMMENTARY.update(sid_to_comment)
 
     if not reject_map:
         return pd.DataFrame(columns=data.columns)
@@ -1203,11 +1322,69 @@ def check_restricted_brands(
     return result.drop_duplicates(subset=["PRODUCT_SET_SID"])
 
 
+# The bare words below exist in the rules file to catch skin bleaching, and are
+# scoped to ~1,928 categories — which includes 107 oral-care and deodorant
+# categories. That made "Colgate Advanced Whitening Toothpaste" and
+# "whitening roll-on deodorant" read as prohibited products.
+#
+# ONLY these three single words get the exemption. The explicit rules
+# ("whitening cream", "skin whitening", "brightening serum", "whitening soap",
+# "lightening lotion") name a skin product outright and stay prohibited
+# everywhere, so a bleaching cream mis-filed under Oral Care is still caught.
+_LIGHTENING_GENERIC_KWS = {"whitening", "brightening", "lightening"}
+
+# Contexts where whitening/brightening is an ordinary product claim.
+_LIGHTENING_OK_NAME_RE = re.compile(
+    r"\b(?:toothpaste|tooth\s*paste|toothbrush|tooth\s*brush|mouth\s*wash|"
+    r"mouth\s*rinse|oral|dental|denture|teeth|tooth|floss|gum\s*care|"
+    r"deodorant|anti[\s\-]?perspirant|roll[\s\-]?on)\b",
+    re.IGNORECASE,
+)
+_LIGHTENING_OK_CATEGORY_RE = re.compile(
+    r"oral\s*care|oral\s*hygiene|dental|denture|toothbrush|toothpaste|"
+    r"mouthwash|deodorant|antiperspirant",
+    re.IGNORECASE,
+)
+
+
 def check_prohibited_products(
-    data: pd.DataFrame, prohibited_rules: List[Dict]
+    data: pd.DataFrame, prohibited_rules: List[Dict], code_to_path: dict = None
 ) -> pd.DataFrame:
     if not {"NAME", "CATEGORY_CODE"}.issubset(data.columns) or not prohibited_rules:
         return pd.DataFrame(columns=data.columns)
+
+    # Drop rules whose category list is a placeholder rather than real codes.
+    #
+    # A blank category cell in Prohibbited.xlsx parses to {'None'} — a non-empty
+    # set holding the string "None" — instead of an empty set. The lookup below
+    # then asks "is this product's category in {'None'}?", which is never true,
+    # so the rule matches nothing. Worse, its keyword still goes into the
+    # combined regex, and because the alternation is sorted longest-first a dead
+    # "whitening soap" SHADOWS the working "whitening": findall returns the
+    # longer match, that match is discarded on the category test, and the
+    # product escapes entirely. Skin-whitening soaps and serums were passing for
+    # exactly this reason.
+    #
+    # Dropping them restores the broad rules. It deliberately does NOT treat a
+    # blank category as "applies everywhere": keywords like "105" and "100inch"
+    # in the NG sheet are plainly meant to be category-scoped, and firing them
+    # globally would flag every TV with 105 in its name.
+    def _is_placeholder(cats) -> bool:
+        return bool(cats) and all(
+            str(c).strip().lower() in ("none", "nan", "") for c in cats
+        )
+
+    usable_rules = [r for r in prohibited_rules if not _is_placeholder(r.get("categories"))]
+    _n_dead = len(prohibited_rules) - len(usable_rules)
+    if _n_dead:
+        logger.warning(
+            "[Prohibited] %d of %d rules have no usable category codes and are "
+            "ignored. Fill the 'categories' column in Prohibbited.xlsx to enable "
+            "them.", _n_dead, len(prohibited_rules),
+        )
+    if not usable_rules:
+        return pd.DataFrame(columns=data.columns)
+    prohibited_rules = usable_rules
 
     all_kws = sorted(
         set(rule["keyword"] for rule in prohibited_rules), key=len, reverse=True
@@ -1235,11 +1412,22 @@ def check_prohibited_products(
         matches = combined_pattern.findall(name_lower)
         if not matches:
             continue
+        cat_path = (code_to_path or {}).get(cat_clean, "")
+        # Resolved once per row, not per matched keyword.
+        _is_oral_or_deo = bool(
+            _LIGHTENING_OK_NAME_RE.search(name_lower)
+            or (cat_path and _LIGHTENING_OK_CATEGORY_RE.search(cat_path))
+        )
+
         matched_kws = []
         for m in set(matches):
             m_lower = m.lower()
             cats = kw_to_cats.get(m_lower, set())
             if cats and cat_clean not in cats:
+                continue
+            # A generic "whitening"/"brightening"/"lightening" on a toothpaste,
+            # mouthwash or deodorant is a normal product claim, not skin bleaching.
+            if m_lower in _LIGHTENING_GENERIC_KWS and _is_oral_or_deo:
                 continue
             matched_kws.append(m_lower)
         if matched_kws:
@@ -1723,9 +1911,10 @@ def check_suspected_fake_perfume(
 
         flagged["Comment_Detail"] = flagged.apply(build_comment, axis=1)
 
-    return flagged.drop(columns=["_pfume_match"]).drop_duplicates(
-        subset=["PRODUCT_SET_SID"]
-    )
+    # Every matching row is returned (no per-SID dedup): "Suspected Fake
+    # Perfume" is a ROW_LEVEL_VALIDATOR, so the runner keeps precisely these
+    # rows instead of re-expanding one representative row to its whole SID.
+    return flagged.drop(columns=["_pfume_match"])
 
 
 def check_brand_image_mismatch(
@@ -1797,18 +1986,80 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 # it's ambiguous on its own (a smartwatch/earbuds listing legitimately says
 # "WhatsApp notification support"), so it doesn't belong in this always-hard
 # bucket.
-_OFFPLATFORM_HARD_RE = re.compile(
+# Hard evidence is split by KIND — phone / website / email / location — so a
+# flag can only ever be raised on a concrete contact detail, and the comment can
+# name which kind was found. Wording alone ("contact us") is no longer enough:
+# it produced flags on listings that contained no way to contact anyone.
+
+# Phone numbers. Country prefixes cover all eight markets the app supports;
+# previously only Kenya and Nigeria were matched, so an off-platform number in
+# Uganda, Ghana, Morocco, Egypt, Senegal or Ivory Coast went straight through.
+# Bare digit runs are deliberately NOT matched — model numbers, EANs and
+# capacities would swamp the check with false positives.
+_PHONE_RE = re.compile(
     r"(?:"
-    r"\+?254[\s\-]?[17]\d{2}[\s\-]?\d{3}[\s\-]?\d{3}"          # Kenya intl
-    r"|\b07[\s\-]?\d{2}[\s\-]?\d{3}[\s\-]?\d{3}\b"             # Kenya local 07xx xxx xxx
-    r"|\+?234[\s\-]?[789]\d{2}[\s\-]?\d{3}[\s\-]?\d{4}"        # Nigeria intl
-    r"|\b0[789][01]\d[\s\-]?\d{3}[\s\-]?\d{4}\b"               # Nigeria local 080x xxx xxxx
-    r"|\+\d{10,14}\b"                                          # generic international
-    r"|wa\.me/\S+"
-    r"|https?://\S+"
-    r"|\bwww\.\S+"
+    # International for the eight markets. Digit GROUPING is deliberately not
+    # pinned down — the same Senegalese number gets written "+221 77 123 4567"
+    # and "+221 77 123 45 67", and fixed 3-3-3 grouping missed both.
+    r"\+?(?:254|256|234|233|212|221|225)[\s\-]?(?:\d[\s\-]?){7,11}\d"
+    # Egypt's country code is only two digits, so require the leading + to stop
+    # ordinary numbers in text ("20 000 mAh") from matching.
+    r"|\+20[\s\-]?(?:\d[\s\-]?){8,10}\d"
+    r"|\+\d{1,3}[\s\-]?(?:\d[\s\-]?){7,13}\d"                  # any other international
+    # Local formats, also grouping-tolerant: "0712 345 678", "0712345678" and
+    # "0712-345-678" are the same number written three ways.
+    r"|\b0[17](?:[\s\-]?\d){8}\b"                              # 10-digit 07../01.. (KE, UG)
+    r"|\b0[789][01](?:[\s\-]?\d){8}\b"                         # 11-digit 080x.... (NG)
+    r"|\b0[1-9](?:[\s\-]\d{2}){4}\b"                           # 0X XX XX XX XX (MA, CI, SN)
     r")",
     re.IGNORECASE,
+)
+
+# Websites. Explicit schemes and www. plus a conservative bare-domain form —
+# restricted to a known TLD list so strings like "3.5mm" or "image.png" cannot
+# match.
+_WEBSITE_RE = re.compile(
+    r"(?:"
+    r"https?://\S+"
+    r"|\bwww\.\S+"
+    r"|wa\.me/\S+"
+    r"|\b[a-z0-9][a-z0-9\-]{1,30}\.(?:com|net|org|shop|store|biz|info|"
+    r"co\.ke|co\.ug|com\.ng|com\.gh|co\.za|ma|eg|sn|ci)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Email addresses — previously not detected at all, despite being one of the
+# most direct ways to take a buyer off-platform.
+_EMAIL_RE = re.compile(
+    r"\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}\b"
+    r"|\b[a-z0-9._%+\-]+\s*(?:\(at\)|\[at\]|\sat\s)\s*[a-z0-9.\-]+\s*"
+    r"(?:\(dot\)|\[dot\]|\sdot\s)\s*[a-z]{2,}\b",                # obfuscated
+    re.IGNORECASE,
+)
+
+# Physical locations. Kept to explicit address markers — a generic
+# "<word> road" rule would flag product names like "Silk Road" or "Abbey Road".
+_LOCATION_RE = re.compile(
+    r"(?:"
+    r"\bp\.?\s*o\.?\s*box\s*\d+"                                # P.O. Box 123
+    r"|\b(?:shop|stall|suite|kiosk|office)\s*(?:no\.?|number|#)?\s*\d+"
+    r"|\b\d+\s*(?:st|nd|rd|th)?\s*floor\b"
+    r"|\balong\s+[a-z]+\s+(?:road|rd|street|st|avenue|ave)\b"
+    r"|\bopposite\s+(?:the\s+)?[a-z]+"
+    r"|\bnext\s+to\s+(?:the\s+)?[a-z]+\s+(?:building|mall|plaza|arcade|market|stage)"
+    r"|\b(?:visit|come\s+to|located\s+at|find\s+us\s+at)\s+(?:our\s+)?"
+    r"(?:shop|store|office|showroom)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Ordered so the comment names the most actionable kind first.
+_CONTACT_KINDS = (
+    ("phone number", _PHONE_RE),
+    ("website", _WEBSITE_RE),
+    ("email", _EMAIL_RE),
+    ("location", _LOCATION_RE),
 )
 # Soft signals: divert-the-buyer wording without a number/link. Deliberately
 # phrase-based ("follow us on", not bare "tiktok") so products like ring
@@ -1873,48 +2124,58 @@ def check_offplatform_contact(data: pd.DataFrame, **kwargs) -> pd.DataFrame:
         for c in text_cols
     }
 
-    # Cheap vectorized pre-filter: which rows have a hit in ANY column.
+    # Cheap vectorized pre-filter: only rows carrying an actual contact detail
+    # reach the per-row loop. Divert-the-buyer wording is NOT part of this —
+    # on its own it is not evidence that anyone can be contacted off-platform.
     pre_mask = pd.Series(False, index=data.index)
     for c in text_cols:
-        pre_mask |= (
-            col_text[c].str.contains(_OFFPLATFORM_HARD_RE, na=False)
-            | col_text[c].str.contains(_OFFPLATFORM_SOFT_RE, na=False)
-            | col_text[c].str.contains(_WHATSAPP_ANY_RE, na=False)
-        )
+        for _, _kind_re in _CONTACT_KINDS:
+            pre_mask |= col_text[c].str.contains(_kind_re, na=False)
+        pre_mask |= col_text[c].str.contains(_WHATSAPP_CONTACT_RE, na=False)
     if not pre_mask.any():
         return pd.DataFrame(columns=data.columns)
 
+    def _is_platform_url(term: str) -> bool:
+        """Jumia's own domains and image CDNs are not off-platform contact."""
+        t = term.lower()
+        return "jumia" in t or "wsrv.nl" in t or "cloudfront" in t
+
     comments: dict = {}
     for idx in data.index[pre_mask]:
-        hard_by_col: list = []  # [(column, [matched terms])]
-        soft_by_col: list = []
+        found_by_col: list = []   # [(column, ["phone number: 0712…", …])]
+        soft_terms: set = set()
         for c in text_cols:
             text = col_text[c].loc[idx]
-            # Allowlist the platform's own domains/CDNs so legit image URLs pass.
-            hard = sorted({m.strip() for m in _OFFPLATFORM_HARD_RE.findall(text)
-                           if "jumia" not in m.lower() and "wsrv.nl" not in m.lower()})
-            soft = sorted({m.strip() for m in _OFFPLATFORM_SOFT_RE.findall(text)})
+            hits: list = []
+            for kind_label, kind_re in _CONTACT_KINDS:
+                terms = sorted({
+                    m.strip() for m in kind_re.findall(text)
+                    if m and m.strip() and not _is_platform_url(m)
+                })
+                if terms:
+                    hits.append(f"{kind_label}: {', '.join(terms[:2])}")
 
-            # WhatsApp: classify separately (see comment on the regexes above)
-            # instead of treating every bare mention as automatic hard evidence.
+            # A WhatsApp mention only counts when it comes with a number or a
+            # wa.me link. A bare mention, or a device-feature mention such as
+            # "WhatsApp notification support", is not contact information.
             if _WHATSAPP_CONTACT_RE.search(text):
-                hard.append("whatsapp")
-            elif _WHATSAPP_ANY_RE.search(text) and not _WHATSAPP_FEATURE_CTX_RE.search(text):
-                soft.append("whatsapp mention")
-            # else: bare feature-context mention ("WhatsApp notification
-            # support") — not evidence of anything, deliberately not flagged.
+                hits.append("whatsapp contact")
 
-            if hard:
-                hard_by_col.append((c, sorted(set(hard))))
-            if soft:
-                soft_by_col.append((c, soft))
+            if hits:
+                found_by_col.append((c, hits))
 
-        if hard_by_col:
-            where = " | ".join(f"{c}: '{', '.join(terms[:3])}'" for c, terms in hard_by_col)
-            comments[idx] = f"Off-platform contact detected — {where}"
-        elif soft_by_col:
-            where = " | ".join(f"{c}: '{', '.join(terms[:3])}'" for c, terms in soft_by_col)
-            comments[idx] = f"Possible off-platform wording — {where}"
+            # Wording is recorded only to enrich the comment on rows that
+            # already have real evidence — it can no longer raise a flag alone.
+            soft_terms.update(m.strip() for m in _OFFPLATFORM_SOFT_RE.findall(text))
+
+        if not found_by_col:
+            continue
+
+        where = " | ".join(f"{c} — {'; '.join(h)}" for c, h in found_by_col)
+        comment = f"Off-platform contact detected — {where}"
+        if soft_terms:
+            comment += f" (wording: {', '.join(sorted(soft_terms)[:2])})"
+        comments[idx] = comment
 
     if not comments:
         return pd.DataFrame(columns=data.columns)
@@ -2739,6 +3000,11 @@ def validate_products(
     on_progress: Optional[callable] = None,
 ):
     data = data.copy()
+    # ROW_LEVEL_VALIDATORS map a check's result back onto `data` by index label,
+    # which is only meaningful when labels are unique (a concat of per-file
+    # frames can repeat them).
+    if not data.index.is_unique:
+        data = data.reset_index(drop=True)
     data["PRODUCT_SET_SID"] = data["PRODUCT_SET_SID"].astype(str).str.strip()
 
     if "_name_lower" not in data.columns:
@@ -2883,7 +3149,8 @@ def validate_products(
         (
             "Prohibited products",
             check_prohibited_products,
-            {"prohibited_rules": support_files.get("prohibited_words_all", {}).get(country_validator.code, [])},
+            {"prohibited_rules": support_files.get("prohibited_words_all", {}).get(country_validator.code, []),
+             "code_to_path": support_files.get("code_to_path", {})},
         ),
         (
             "Unnecessary words in NAME",
@@ -3016,7 +3283,9 @@ def validate_products(
         validations.insert(1, ("Restricted brands", check_restricted_brands, {"country_rules": _ma.get("restricted", [])}))
         ma_prohibited_rules = [{"keyword": kw, "categories": set()} for kw in _ma.get("prohibited_keywords", [])]
         validations = [v for v in validations if v[0] != "Prohibited products"]
-        validations.append(("Prohibited products", check_prohibited_products, {"prohibited_rules": ma_prohibited_rules}))
+        validations.append(("Prohibited products", check_prohibited_products,
+                            {"prohibited_rules": ma_prohibited_rules,
+                             "code_to_path": support_files.get("code_to_path", {})}))
         validations.append(("MA - Marque Interdite", check_morocco_prohibited_brands, {"ma_rules": _ma}))
     if country_validator.code == "GH":
         _gh = load_ghana_qc_rules()
@@ -3036,27 +3305,71 @@ def validate_products(
                 for sid in sids:
                     dup_groups[sid] = sids
 
-    _overall_data_hash = df_hash(data)
-
-    _rules_files = ["Restricted_Brands.xlsx", "suspected_fake.xlsx", "Prohibbited.xlsx",
-                    "reason.xlsx", "Refurb.xlsx", "category_map.xlsx"]
+    # Rule/support files feed the checks as kwargs. Rather than deep-hashing
+    # those (large nested dicts, thousands of compiled patterns), fingerprint the
+    # files they are loaded from: any edit changes an mtime and busts the flag
+    # cache. The perfume files used to be excluded on purpose, to keep ~500
+    # already-written pickles reachable — the versioned key scheme below orphans
+    # those pickles regardless, so the exclusion no longer buys anything and the
+    # stale fake-perfume results it caused are now fixed.
+    _rules_files = [
+        "Restricted_Brands.xlsx", "suspected_fake.xlsx", "Prohibbited.xlsx",
+        "reason.xlsx", "reasons.xlsx", "Refurb.xlsx", "category_map.xlsx",
+        "perfume_catalog.xlsx", "Perfume.xlsx", "Perfume_cat.txt",
+        "colors.txt", "color_cats.txt", "brands.txt", "blacklisted.txt",
+        "Books_sellers.xlsx", "Books_cat.txt", "Jersey_validation.xlsx",
+        "Sneakers_Cat.txt", "Sneakers_Sensitive.txt", "Fashion_cat.txt",
+        "fashion brands.xlsx", "duplicate_exempt.txt", "unnecessary.txt",
+        "variation.txt", "weight.txt", "smartphones.txt", "warranty.txt",
+        "sensitive_words.txt", "category_qc_weighted.json",
+        "Nigeria_QC_Rules.xlsx", "Morocco_rules.xlsx", "ghana_rules.py",
+    ]
     _rules_sig = hashlib.md5(
         "".join(
             f"{f}:{os.path.getmtime(f):.0f}" for f in _rules_files if os.path.exists(f)
         ).encode()
-    ).hexdigest()[:8]
-    _overall_data_hash = _overall_data_hash + _rules_sig
+    ).hexdigest()[:12]
 
     EXPENSIVE_VALIDATORS = {
         "Image Stretched", "Image Blurry", "Image Mismatch", "Image Infringing",
         "Image Too Many things displayed", "Duplicate product", "Wrong Category",
         "Variation Name Mismatch"
     }
+    # Validators whose verdict is per-ROW, not per-PRODUCT_SET_SID. The normal
+    # path below re-selects every row sharing a flagged SID (so a check can
+    # return one representative row and still flag the whole set). That is wrong
+    # for checks gated on a per-row field: a feed with inconsistent BRAND across
+    # rows of one SID would drag a legitimately-branded row into the report on a
+    # "Generic" sibling's flag. For these, only the rows the check actually
+    # matched are kept.
+    ROW_LEVEL_VALIDATORS = {"Suspected Fake Perfume"}
     _skip_set = {s.lower() for s in (skip_validators or [])}
     if not data_has_warranty_cols:
         _skip_set.add("product warranty")
-    _needs_image_cache = any(v[0].lower() not in _skip_set and v[1] in (check_image_stretched, check_image_blurry, check_duplicate_products) for v in validations)
-    _needs_image_cache = any(v[0].lower() not in _skip_set and v[1] in (check_image_stretched, check_image_blurry, check_duplicate_products) for v in validations)
+    # Build the image dimension/hash cache HERE, on the main thread, and hand it
+    # to the image validators. _fetch_all_image_dimensions reads the uploaded ZIP
+    # out of st.session_state, which is unreachable from a worker thread — called
+    # from inside run_batch it saw an empty store and silently skipped every
+    # ZIP-sourced image. Doing it once up front also stops Stretched and Blurry
+    # each triggering their own network pass.
+    _image_validators = {check_image_stretched, check_image_blurry}
+    _needs_image_cache = any(
+        v[0].lower() not in _skip_set
+        and not country_validator.should_skip_validation(v[0])
+        and v[1] in _image_validators
+        for v in validations
+    )
+    _shared_image_cache = None
+    if _needs_image_cache:
+        try:
+            _shared_image_cache = _fetch_all_image_dimensions(data)
+        except Exception as _img_err:
+            logger.warning("Image dimension prefetch failed: %s", _img_err)
+    if _shared_image_cache:
+        validations = [
+            (name, func, ({**kw, "_image_cache": _shared_image_cache} if func in _image_validators else kw))
+            for name, func, kw in validations
+        ]
 
     total_tasks = len([v for v in validations if v[0].lower() not in _skip_set and not country_validator.should_skip_validation(v[0])])
     processed_count = 0
@@ -3077,6 +3390,25 @@ def validate_products(
         nonlocal processed_count
         batch_results = {}
         _val_workers = min(8, max(2, (os.cpu_count() or 4) * 2))
+
+        # At most two distinct frames are handed to checks in a batch: the full
+        # one, and (for EXPENSIVE_VALIDATORS) the same minus already-rejected
+        # SIDs. rejected_sids is only mutated while draining results, never
+        # during the submit loop below, so the filtered frame is stable here.
+        # The cache key is now derived from whichever frame the check actually
+        # receives — previously it was always keyed on the full frame even when
+        # the check ran on the filtered one, so a run that skipped different
+        # validators (and therefore rejected a different set of SIDs) could be
+        # served results computed for a different input.
+        _full_digests = _ColumnDigests(current_data)
+        _filtered_data = None
+        _filtered_digests = None
+        if rejected_sids:
+            _filtered_data = current_data[
+                ~current_data["PRODUCT_SET_SID"].astype(str).isin(rejected_sids)
+            ]
+            _filtered_digests = _ColumnDigests(_filtered_data)
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=_val_workers) as executor:
             future_to_name = {}
             for name, func, kwargs in v_list:
@@ -3084,16 +3416,19 @@ def validate_products(
                     continue
 
                 working_data = current_data
+                digests = _full_digests
                 if name in EXPENSIVE_VALIDATORS and rejected_sids:
-                    working_data = current_data[~current_data["PRODUCT_SET_SID"].astype(str).isin(rejected_sids)]
+                    working_data = _filtered_data
+                    digests = _filtered_digests
                     if working_data.empty:
                         processed_count += 1
                         _emit_progress(name, processed_count, total_tasks)
                         continue
 
                 ckwargs = {"data": working_data, **kwargs}
-                flag_hash = hashlib.md5((_overall_data_hash + name).encode()).hexdigest()
-                cache_path = os.path.join(FLAG_CACHE_DIR, f"{flag_hash}.pkl")
+                cache_path = flag_cache_path(
+                    name, digests, country_validator.code, _rules_sig
+                )
                 future_to_name[executor.submit(run_cached_check, func, cache_path, ckwargs)] = name
 
             for future in concurrent.futures.as_completed(future_to_name):
@@ -3118,13 +3453,25 @@ def validate_products(
                         _expanded = set()
                         for _s in _sids: _expanded.update(dup_groups.get(_s, [_s]))
 
-                        final_res = data[data["PRODUCT_SET_SID"].astype(str).isin(_expanded)].copy()
-                        if "Comment_Detail" in res.columns:
-                            _cd = res.set_index("PRODUCT_SET_SID")["Comment_Detail"].to_dict()
-                            final_res["Comment_Detail"] = final_res["PRODUCT_SET_SID"].astype(str).map(_cd)
-                        if "Reason" in res.columns:
-                            _r = res.set_index("PRODUCT_SET_SID")["Reason"].to_dict()
-                            final_res["Reason"] = final_res["PRODUCT_SET_SID"].astype(str).map(_r)
+                        if name in ROW_LEVEL_VALIDATORS:
+                            # Keep exactly the rows the check matched. No SID
+                            # fan-out; no dup_groups expansion either — a dup
+                            # group is identical on NAME/BRAND/SELLER/COLOR, so
+                            # its other rows were evaluated and matched on their
+                            # own merits if they qualify.
+                            _idx = data.index.intersection(res.index)
+                            final_res = data.loc[_idx].copy()
+                            for _col in ("Comment_Detail", "Reason"):
+                                if _col in res.columns:
+                                    final_res[_col] = res.loc[_idx, _col]
+                        else:
+                            final_res = data[data["PRODUCT_SET_SID"].astype(str).isin(_expanded)].copy()
+                            if "Comment_Detail" in res.columns:
+                                _cd = res.set_index("PRODUCT_SET_SID")["Comment_Detail"].to_dict()
+                                final_res["Comment_Detail"] = final_res["PRODUCT_SET_SID"].astype(str).map(_cd)
+                            if "Reason" in res.columns:
+                                _r = res.set_index("PRODUCT_SET_SID")["Reason"].to_dict()
+                                final_res["Reason"] = final_res["PRODUCT_SET_SID"].astype(str).map(_r)
 
                         batch_results[name] = final_res
                         rejected_sids.update(_expanded)
@@ -3140,6 +3487,19 @@ def validate_products(
 
     results.update(run_batch(cheap_v, data))
     results.update(run_batch(expensive_v, data))
+
+    # Drain the low-resolution advisory staged by check_image_blurry's worker
+    # thread. We are back on the main thread here, so session_state writes stick.
+    with _IMAGE_DIM_LOCK:
+        _staged_commentary = dict(_IMAGE_BLURRY_COMMENTARY)
+        _IMAGE_BLURRY_COMMENTARY.clear()
+    if _staged_commentary:
+        try:
+            _existing = st.session_state.get("_image_blurry_commentary", {})
+            _existing.update(_staged_commentary)
+            st.session_state["_image_blurry_commentary"] = _existing
+        except Exception as _c_err:
+            logger.warning("Could not record low-resolution advisory: %s", _c_err)
 
     if validation_errors:
         st.warning(f"{len(validation_errors)} validation checks encountered errors.")
@@ -3523,37 +3883,55 @@ with st.sidebar:
         _lc1.metric("Corrections", _n_corr, help="Approved (name → category) pairs the matcher learned from")
         _lc2.metric("Negatives", _n_neg, help="Categories a human explicitly rejected for a product name — excluded from future suggestions")
         with st.expander("Manage learned data", expanded=False):
-            _learn_tab_corr, _learn_tab_neg = st.tabs(["Corrections", "Negatives"])
-            with _learn_tab_corr:
-                _corr_df = _learn_engine.list_corrections()
-                if _corr_df.empty:
-                    st.caption("No learned corrections yet.")
-                else:
-                    _corr_sel = st.dataframe(
-                        _corr_df, hide_index=True, width='stretch', height=220,
-                        selection_mode="multi-row", on_select="rerun", key="corr_admin_df",
-                    )
-                    _corr_rows = _corr_sel.selection.rows if _corr_sel and _corr_sel.selection else []
-                    if st.button(f"Delete selected ({len(_corr_rows)})", key="del_corr_btn", disabled=not _corr_rows):
-                        _ids = _corr_df.iloc[_corr_rows]["id"].tolist()
-                        _n = _learn_engine.delete_corrections(_ids)
-                        st.toast(f"Deleted {_n} correction(s)", icon="🗑")
-                        st.rerun()
-            with _learn_tab_neg:
-                _neg_df = _learn_engine.list_negatives()
-                if _neg_df.empty:
-                    st.caption("No learned negatives yet.")
-                else:
-                    _neg_sel = st.dataframe(
-                        _neg_df, hide_index=True, width='stretch', height=220,
-                        selection_mode="multi-row", on_select="rerun", key="neg_admin_df",
-                    )
-                    _neg_rows = _neg_sel.selection.rows if _neg_sel and _neg_sel.selection else []
-                    if st.button(f"Delete selected ({len(_neg_rows)})", key="del_neg_btn", disabled=not _neg_rows):
-                        _ids = _neg_df.iloc[_neg_rows]["id"].tolist()
-                        _n = _learn_engine.delete_negatives(_ids)
-                        st.toast(f"Deleted {_n} negative(s)", icon="🗑")
-                        st.rerun()
+            # Streamlit builds the body of an expander even while it is
+            # collapsed, so these two 500-row tables were being queried,
+            # converted to Arrow and pushed to the browser on EVERY rerun —
+            # measured at ~0.9s of the ~1.3s a warm script run costs, for a
+            # panel almost nobody opens. Load them only when asked.
+            if not st.session_state.get("_show_learned_data", False):
+                st.caption(
+                    f"{_n_corr:,} corrections · {_n_neg:,} negatives learned. "
+                    "The tables are loaded on demand to keep every other "
+                    "interaction fast."
+                )
+                if st.button("Load entries", key="load_learned_data", width="stretch"):
+                    st.session_state._show_learned_data = True
+                    st.rerun()
+            else:
+                if st.button("Hide entries", key="hide_learned_data", width="stretch"):
+                    st.session_state._show_learned_data = False
+                    st.rerun()
+                _learn_tab_corr, _learn_tab_neg = st.tabs(["Corrections", "Negatives"])
+                with _learn_tab_corr:
+                    _corr_df = _learn_engine.list_corrections()
+                    if _corr_df.empty:
+                        st.caption("No learned corrections yet.")
+                    else:
+                        _corr_sel = st.dataframe(
+                            _corr_df, hide_index=True, width='stretch', height=220,
+                            selection_mode="multi-row", on_select="rerun", key="corr_admin_df",
+                        )
+                        _corr_rows = _corr_sel.selection.rows if _corr_sel and _corr_sel.selection else []
+                        if st.button(f"Delete selected ({len(_corr_rows)})", key="del_corr_btn", disabled=not _corr_rows):
+                            _ids = _corr_df.iloc[_corr_rows]["id"].tolist()
+                            _n = _learn_engine.delete_corrections(_ids)
+                            st.toast(f"Deleted {_n} correction(s)", icon="🗑")
+                            st.rerun()
+                with _learn_tab_neg:
+                    _neg_df = _learn_engine.list_negatives()
+                    if _neg_df.empty:
+                        st.caption("No learned negatives yet.")
+                    else:
+                        _neg_sel = st.dataframe(
+                            _neg_df, hide_index=True, width='stretch', height=220,
+                            selection_mode="multi-row", on_select="rerun", key="neg_admin_df",
+                        )
+                        _neg_rows = _neg_sel.selection.rows if _neg_sel and _neg_sel.selection else []
+                        if st.button(f"Delete selected ({len(_neg_rows)})", key="del_neg_btn", disabled=not _neg_rows):
+                            _ids = _neg_df.iloc[_neg_rows]["id"].tolist()
+                            _n = _learn_engine.delete_negatives(_ids)
+                            st.toast(f"Deleted {_n} negative(s)", icon="🗑")
+                            st.rerun()
 
 st.header(f":material/upload_file: {_t('upload_files')}", anchor=False)
 current_country = st.session_state.get("selected_country", get_default_country())
@@ -3716,7 +4094,11 @@ if uploaded_files:
     _new_cache = []
     for uf in uploaded_files:
         uf.seek(0)
-        _new_cache.append({"name": uf.name, "bytes": uf.read()})
+        _raw = uf.read()
+        # Digest once, here — process_signature below is rebuilt on every rerun
+        # and hashing the raw upload bytes each time costs ~39ms per 10MB of
+        # upload on every single click.
+        _new_cache.append({"name": uf.name, "bytes": _raw, "md5": hashlib.md5(_raw).hexdigest()})
     st.session_state.cached_uploaded_files = _new_cache
     st.session_state._uploader_had_files = True
 elif uploaded_files is not None and len(uploaded_files) == 0 and st.session_state.get("_uploader_had_files", False):
@@ -3734,7 +4116,18 @@ _large_file_skip_validations = [
 ]
 
 _files_for_processing = st.session_state.get("cached_uploaded_files", [])
-process_signature = (str(sorted([f["name"] + hashlib.md5(f["bytes"]).hexdigest() for f in _files_for_processing])) + f"_{country_validator.code}" if _files_for_processing else "empty")
+
+
+def _upload_digest(rec: dict) -> str:
+    """Digest of one cached upload, computed once and memoised on the record."""
+    digest = rec.get("md5")
+    if not digest:
+        digest = hashlib.md5(rec["bytes"]).hexdigest()
+        rec["md5"] = digest
+    return digest
+
+
+process_signature = (str(sorted([f["name"] + _upload_digest(f) for f in _files_for_processing])) + f"_{country_validator.code}" if _files_for_processing else "empty")
 
 # Row-count estimation re-opens every uploaded ZIP/Excel file, so only redo it
 # when the uploaded file set actually changes rather than on every rerun (click,
@@ -3785,7 +4178,16 @@ if st.session_state.get("last_processed_files") != process_signature:
             st.session_state.all_data_map = cached_data
             st.session_state.all_data_rows = cached_data_rows if cached_data_rows is not None else cached_data.copy()
             st.session_state.last_processed_files = process_signature
+            # Restoring from cache must also restore the checkpoint target —
+            # without it checkpoint_final_report() silently no-ops and manual
+            # decisions made after a cache load are never persisted.
+            st.session_state.current_sig_hash = sig_hash
             st.toast("Loaded from cache", icon=":material/bolt:")
+            _restored = apply_manual_decisions(
+                st.session_state.final_report, load_manual_decisions(process_signature)
+            )
+            if _restored:
+                st.toast(f"Restored {_restored} manual decision(s)", icon=":material/history:")
         else:
             try:
                 with st.status("Processing files…", expanded=True) as _status:
@@ -4278,6 +4680,18 @@ if st.session_state.get("last_processed_files") != process_signature:
                             _ma_mask = final_report["ProductSetSid"].astype(str).str.strip().isin(_manual_approvals)
                             if _ma_mask.any(): final_report.loc[_ma_mask, ["Status", "Reason", "Comment", "FLAG", "Is_Manual", "Is_Zip"]] = ["Approved", "", "", "Approved by User", True, False]
 
+                        # Re-apply decisions journalled by an earlier session for
+                        # this same file set. Runs after _manual_approvals (which
+                        # only carries approvals within a live session) because the
+                        # journal also covers manual rejections, and is written on
+                        # every decision so it is never staler. Applied before the
+                        # parquet save below so the checkpoint includes them too.
+                        _restored = apply_manual_decisions(
+                            final_report, load_manual_decisions(process_signature)
+                        )
+                        if _restored:
+                            st.write(f"Restored {_restored} manual decision(s) from a previous session.")
+
                         st.session_state.final_report = final_report
                         st.session_state.all_data_map = data
                         st.session_state.all_data_rows = None 
@@ -4498,6 +4912,9 @@ def render_main_results():
             if st.button("Internal Undo", key="undo_trigger", help="Click to undo", type="primary"):
                 if "undo_snapshot" in st.session_state:
                     st.session_state.final_report = st.session_state.undo_snapshot["final_report"]
+                    # Undo bypasses apply_status_change, so checkpoint here too —
+                    # otherwise disk keeps the state the user just undid.
+                    checkpoint_final_report(st.session_state.final_report)
                     st.session_state.pop("show_undo_toast", None)
                     st.rerun()
 
@@ -4544,25 +4961,48 @@ def render_main_results():
     group_by_seller = st.toggle("Group by Seller", help="Toggle to group flagged products by seller instead of flag")
 
     _blurry_commentary = st.session_state.get("_image_blurry_commentary", {})
-    _commentary_in_scope = {sid: comment for sid, comment in _blurry_commentary.items() if fr[fr["ProductSetSid"] == sid]["Status"].eq("Approved").any()}
+    if _blurry_commentary:
+        # One pass to find the approved SIDs instead of a full report scan per
+        # advisory SID (`fr[fr["ProductSetSid"] == sid]` inside a comprehension).
+        _approved_sids = set(
+            fr.loc[fr["Status"] == "Approved", "ProductSetSid"].astype(str)
+        )
+        _commentary_in_scope = {
+            sid: comment
+            for sid, comment in _blurry_commentary.items()
+            if str(sid) in _approved_sids
+        }
+    else:
+        _commentary_in_scope = {}
     if _commentary_in_scope:
         with st.expander(f"Low Resolution Advisory — {len(_commentary_in_scope)} product(s) (not rejected)", expanded=False):
             st.info("These products have images between 201–249px. They have not been rejected, but image quality could be improved. Products ≤200px are automatically rejected as Image Blurry.")
+            # Likewise: one indexed lookup table rather than a scan of `data` per row.
+            _adv_cols = [c for c in ("NAME", "SELLER_NAME") if c in data.columns]
+            _adv_dedup = data.drop_duplicates(subset=["PRODUCT_SET_SID"])
+            _adv_lookup = dict(zip(
+                _adv_dedup["PRODUCT_SET_SID"].astype(str),
+                _adv_dedup[_adv_cols].to_dict("records"),
+            )) if _adv_cols else {}
             _advisory_rows = []
             for _sid, _comment in _commentary_in_scope.items():
-                _row = data[data["PRODUCT_SET_SID"] == _sid]
-                if not _row.empty:
-                    _advisory_rows.append({"PRODUCT_SET_SID": _sid, "NAME": _row.iloc[0].get("NAME", ""), "SELLER_NAME": _row.iloc[0].get("SELLER_NAME", ""), "Resolution Note": _comment})
+                _info = _adv_lookup.get(str(_sid))
+                if _info:
+                    _advisory_rows.append({"PRODUCT_SET_SID": _sid, "NAME": _info.get("NAME", ""), "SELLER_NAME": _info.get("SELLER_NAME", ""), "Resolution Note": _comment})
             if _advisory_rows: st.dataframe(pd.DataFrame(_advisory_rows), hide_index=True, width='stretch')
 
     if not rej_df.empty:
         if group_by_seller:
+            # Count every seller's products once, up front. Doing this as
+            # `len(data[data["SELLER_NAME"] == seller])` inside the loop is a
+            # full scan of `data` per seller.
+            _seller_totals = data["SELLER_NAME"].value_counts() if "SELLER_NAME" in data.columns else pd.Series(dtype=int)
             for seller in sorted(rej_df["SELLER_NAME"].unique()):
                 df_seller = rej_df[rej_df["SELLER_NAME"] == seller]
                 seller_flags = df_seller["FLAG"].unique()
                 with st.expander(f"Seller: {seller} ({len(df_seller)} items, {len(seller_flags)} flags)"):
                     wrong_cat_count = len(df_seller[df_seller["FLAG"] == "Wrong Category"])
-                    total_seller_items = len(data[data["SELLER_NAME"] == seller])
+                    total_seller_items = int(_seller_totals.get(seller, 0))
                     wrong_cat_pct = ((wrong_cat_count / total_seller_items * 100) if total_seller_items > 0 else 0)
                     if wrong_cat_pct >= 40:
                         st.warning(f"High Error Rate: {wrong_cat_pct:.1f}% of this seller's products have wrong categories.")

@@ -5,6 +5,7 @@ ui_components.py - All Streamlit UI rendering components, dialogs, and the image
 import base64
 import concurrent.futures
 import gc
+import hashlib
 import html as html_lib
 import json
 import logging
@@ -27,6 +28,8 @@ from data_utils import (
     df_hash,
     format_local_price,
     load_df_parquet,
+    save_df_parquet,
+    save_manual_decisions,
 )
 from export_utils import generate_smart_export, prepare_full_data_merged
 from targeted_audit import targeted_audit_modal
@@ -552,6 +555,36 @@ def _get_image_maps(all_data):
             st.session_state["_image_maps_df_id"] = id(all_data)
     return st.session_state["_image_maps"]
 
+def checkpoint_final_report(fr: pd.DataFrame = None) -> bool:
+    """Persist the current report — including manual decisions — to disk.
+
+    Manual approvals/rejections otherwise live only in st.session_state, and
+    Streamlit discards a disconnected session after 2 minutes
+    (MemorySessionStorage ttl_seconds = 2 * 60), so a dropped websocket loses
+    every decision made since validation finished. The startup fast path reads
+    this same `{sig_hash}_report.parquet`, so a reconnect resumes with the
+    decisions intact instead of reverting to the post-validation state.
+
+    Writes are atomic (temp file + os.replace) and failures are swallowed and
+    logged by save_df_parquet — a checkpoint must never break the review UI.
+    """
+    if fr is None:
+        fr = st.session_state.get("final_report")
+    if not isinstance(fr, pd.DataFrame) or fr.empty:
+        return False
+
+    # Journal first: it is keyed on the uploaded file content alone, so it is
+    # the copy that still resolves when sig_hash shifts (learning DB grows,
+    # cache version bumps) and the report checkpoint below is orphaned.
+    save_manual_decisions(st.session_state.get("last_processed_files"), fr)
+
+    sig = st.session_state.get("current_sig_hash")
+    if not sig:
+        return False
+    save_df_parquet(fr, f"{sig}_report.parquet")
+    return True
+
+
 def apply_status_change(
     sids,
     *,
@@ -625,6 +658,10 @@ def apply_status_change(
             "status": status,
             "time": datetime.now(),
         }
+
+    # Every manual approve/reject funnels through here, so this is the one place
+    # a checkpoint is needed to make decisions survive a disconnect.
+    checkpoint_final_report(fr)
 
     return int(mask.sum())
 
@@ -765,6 +802,57 @@ def bulk_approve_dialog(
         st.rerun()
 
 
+# Columns that may hold a product image, best first. Used when resolving
+# previews for the flag tables.
+_PREVIEW_IMG_COLS = [
+    "image1", "MAIN_IMAGE_URL", "MAIN_IMAGE", "IMAGE_URL", "IMAGE1_ZIP",
+    "MainImage", "Image", "IMAGE", "url", "Url", "IMAGE_URL_1", "Image1",
+    "main_image",
+]
+
+
+def _resolve_preview_urls(df: pd.DataFrame) -> list:
+    """Best image source per row, or None where there is nothing usable.
+
+    Called only for rows actually being displayed, and only when previews are
+    switched on. It used to run eagerly over every row of every flag bucket
+    while building the display cache — base64-encoding every ZIP image up front
+    — even though the toggle defaults to off and most buckets are never opened.
+    """
+    if df.empty:
+        return []
+    img_s = pd.Series("", index=df.index, dtype=object)
+    for col in _PREVIEW_IMG_COLS:
+        if col not in df.columns:
+            continue
+        empty = img_s.astype(str).str.strip() == ""
+        if not empty.any():
+            break
+        candidate = df[col]
+        usable = empty & candidate.notna() & (candidate.astype(str).str.strip() != "")
+        img_s.loc[usable] = candidate[usable]
+
+    names = df.get("NAME", pd.Series([""] * len(df), index=df.index)).fillna("").astype(str).values
+    brands = df.get("BRAND", pd.Series([""] * len(df), index=df.index)).fillna("").astype(str).values
+
+    out = []
+    for name, brand, raw in zip(names, brands, img_s.fillna("").astype(str).values):
+        zip_img = _get_image_from_zip(name, brand, raw)
+        if zip_img:
+            out.append(zip_img)
+            continue
+        u = str(raw).strip()
+        if u.lower().startswith("http") or u.startswith("//") or u.startswith("data:image/"):
+            if u.startswith("//"):
+                u = "https:" + u
+            elif u.lower().startswith("http://"):
+                u = "https://" + u[7:]
+            out.append(u)
+        else:
+            out.append(None)
+    return out
+
+
 @st.fragment
 def render_flag_expander(
     title,
@@ -816,6 +904,13 @@ def render_flag_expander(
         "MAIN_IMAGE",
         "IMAGE_URL",
         "IMAGE1_ZIP",
+        "MainImage",
+        "Image",
+        "IMAGE",
+        "url",
+        "Url",
+        "IMAGE_URL_1",
+        "Image1",
     ]
     img_col = next((c for c in possible_img_cols if c in data.columns), None)
     if img_col and img_col not in current_display_cols:
@@ -925,41 +1020,27 @@ def render_flag_expander(
                 df_display.apply(_local_p, axis=1),
             )
             
-        if img_col:
-            img_s = df_display[img_col].copy() if img_col in df_display.columns else pd.Series("", index=df_display.index)
-            mask_empty = img_s.isna() | (img_s.astype(str).str.strip() == "")
-            for fallback in ["MainImage", "Image", "IMAGE1_ZIP", "Url", "url", "main_image", "MAIN_IMAGE"]:
-                if not mask_empty.any(): break
-                if fallback in df_display.columns:
-                    fallback_s = df_display[fallback]
-                    valid_fallback = fallback_s.notna() & (fallback_s.astype(str).str.strip() != "")
-                    update_mask = mask_empty & valid_fallback
-                    img_s.loc[update_mask] = fallback_s[update_mask]
-                    mask_empty = img_s.isna() | (img_s.astype(str).str.strip() == "")
-            names = df_display.get("NAME", pd.Series([""] * len(df_display))).fillna("").astype(str).values
-            brands = df_display.get("BRAND", pd.Series([""] * len(df_display))).fillna("").astype(str).values
-            imgs = img_s.fillna("").astype(str).values
-            res = []
-            for n, b, i in zip(names, brands, imgs):
-                zip_img = _get_image_from_zip(n, b, i)
-                if zip_img:
-                    res.append(zip_img)
-                elif i.startswith("http"):
-                    res.append(i.replace("http://", "https://", 1))
-                else:
-                    res.append(None)
-            df_display.insert(0, "_Image_Preview_Cached", res)
-
+        # Image previews are resolved lazily at render time (see
+        # _resolve_preview_urls) so the display cache never carries base64
+        # blobs for a toggle that is off by default.
         st.session_state.display_df_cache[cache_key] = df_display
     else:
         df_display = st.session_state.display_df_cache[cache_key]
 
+    # Each flag's toggle owns its own state, keyed by flag.
+    #
+    # It previously passed `value=` from a single shared `show_table_images`
+    # while keying the widget per flag. Those fight each other: a keyed widget's
+    # own state wins after its first render, so `value=` never propagated — and
+    # because every expander then wrote the shared variable back, whichever flag
+    # rendered LAST silently overwrote it. Combined with render_flag_expander
+    # being a fragment (toggling one flag reruns only that flag), the setting
+    # appeared to work and then reverted on the next full rerun.
     show_table_images = st.toggle(
         "Show Image Previews",
-        value=st.session_state.get("show_table_images", False),
         key=f"tg_img_{title}",
+        help="Show a thumbnail for each row in this table.",
     )
-    st.session_state.show_table_images = show_table_images
 
     c1, c2, c3 = st.columns([1, 1, 1], gap="large")
     with c1:
@@ -1097,23 +1178,41 @@ def render_flag_expander(
             "Is_Zip": None,
         }
 
-    # Wire up the Show Image Previews toggle
-    if show_table_images and "_Image_Preview_Cached" in df_view.columns:
-        df_view.insert(0, "_Image_Preview", df_view["_Image_Preview_Cached"])
-        _col_cfg["_Image_Preview"] = st.column_config.ImageColumn(
-            "Preview", help="Main Image Preview"
+    # Resolve previews only now: previews are on, and df_view is already the
+    # filtered, paginated slice, so this touches at most one page of rows
+    # instead of every row in the bucket.
+    if show_table_images:
+        _preview_urls = _resolve_preview_urls(df_view)
+        if any(u for u in _preview_urls):
+            df_view = df_view.copy()
+            df_view.insert(0, "_Image_Preview", _preview_urls)
+            _col_cfg["_Image_Preview"] = st.column_config.ImageColumn(
+                "Preview", help="Main image for this product"
+            )
+        else:
+            st.caption(
+                "No images available for these rows — the file has no usable "
+                "image URL, and no matching image was found in the uploaded ZIP."
+            )
+
+    # A pandas Styler renders every cell as text, which stops ImageColumn from
+    # drawing anything — so with previews on, the table goes through unstyled
+    # and loses style_rows' red tint for ZIP rows. That costs nothing: the tint
+    # only ever encoded Is_Zip, and the "Source" column already states "⚡ ZIP"
+    # in text, which is also the accessible way to carry it.
+    if show_table_images:
+        event = st.dataframe(
+            df_view,
+            **df_kwargs,
+            column_config=_col_cfg,
         )
-        
-    if "_Image_Preview_Cached" in df_view.columns:
-        df_view = df_view.drop(columns=["_Image_Preview_Cached"])
-
-    df_styled = df_view.style.apply(style_rows, axis=1)
-
-    event = st.dataframe(
-        df_styled,
-        **df_kwargs,
-        column_config=_col_cfg,
-    )
+    else:
+        df_styled = df_view.style.apply(style_rows, axis=1)
+        event = st.dataframe(
+            df_styled,
+            **df_kwargs,
+            column_config=_col_cfg,
+        )
 
     raw_selected = list(event.selection.rows)
     selected_indices = [i for i in raw_selected if i < len(df_view)]
@@ -1422,9 +1521,15 @@ def build_fast_grid_html(
     # previously this was a fresh {} every call, so ZIP image lookups for
     # already-seen (name, brand, img_url) combos were redone on every
     # page turn / rerun instead of being cached.
+    #
+    # Bounded: entries are base64 data URIs (~1.33x the source image) and this
+    # is a SECOND copy of what zip_image_store already holds, so leaving it
+    # unbounded meant a long paging session carried two full unbounded copies of
+    # every image it had ever displayed.
     if "_zip_img_cache" not in st.session_state:
         st.session_state._zip_img_cache = {}
     _zip_img_cache: dict = st.session_state._zip_img_cache
+    _ZIP_IMG_CACHE_MAX = 300
 
     _zip_index_ss = st.session_state.get("_zip_sid_index")
     _zip_sid_set = set()
@@ -1453,6 +1558,11 @@ def build_fast_grid_html(
             _zip_cache_key = (name, brand, img_url)
             if _zip_cache_key not in _zip_img_cache:
                 _zip_img_cache[_zip_cache_key] = _get_image_from_zip(name, brand, img_url)
+                if len(_zip_img_cache) > _ZIP_IMG_CACHE_MAX:
+                    for _stale in list(_zip_img_cache.keys())[
+                        : len(_zip_img_cache) - _ZIP_IMG_CACHE_MAX
+                    ]:
+                        _zip_img_cache.pop(_stale, None)
             img_data = _zip_img_cache[_zip_cache_key]
             if img_data:
                 img_url = img_data
@@ -1581,7 +1691,27 @@ def build_fast_grid_html(
             }
         )
 
+    # Split embedded ZIP images out of the card records.
+    #
+    # ZIP-sourced images are base64 data URIs: an 80KB photo becomes ~107KB of
+    # text. Left inside `cards`, a 500-card page is a ~52MB payload that was
+    # re-sent on every rerun and duplicated by the retry loop — the direct cause
+    # of the browser hanging and the websocket dropping. The heavy bytes now
+    # travel in their own map, sent only when the card set actually changes,
+    # while `cards` itself stays small enough to resend freely.
+    images_map = {}
+    for _c in cards_data:
+        _img = _c.get("img") or ""
+        if _img.startswith("data:"):
+            images_map[_c["sid"]] = _img
+            _c["img"] = ""  # the iframe resolves it from IMAGES[sid]
+
     cards_json = orjson.dumps(cards_data).decode("utf-8").replace("</", "<\\/")
+    images_json = orjson.dumps(images_map).decode("utf-8").replace("</", "<\\/")
+    # Identifies this exact card set. The iframe already knew how to skip a
+    # re-render when the signature is unchanged (_lastCardsSig), but Python
+    # never sent one, so every sync forced a full re-render.
+    cards_sig = hashlib.md5(cards_json.encode("utf-8")).hexdigest()
 
     scroll_js = """
         window.addEventListener('DOMContentLoaded', function() {
@@ -1658,7 +1788,7 @@ def build_fast_grid_html(
     <option value="Product Name Brand Name – Brand Repeated In Title" {_sel('Product Name Brand Name – Brand Repeated In Title', curr_flag)}>Name/Brand: Brand Repeated</option>
     <option value="Product Name Brand Name – Inspired/Alternative Perfume Brand" {_sel('Product Name Brand Name – Inspired/Alternative Perfume Brand', curr_flag)}>Name/Brand: Perfume Brand</option>
     <option value="Product Name Brand Name – Generic/Placeholder Brand" {_sel('Product Name Brand Name – Generic/Placeholder Brand', curr_flag)}>Name/Brand: Generic Brand</option>
-    <option value="Product Name Brand Name – High-End Brand Counterfeit Suspected" {_sel('Product Name Brand Name – High-End Brand Counterfeit Suspected', curr_flag)}>
+    <option value="Product Name Brand Name – High-End Brand Counterfeit Suspected" {_sel('Product Name Brand Name – High-End Brand Counterfeit Suspected', curr_flag)}>Name/Brand: High-End Counterfeit</option>
     <option value="Product Name Brand Name – Other" {_sel('Product Name Brand Name – Other', curr_flag)}>Name/Brand: Other</option>
     <option value="Title Language Check - Not In English" {_sel('Title Language Check - Not In English', curr_flag)}>Title: Not in English</option>
     <option value="Title Language Check - Other" {_sel('Title Language Check - Other', curr_flag)}>Title: Language Other</option>
@@ -1716,7 +1846,10 @@ def build_fast_grid_html(
         )
     _cols_btns = "".join(_cols_btns_parts)
 
-    _grid_sync_data = (committed_json, poor_img_sids_json, prefetch_json, cards_json)
+    _grid_sync_data = (
+        committed_json, poor_img_sids_json, prefetch_json, cards_json,
+        images_json, cards_sig,
+    )
     _html_str = f"""<!DOCTYPE html>
 <html dir="{html_dir}">
 <head>
@@ -2178,10 +2311,38 @@ var POOR_IMG_SIDS = new Set();
 var PREFETCH_URLS = {{}};
 var PLACEHOLDER = "{_PLACEHOLDER_SVG}";
 var _lastCardsSig = null;
+// Base64 ZIP images, keyed by SID and kept out of the card records so the card
+// payload stays small. Retained across syncs: paging back to a visited page
+// costs nothing because the bytes are already here.
+var IMAGES = {{}};
+// Single resolution point for a card's image source, so callers never have to
+// know whether it came inline (http URL) or from the IMAGES store (ZIP).
+function imgFor(card) {{
+  if (!card) return PLACEHOLDER;
+  return card.img || IMAGES[card.sid] || PLACEHOLDER;
+}}
 
 window.addEventListener('message', function(e) {{
   if (e.data && e.data.type === 'SYNC_STATE') {{
     var cardsChanged = false;
+    if (e.data.images) {{
+      for (var _s in e.data.images) {{ IMAGES[_s] = e.data.images[_s]; }}
+      // Hard ceiling. Each entry is a base64 data URI, so without this a long
+      // paging session would grow the tab's memory without bound until it hung.
+      var _keys = Object.keys(IMAGES);
+      if (_keys.length > 600) {{
+        for (var _k = 0; _k < _keys.length - 600; _k++) {{ delete IMAGES[_keys[_k]]; }}
+      }}
+    }}
+    // Tell the sender it landed so it stops retrying. The old code fired the
+    // full payload four times at every frame regardless of success.
+    try {{
+      var _ack = {{type: 'SYNC_ACK', sig: e.data.cards_sig || null}};
+      window.parent.postMessage(_ack, '*');
+      for (var _i = 0; _i < window.parent.frames.length; _i++) {{
+        try {{ window.parent.frames[_i].postMessage(_ack, '*'); }} catch(_e) {{}}
+      }}
+    }} catch(_e) {{}}
     if (e.data.cards) {{
       // A new page/filter/sort of cards arrived over postMessage instead
       // of via a full srcdoc reload. This is what avoids the multi-flicker
@@ -2351,7 +2512,7 @@ function activateLazyImages() {{
 
 function onImgError(img, sid) {{
   var card = CARDS.find(c => c.sid === sid);
-  var realSrc = img.dataset.lazySrc || (card ? card.img : '');
+  var realSrc = img.dataset.lazySrc || imgFor(card);
   if (!img.dataset.triedProxy && realSrc && realSrc.startsWith('http')) {{
     img.dataset.triedProxy = 'true';
     delete img.dataset.lazySrc;
@@ -2543,7 +2704,8 @@ function renderCard(card) {{
     + (isSelected ? ' selected' : '')
     + (card.is_zip ? ' zip-card' : '');
 
-  var safeImgSrcForHtml = card.img ? card.img.replace(/'/g, "%27").replace(/"/g, "%22") : PLACEHOLDER;
+  var _src = imgFor(card);
+  var safeImgSrcForHtml = _src ? _src.replace(/'/g, "%27").replace(/"/g, "%22") : PLACEHOLDER;
   var shortName = card.name.length > 38 ? escapeHtml(card.name.slice(0,38)) + '\u2026' : escapeHtml(card.name);
   var warnHtml = (card.warnings || []).map(w => `<span class="warn-badge">${{escapeHtml(w)}}</span>`).join('');
   if (card.is_duplicate) warnHtml += `<span class="warn-badge" style="background:#7c3aed;color:#fff;font-weight:800;">⧉ DUPLICATE</span>`;
@@ -2674,7 +2836,7 @@ window.showZoom = function(sid, event) {{
   var card = CARDS.find(c => c.sid === sid);
   if (!card) return;
   var img = document.getElementById('tooltip-img');
-  img.src = card.img || PLACEHOLDER;
+  img.src = imgFor(card);
   img.onerror = function() {{ img.src = PLACEHOLDER; img.onerror = null; }};
   document.getElementById('zoom-backdrop').style.display = 'block';
   tooltip.style.display = 'block';
@@ -2986,7 +3148,7 @@ window.stageReject = function(sid, r) {{
 
   if (currentCard && (r === 'REJECT_POOR_IMAGE' || r.startsWith('REJECT_IMG_'))) {{
       CARDS.forEach(c => {{
-          if (c.sid !== sid && (c.img === currentCard.img || (c.hash && c.hash === currentCard.hash))) {{
+          if (c.sid !== sid && (imgFor(c) === imgFor(currentCard) || (c.hash && c.hash === currentCard.hash))) {{
               toStage.push(c.sid);
           }}
       }});
@@ -3662,20 +3824,25 @@ def visual_review_modal(support_files):
         if st.button("✕ Close", key="close_modal_top", type="secondary", use_container_width=True):
             st.session_state.show_review_modal = False
             st.rerun()
-        _wide = st.session_state.get("grid_cols_per_row", 5) >= 6
-        _ipp_opts = [20, 50, 100, 200, 500] if _wide else [20, 50, 100, 200]
+        # 500 per page is only offered in wide mode (6 or 7 columns). More
+        # columns means smaller cards, so 500 of them stays a sensible page; at
+        # 5 columns the same 500 cards make the grid iframe roughly 36,000px
+        # tall, which is where the browser starts to struggle.
+        _cols_now = st.session_state.get("grid_cols_per_row", 5)
+        _allow_500 = _cols_now in (6, 7)
+        _ipp_opts = [20, 50, 100, 200] + ([500] if _allow_500 else [])
 
+        _slider_key = "grid_ipp_slider"
+
+        # Anything already selected that this column count no longer allows has
+        # to be clamped BEFORE the widget is created — select_slider raises if
+        # its stored value is not one of the options.
         _current_ipp = st.session_state.get("grid_items_per_page", 50)
-        
-        # Clamp it if options changed (e.g. wide mode turned off and we were at 500)
         if _current_ipp not in _ipp_opts:
-            _current_ipp = 200 if 200 in _ipp_opts else _ipp_opts[-1]
+            _current_ipp = _ipp_opts[-1]
             st.session_state.grid_items_per_page = _current_ipp
-            
-        _slider_key = f"grid_ipp_{_wide}"
-        
-        # Seed the widget's state key explicitly for this new key
-        if _slider_key not in st.session_state:
+            st.session_state.grid_page = 0
+        if st.session_state.get(_slider_key) not in _ipp_opts:
             st.session_state[_slider_key] = _current_ipp
 
         def _on_ipp_change():
@@ -3686,6 +3853,9 @@ def visual_review_modal(support_files):
             options=_ipp_opts,
             key=_slider_key,
             on_change=_on_ipp_change,
+            help=("500 per page is available in wide mode (6 or 7 columns)."
+                  if _allow_500 else
+                  "Switch to 6 or 7 columns to unlock 500 per page."),
         )
         st.session_state.grid_items_per_page = st.session_state[_slider_key]
 
@@ -3998,36 +4168,96 @@ def visual_review_modal(support_files):
         )
 
     # Unpack the grid html and its sync data
-    _grid_html_str, _committed_json, _poor_img_sids_json, _prefetch_json, _cards_json = grid_html
+    (_grid_html_str, _committed_json, _poor_img_sids_json, _prefetch_json,
+     _cards_json, _images_json, _cards_sig) = grid_html
 
+    # Only ship the bulky halves when they are actually needed. Committed state
+    # and poor-image flags are tiny and always sent; cards and the base64 image
+    # map are not. A rerun from an unrelated widget now costs a few hundred
+    # bytes instead of the whole page of cards and images.
+    #
+    # Two things force a resend. The obvious one is a changed card set. The
+    # other is a changed grid document: Streamlit re-creates the iframe when its
+    # srcdoc changes (e.g. only the columns-per-row buttons differ), and a fresh
+    # iframe has empty CARDS/IMAGES. Keying off the card set alone would leave
+    # that reloaded iframe with nothing to draw.
+    _grid_html_sig = hashlib.md5(_grid_html_str.encode("utf-8")).hexdigest()
+    _iframe_reloaded = st.session_state.get("_grid_last_html_sig") != _grid_html_sig
+    _send_bulk = (
+        st.session_state.get("_grid_last_sent_sig") != _cards_sig or _iframe_reloaded
+    )
+    st.session_state._grid_last_sent_sig = _cards_sig
+    st.session_state._grid_last_html_sig = _grid_html_sig
+
+    # Images for the current page are sent whenever the card set changes, and
+    # the iframe holds them in a size-capped store. Tracking what the browser
+    # already has and sending only the difference would save bytes, but it means
+    # the browser accumulates every image the session ever displayed — trading a
+    # server-side memory leak for a client-side one. A predictable ceiling
+    # matters more here than avoiding a resend on revisit.
+    _cards_field = f"cards: {_cards_json}," if _send_bulk else ""
+    _images_field = f"images: {_images_json}," if _send_bulk else ""
+
+    st.markdown("""
+    <style>
+    div[data-testid="stElementContainer"]:has(iframe),
+    div[data-element-key="grid_iframe_container"],
+    div[data-element-key="grid_iframe_container"] iframe {
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
     with st.container(key="grid_iframe_container"):
-        st.iframe(_grid_html_str, height=750)
+        _num_cards = len(page_data) if ('page_data' in locals() and isinstance(page_data, pd.DataFrame) and not page_data.empty) else 50
+        _cols_n = max(1, st.session_state.get("grid_cols_per_row", 5))
+        _num_rows = max(1, (_num_cards + _cols_n - 1) // _cols_n)
+        _card_h = 360 if st.session_state.get("show_images", True) else 180
+        _dynamic_iframe_h = max(750, _num_rows * _card_h + 150)
+        st.iframe(_grid_html_str, height=_dynamic_iframe_h)
         # Inject a zero-height broadcaster that pushes state into the iframe via postMessage.
         # Sending cards via postMessage prevents the entire iframe DOM from being torn down
         # and rebuilt (which causes severe flickering) when changing pages.
+        # The payload is built ONCE and reused by any retry. The old version
+        # rebuilt this object literal on each of four attempts and posted it to
+        # every frame with no success check — at 500 ZIP-image cards that was
+        # hundreds of MB of structured-clone per render, which is what hung the
+        # browser and dropped the websocket. Now: send, wait for the grid's
+        # SYNC_ACK, and stop. Retries only happen if nothing acknowledged, which
+        # covers the genuine race where the grid iframe has not booted yet.
         _sync_html = f"""
         <script>
         (function() {{
-          function trySend(attemptsLeft) {{
+          var PAYLOAD = {{
+            type: 'SYNC_STATE',
+            committed: {_committed_json},
+            poor_img_sids: {_poor_img_sids_json},
+            prefetch: {_prefetch_json},
+            {_cards_field}
+            {_images_field}
+            cards_sig: {json.dumps(_cards_sig)},
+            scroll_to_top: {'true' if scroll_top_flag else 'false'}
+          }};
+          var acked = false;
+          var timer = null;
+          window.addEventListener('message', function(ev) {{
+            if (ev.data && ev.data.type === 'SYNC_ACK') {{
+              acked = true;
+              if (timer) {{ clearTimeout(timer); timer = null; }}
+            }}
+          }});
+          function send(attemptsLeft) {{
+            if (acked) return;
             try {{
               for (var i = 0; i < window.parent.frames.length; i++) {{
-                try {{
-                  window.parent.frames[i].postMessage({{
-                    type: 'SYNC_STATE',
-                    committed: {_committed_json},
-                    poor_img_sids: {_poor_img_sids_json},
-                    prefetch: {_prefetch_json},
-                    cards: {_cards_json},
-                    scroll_to_top: {'true' if scroll_top_flag else 'false'}
-                  }}, '*');
-                }} catch(e2) {{}}
+                try {{ window.parent.frames[i].postMessage(PAYLOAD, '*'); }} catch(e2) {{}}
               }}
             }} catch(e) {{}}
             if (attemptsLeft > 0) {{
-              setTimeout(function() {{ trySend(attemptsLeft - 1); }}, 200);
+              timer = setTimeout(function() {{ send(attemptsLeft - 1); }}, 250);
             }}
           }}
-          trySend(3);
+          send(3);
         }})();
         </script>
         """

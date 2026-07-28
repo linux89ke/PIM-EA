@@ -2,6 +2,7 @@ import os
 import re
 import json
 import pickle
+import threading
 import numpy as np
 import pandas as pd
 import logging
@@ -324,10 +325,29 @@ class CategoryMatcherEngine:
         self.negative_reasons: dict = {}   # (clean_name, category_lower) -> human reason text
         self._pending_negatives: list = [] # (clean_name, category, reason) awaiting flush
         self.compiled_rules = {}  # Store JSON rules directly in the engine
-        self.correction_classifier = None
-        self.correction_vectorizer = None
+        # (vectorizer, classifier) kept as ONE tuple so a background retrain can
+        # swap both halves atomically. A reader that caught a half-swap would
+        # transform with a new vocabulary and predict with a classifier fitted
+        # on the old one — a silent feature-dimension mismatch.
+        self._corr_model = None
+        self._retrain_lock = threading.Lock()
+        self._retrain_thread = None
+        self._retrain_pending = False
+        self._counts_cache = None
         self._init_db()
         self.load_learning_db()
+
+    # Read-only views over _corr_model so existing call sites keep working and
+    # can never observe a partially-swapped model.
+    @property
+    def correction_vectorizer(self):
+        m = self._corr_model
+        return m[0] if m else None
+
+    @property
+    def correction_classifier(self):
+        m = self._corr_model
+        return m[1] if m else None
 
     def set_compiled_rules(self, rules, code_to_path: dict = None):
         """
@@ -388,7 +408,12 @@ class CategoryMatcherEngine:
                 df = pd.read_sql_query("SELECT name, category FROM category_corrections", conn)
                 if not df.empty:
                     self.learning_db = df.groupby('name')['category'].last().to_dict()
-                    self._retrain_correction_classifier(df)
+                    # Fitting this model is a multi-minute, one-vs-rest fit over
+                    # thousands of categories. Load the pickled model when the
+                    # corrections table has not changed since it was written;
+                    # only fall back to fitting when there is nothing usable on
+                    # disk (see _ensure_correction_model).
+                    self._ensure_correction_model(df)
         except Exception as e:
             logger.warning(f"Failed to load category learning DB: {e}")
         try:
@@ -414,7 +439,150 @@ class CategoryMatcherEngine:
     # and very rare classes add memory/compute cost for near-zero benefit.
     _MIN_EXAMPLES_PER_CATEGORY = 2
 
-    def _retrain_correction_classifier(self, df=None):
+    # Bumped whenever the training pipeline or hyper-parameters below change,
+    # so an on-disk model fitted by an older version is never reused.
+    _MODEL_VERSION = 1
+    # A burst of approvals fires one retrain request per item; wait this long
+    # after the last one before fitting so a 50-item batch trains once.
+    _RETRAIN_DEBOUNCE_SECS = 5.0
+
+    @property
+    def _model_cache_path(self) -> str:
+        return f"{self.db_path}.clf.v{self._MODEL_VERSION}.pkl"
+
+    def _corrections_fingerprint(self) -> str:
+        """Identify the state of the corrections table.
+
+        Rows are only ever INSERTed, and pruning always removes the oldest ids,
+        so (count, min_id, max_id) changes on every insert and every prune.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*), MIN(id), MAX(id) FROM category_corrections"
+                ).fetchone()
+            return f"v{self._MODEL_VERSION}:{row[0]}:{row[1]}:{row[2]}"
+        except Exception as e:
+            logger.warning(f"Could not fingerprint corrections table: {e}")
+            return ""
+
+    def _load_cached_model(self, fingerprint: str, allow_stale: bool = False):
+        """Load the persisted model.
+
+        With allow_stale, a model fitted against a slightly different
+        corrections table is still returned. That matters on an ephemeral host
+        (Streamlit Cloud), where a committed model may not exactly match a
+        committed DB: a slightly-out-of-date suggestion engine available
+        instantly beats no suggestions for the minutes a refit would take.
+        Exact-match lookups in learning_db are unaffected either way.
+        """
+        if not os.path.exists(self._model_cache_path):
+            return None
+        if not fingerprint and not allow_stale:
+            return None
+        try:
+            with open(self._model_cache_path, "rb") as f:
+                blob = pickle.load(f)
+            if blob.get("fingerprint") != fingerprint and not allow_stale:
+                return None
+            return (blob["vectorizer"], blob["classifier"])
+        except Exception as e:
+            logger.warning(f"Ignoring unreadable correction-model cache: {e}")
+            return None
+
+    def _save_cached_model(self, model, fingerprint: str) -> None:
+        if not model or not fingerprint:
+            return
+        # Write to a temp file and rename so a crash mid-write, or a second
+        # process fitting concurrently, can't leave a half-written pickle that
+        # the next start would have to discover by failing to load it.
+        tmp = f"{self._model_cache_path}.{os.getpid()}.tmp"
+        try:
+            with open(tmp, "wb") as f:
+                pickle.dump(
+                    {"fingerprint": fingerprint, "vectorizer": model[0], "classifier": model[1]},
+                    f, protocol=pickle.HIGHEST_PROTOCOL,
+                )
+            os.replace(tmp, self._model_cache_path)
+        except Exception as e:
+            logger.warning(f"Failed to persist correction model: {e}")
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+
+    def _ensure_correction_model(self, df=None) -> None:
+        """Make a model available without ever blocking start-up.
+
+        Fitting takes minutes on a constrained host. Doing it inline here would
+        stall the first page render — on Streamlit Cloud, past the boot timeout,
+        and again after every container restart because that filesystem is
+        ephemeral. So nothing here is allowed to block: load the exact model if
+        it is on disk, otherwise fall back to a stale one, otherwise start with
+        no classifier at all. Any gap is filled by a background refit.
+
+        Until a model is ready, predict_category_from_learning() still serves
+        exact matches from learning_db, which is the primary path anyway; only
+        the fuzzy fallback is briefly unavailable.
+        """
+        fingerprint = self._corrections_fingerprint()
+        cached = self._load_cached_model(fingerprint)
+        if cached is not None:
+            self._corr_model = cached
+            logger.info("[CatLearn] Loaded correction model (matches corrections table)")
+            return
+
+        stale = self._load_cached_model(fingerprint, allow_stale=True)
+        if stale is not None:
+            self._corr_model = stale
+            logger.warning(
+                "[CatLearn] On-disk model does not match the corrections table; "
+                "using it anyway and refitting in the background"
+            )
+        else:
+            logger.warning(
+                "[CatLearn] No usable model on disk — starting without the fuzzy "
+                "category matcher; fitting in the background"
+            )
+        self._schedule_retrain()
+
+    def _schedule_retrain(self) -> None:
+        """Request a retrain without blocking the caller.
+
+        Approving a correction used to trigger a full multi-minute refit inline,
+        freezing the UI. Predictions keep using the previous model (and the
+        exact-match learning_db, which is unaffected) until the new one is ready.
+        """
+        with self._retrain_lock:
+            self._retrain_pending = True
+            if self._retrain_thread is not None and self._retrain_thread.is_alive():
+                return
+            self._retrain_thread = threading.Thread(
+                target=self._retrain_worker,
+                name="cat-correction-retrain",
+                daemon=True,
+            )
+            self._retrain_thread.start()
+
+    def _retrain_worker(self) -> None:
+        import time
+        while True:
+            # Debounce: sleep, then only proceed if nothing new arrived while
+            # we slept. A burst of approvals collapses into a single fit.
+            time.sleep(self._RETRAIN_DEBOUNCE_SECS)
+            with self._retrain_lock:
+                if not self._retrain_pending:
+                    self._retrain_thread = None
+                    return
+                self._retrain_pending = False
+            try:
+                self._retrain_correction_classifier()
+            except Exception as e:
+                logger.warning(f"Background correction retrain failed: {e}")
+
+    def _retrain_correction_classifier(self, df=None, fingerprint: str = None):
+        if fingerprint is None:
+            fingerprint = self._corrections_fingerprint()
         if df is None:
             try:
                 with sqlite3.connect(self.db_path) as conn:
@@ -458,25 +626,32 @@ class CategoryMatcherEngine:
                     return
 
             df['clean_name'] = df['name'].apply(clean_text)
-            self.correction_vectorizer = TfidfVectorizer(
+            vectorizer = TfidfVectorizer(
                 ngram_range=(1, 2), max_features=3000, dtype=np.float32
             )
-            X = self.correction_vectorizer.fit_transform(df['clean_name'])
+            X = vectorizer.fit_transform(df['clean_name'])
             y = df['category']
 
             # SGDClassifier with log_loss scales to large sample counts and
             # many classes without densifying internally the way saga/OvR
             # LogisticRegression can with class_weight='balanced'.
+            # n_jobs=-1 parallelises the one-vs-rest fit across cores. With a
+            # few thousand categories that is a few thousand independent binary
+            # fits, so this is close to a linear speed-up and does not change
+            # the resulting model at all.
             from sklearn.linear_model import SGDClassifier
-            self.correction_classifier = SGDClassifier(
+            classifier = SGDClassifier(
                 loss='log_loss',
                 class_weight='balanced',
                 max_iter=1000,
                 tol=1e-3,
-                n_jobs=1,
+                n_jobs=-1,
                 random_state=42,
             )
-            self.correction_classifier.fit(X, y)
+            classifier.fit(X, y)
+            # Single assignment — readers see the old model or the new one.
+            self._corr_model = (vectorizer, classifier)
+            self._save_cached_model(self._corr_model, fingerprint)
         except Exception as e:
             logger.warning(f"Failed to retrain correction classifier: {e}")
 
@@ -504,7 +679,8 @@ class CategoryMatcherEngine:
                             (excess,),
                         )
                     conn.commit()
-                self._retrain_correction_classifier()
+                self._invalidate_counts()
+                self._schedule_retrain()
             except Exception as e:
                 logger.warning(f"Failed to save correction to DB: {e}")
         else:
@@ -560,8 +736,9 @@ class CategoryMatcherEngine:
                 conn.commit()
             self._pending_corrections = {}
             self._pending_negatives = []
+            self._invalidate_counts()
             if had_corrections:
-                self._retrain_correction_classifier()
+                self._schedule_retrain()
         except Exception as e:
             logger.warning(f"Failed to batch save learning DB: {e}")
 
@@ -594,8 +771,21 @@ class CategoryMatcherEngine:
             logger.warning(f"list_negatives failed: {e}")
             return pd.DataFrame(columns=["id", "name", "category", "reason", "timestamp"])
 
+    def _invalidate_counts(self) -> None:
+        self._counts_cache = None
+
     def counts(self) -> tuple:
-        """Returns (corrections_count, negatives_count) for a quick summary."""
+        """Returns (corrections_count, negatives_count) for a quick summary.
+
+        Memoised: the sidebar calls this on every rerun, and these are two
+        unindexed COUNT(*) scans over a 200k-row table (~325ms measured on a
+        warm rerun — the single largest remaining cost of an idle interaction).
+        Every method that writes to either table invalidates the cache, so the
+        number a reviewer sees is never stale.
+        """
+        cached = getattr(self, "_counts_cache", None)
+        if cached is not None:
+            return cached
         try:
             with sqlite3.connect(self.db_path) as conn:
                 c = conn.cursor()
@@ -603,7 +793,8 @@ class CategoryMatcherEngine:
                 n_corr = c.fetchone()[0]
                 c.execute("SELECT COUNT(*) FROM category_negatives")
                 n_neg = c.fetchone()[0]
-                return (n_corr, n_neg)
+                self._counts_cache = (n_corr, n_neg)
+                return self._counts_cache
         except Exception as e:
             logger.warning(f"counts() failed: {e}")
             return (0, 0)
@@ -616,6 +807,7 @@ class CategoryMatcherEngine:
                 c = conn.cursor()
                 c.executemany("DELETE FROM category_corrections WHERE id = ?", [(i,) for i in ids])
                 conn.commit()
+            self._invalidate_counts()
         except Exception as e:
             logger.warning(f"delete_corrections failed: {e}")
             return 0
@@ -627,10 +819,13 @@ class CategoryMatcherEngine:
             with sqlite3.connect(self.db_path) as conn:
                 df = pd.read_sql_query("SELECT name, category FROM category_corrections", conn)
             self.learning_db = df.groupby('name')['category'].last().to_dict() if not df.empty else {}
-            self.correction_classifier = None
-            self.correction_vectorizer = None
+            self._corr_model = None
             if not df.empty:
-                self._retrain_correction_classifier(df)
+                # Off the request path — the admin who just deleted a row gets
+                # their click back immediately. Until the refit lands, deleted
+                # entries are already gone from learning_db (the exact-match
+                # path), so the stale model cannot resurrect them there.
+                self._schedule_retrain()
         except Exception as e:
             logger.warning(f"delete_corrections: failed to rebuild learning_db: {e}")
         return len(ids)
@@ -643,6 +838,7 @@ class CategoryMatcherEngine:
                 c = conn.cursor()
                 c.executemany("DELETE FROM category_negatives WHERE id = ?", [(i,) for i in ids])
                 conn.commit()
+            self._invalidate_counts()
         except Exception as e:
             logger.warning(f"delete_negatives failed: {e}")
             return 0

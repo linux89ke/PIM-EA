@@ -1,3 +1,7 @@
+import os
+import socket
+from urllib.parse import urlparse
+
 import streamlit as st
 import pandas as pd
 from targeted_audit_filters import (
@@ -8,6 +12,39 @@ from targeted_audit_filters import (
     CHECK_LABELS,
 )
 from report_builder import build_docx_report
+
+# Default gateway used by verify_category_rejections_with_ai(). Kept here so the
+# availability probe checks the same host the call will actually use.
+AI_GATEWAY_URL = "https://ai-gateway.zuma.jumia.com/v1"
+_AI_KEYS_FILE = os.path.join(os.path.dirname(__file__), "keys.txt")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _gateway_reachable(base_url: str) -> bool:
+    """Can we open a TCP connection to the AI gateway?
+
+    Deliberately just a socket connect, not an API call: it needs no key, costs
+    nothing, and answers the only question that matters — is there a route.
+    Two-second timeout so a dead host cannot stall the modal, cached for five
+    minutes so opening the modal repeatedly does not re-probe.
+    """
+    try:
+        parsed = urlparse(base_url)
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        with socket.create_connection((parsed.hostname, port), timeout=2):
+            return True
+    except Exception:
+        return False
+
+
+def ai_check_available(base_url: str = AI_GATEWAY_URL):
+    """(available, reason_if_not) for the optional AI category check."""
+    if not os.path.exists(_AI_KEYS_FILE):
+        return False, "no keys.txt found next to the app"
+    if not _gateway_reachable(base_url):
+        host = urlparse(base_url).hostname or base_url
+        return False, f"cannot reach {host} (internal network only)"
+    return True, ""
 
 _CHECK_ICONS = {
     "skip": "⏭️",
@@ -354,13 +391,27 @@ def targeted_audit_modal(support_files):
 
     st.markdown('<hr class="audit-divider">', unsafe_allow_html=True)
     st.session_state.setdefault("_show_ai_category_check", False)
-    st.toggle(
-        "🤖 Enable AI Category Rejection Check",
-        key="_show_ai_category_check",
-        help="Reveals a button above to send category-rejected products to an "
-             "AI model for a second opinion. Off by default since it costs "
-             "real API calls and time.",
-    )
+
+    # The AI check needs two things that are often absent: API keys on disk,
+    # and a route to the gateway. The gateway is an internal host (resolves to
+    # a private 10.x address), so it is unreachable from anywhere outside the
+    # corporate network — Streamlit Cloud included. Offering the toggle there
+    # just buys the reviewer several minutes of request timeouts followed by
+    # "AI Error" on every row, so hide it and say why.
+    _ai_ready, _ai_blocked_reason = ai_check_available()
+    if _ai_ready:
+        st.toggle(
+            "🤖 Enable AI Category Rejection Check",
+            key="_show_ai_category_check",
+            help="Reveals a button above to send category-rejected products to an "
+                 "AI model for a second opinion. Off by default since it costs "
+                 "real API calls and time.",
+        )
+    else:
+        # Force it off, so a toggle left on before losing connectivity cannot
+        # leave the run button visible.
+        st.session_state["_show_ai_category_check"] = False
+        st.caption(f":material/cloud_off: AI Category Check unavailable — {_ai_blocked_reason}")
 
     st.markdown('<hr class="audit-divider">', unsafe_allow_html=True)
     if st.button("Close", key="btn_close_audit_modal", type="secondary", width='stretch'):

@@ -79,6 +79,90 @@ def list_cached_sessions():
 
 
 # -------------------------------------------------
+# MANUAL DECISION JOURNAL
+# -------------------------------------------------
+# Manual approve/reject decisions are the only part of a review that cannot be
+# recomputed, so they are persisted twice:
+#   • inside {sig_hash}_report.parquet, which the startup fast path reloads, and
+#   • in the journal below, keyed on the uploaded FILE CONTENT alone.
+# The second key is what makes recovery reliable. sig_hash also folds in the
+# category-learning row count and PROCESSING_CACHE_VERSION, and either can
+# change between sessions; when that happens the checkpointed report is
+# orphaned under a hash nothing looks up again, and the decisions are lost even
+# though they sit on disk. The journal survives it: same files in ⇒ same key ⇒
+# decisions re-applied on top of a freshly validated report.
+
+MANUAL_DECISION_COLS = [
+    "ProductSetSid", "Status", "Reason", "Comment", "FLAG", "Is_Manual", "Is_Zip",
+]
+MANUAL_DECISION_PREFIX = "manual_"
+
+
+def manual_decisions_filename(process_signature: str) -> str:
+    """Journal filename for an uploaded file set (content-addressed, stable)."""
+    return f"{MANUAL_DECISION_PREFIX}{hashlib.md5(str(process_signature).encode()).hexdigest()}.parquet"
+
+
+def save_manual_decisions(process_signature: str, final_report) -> int:
+    """Persist every manually-decided row. Returns how many were written."""
+    if not process_signature or process_signature == "empty":
+        return 0
+    if not isinstance(final_report, pd.DataFrame) or final_report.empty:
+        return 0
+    if not {"Is_Manual", "ProductSetSid"}.issubset(final_report.columns):
+        return 0
+
+    fname = manual_decisions_filename(process_signature)
+    decided = final_report[final_report["Is_Manual"] == True]  # noqa: E712
+    cols = [c for c in MANUAL_DECISION_COLS if c in decided.columns]
+    decided = decided[cols].drop_duplicates(subset=["ProductSetSid"], keep="last")
+
+    if decided.empty:
+        # Undoing back to zero must clear the journal, or the next load would
+        # resurrect decisions the user deliberately removed.
+        try:
+            os.remove(os.path.join(PARQUET_CACHE_DIR, fname))
+        except OSError:
+            pass
+        return 0
+
+    save_df_parquet(decided, fname)
+    return len(decided)
+
+
+def load_manual_decisions(process_signature: str):
+    """Return the journalled decisions for an uploaded file set, or None."""
+    if not process_signature or process_signature == "empty":
+        return None
+    return load_df_parquet(manual_decisions_filename(process_signature))
+
+
+def apply_manual_decisions(final_report, decisions) -> int:
+    """Re-apply journalled decisions onto a report in place. Returns rows changed."""
+    if not isinstance(final_report, pd.DataFrame) or final_report.empty:
+        return 0
+    if not isinstance(decisions, pd.DataFrame) or decisions.empty:
+        return 0
+    if "ProductSetSid" not in final_report.columns or "ProductSetSid" not in decisions.columns:
+        return 0
+
+    fr_sids = final_report["ProductSetSid"].astype(str).str.strip()
+    dec = decisions.copy()
+    dec["ProductSetSid"] = dec["ProductSetSid"].astype(str).str.strip()
+    dec = dec.drop_duplicates(subset=["ProductSetSid"], keep="last").set_index("ProductSetSid")
+
+    mask = fr_sids.isin(dec.index)
+    if not mask.any():
+        return 0
+
+    target = fr_sids[mask]
+    for col in ("Status", "Reason", "Comment", "FLAG", "Is_Manual", "Is_Zip"):
+        if col in dec.columns and col in final_report.columns:
+            final_report.loc[mask, col] = target.map(dec[col])
+    return int(mask.sum())
+
+
+# -------------------------------------------------
 # TEXT & KEY HELPERS
 # -------------------------------------------------
 
@@ -143,9 +227,22 @@ def create_match_key_vectorized(df: pd.DataFrame) -> pd.Series:
 
 
 def df_hash(df: pd.DataFrame) -> str:
-    """Fast fingerprint: full content hash. Result is cached in df.attrs to avoid recomputation."""
+    """Fast fingerprint: full content hash. Result is memoised in df.attrs.
+
+    The memo is validated against the frame's shape and column list before it is
+    trusted. DataFrame.copy() propagates .attrs, so without that check a frame
+    copied from an already-hashed one — then given extra columns, which is
+    exactly what validate_products() does — kept reporting the ORIGINAL frame's
+    hash, silently serving caches keyed on the wrong content.
+
+    Note this still cannot detect an in-place edit that leaves shape and columns
+    unchanged (e.g. df.loc[0, "COLOR"] = "teal"). Callers that must be exact
+    about value-level changes should hash the columns they care about directly;
+    see _ColumnDigests in streamlit_app.py.
+    """
+    _stamp = (df.shape, tuple(df.columns))
     cached = df.attrs.get('__pim_hash__')
-    if cached is not None:
+    if cached is not None and df.attrs.get('__pim_hash_stamp__') == _stamp:
         return cached
     try:
         if df.empty:
@@ -158,6 +255,7 @@ def df_hash(df: pd.DataFrame) -> str:
         fallback_str = str(df.shape) + str(df.columns.tolist())
         result = hashlib.md5(fallback_str.encode()).hexdigest()
     df.attrs['__pim_hash__'] = result
+    df.attrs['__pim_hash_stamp__'] = _stamp
     return result
 
 
@@ -493,6 +591,24 @@ def format_local_price(usd_price, country: str) -> str:
 _ZIP_FILE_CACHE = None
 _ZIP_FILE_BYTES_ID = None
 
+# Cap on how many decoded ZIP images are held in memory at once. Each entry is a
+# base64 data URI — roughly 1.33x the original file — so an unbounded store grew
+# without limit as a reviewer paged through a large ZIP, and never shrank. 300
+# images covers several pages of history at a few hundred MB worst case.
+_ZIP_IMAGE_CACHE_MAX = 300
+
+
+def _bounded_store_set(store: dict, key: str, value: str) -> None:
+    """Insert into a plain dict used as an LRU-ish cache, evicting oldest first.
+
+    st.session_state stores a plain dict here (it must stay picklable and
+    session-scoped), so eviction is done explicitly rather than via a subclass.
+    """
+    store[key] = value
+    if len(store) > _ZIP_IMAGE_CACHE_MAX:
+        for _stale in list(store.keys())[: len(store) - _ZIP_IMAGE_CACHE_MAX]:
+            store.pop(_stale, None)
+
 def _basename_lower(value) -> str:
     name = str(value).strip().replace("\\", "/").split("/")[-1].lower()
     return name if name and name != "nan" else ""
@@ -524,7 +640,7 @@ def _load_zip_image_by_key(key: str) -> Optional[str]:
         elif key.endswith(".webp"): mime = "image/webp"
         elif key.endswith(".gif"): mime = "image/gif"
         data_uri = f"data:{mime};base64,{encoded}"
-        store[key] = data_uri
+        _bounded_store_set(store, key, data_uri)
         return data_uri
     except Exception as e:
         logger.warning(f"Failed lazy-loading ZIP image {member}: {e}")

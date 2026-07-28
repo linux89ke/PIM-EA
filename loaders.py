@@ -1065,7 +1065,12 @@ def load_and_compile_json_rules(json_path="category_qc_weighted.json") -> dict:
     return compiled_rules
 
 
-@st.cache_data(ttl=3600)
+# cache_resource, not cache_data: this dict is read-only reference data shared
+# by every rerun and every session. cache_data stores the value pickled and
+# hands back a fresh deep copy on each access — ~97ms per rerun for this ~6.5MB
+# payload, paid on every click. cache_resource returns the same object for free.
+# Callers only ever read from it (verified: no writes to support_files anywhere).
+@st.cache_resource(ttl=3600)
 def load_support_files_lazy():
     return load_all_support_files()
 

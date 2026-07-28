@@ -1,3 +1,4 @@
+import logging
 import re
 import pandas as pd
 import polars as pl
@@ -7,6 +8,8 @@ import requests as _requests
 import time as _time
 import streamlit as st
 from typing import Dict, List
+
+logger = logging.getLogger(__name__)
 
 # ── Shared volume/quantity regex ──────────────────────────────────────────────
 # Used by BOTH the false-rejection check (approved products that had volume in
@@ -368,30 +371,58 @@ def get_color_regex():
     return re.compile(pattern, re.IGNORECASE)
 
 
-@st.cache_data
+QC_RULES_FILE = "QC Check Validaton  (3).xlsx"
+
+
+def _normalise_sheet_name(name) -> str:
+    """Collapse whitespace and case so sheet lookup tolerates hand-edited tabs.
+
+    The workbook really does contain ' Mandatory Attributes - NG' (leading
+    space) and 'Mandatory Attributes - French' (title case). Matching exactly
+    and case-sensitively meant Senegal and Ivory Coast — which both map to the
+    French sheet — silently loaded ZERO rules, so every rule-based
+    verification for those two countries quietly fell back to "no rule".
+    """
+    return re.sub(r"\s+", " ", str(name)).strip().lower()
+
+
+@st.cache_data(show_spinner=False)
 def load_qc_excel(country_code: str):
     if not country_code:
         country_code = "UG"
     cc = country_code.upper().strip()
+    # Senegal and Ivory Coast share one French-language sheet.
     if cc in ("SN", "CI"):
         cc = "FRENCH"
     try:
-        xl = pd.ExcelFile("QC Check Validaton  (3).xlsx")
-        target_name = f"Mandatory Attributes - {cc}"
-        found_sheet = None
-        for name in xl.sheet_names:
-            if name.strip().replace("  ", " ") == target_name:
-                found_sheet = name
-                break
-        if found_sheet:
-            df = xl.parse(found_sheet)
-            if "ID" in df.columns:
-                df["ID"] = df["ID"].astype(str).str.strip()
-                df = df[df["ID"].notna() & (df["ID"] != "") & (df["ID"] != "nan")]
-                return df.set_index("ID").to_dict(orient="index")
-    except Exception:
-        pass
-    return {}
+        xl = pd.ExcelFile(QC_RULES_FILE)
+        target = _normalise_sheet_name(f"Mandatory Attributes - {cc}")
+        found_sheet = next(
+            (n for n in xl.sheet_names if _normalise_sheet_name(n) == target), None
+        )
+        if not found_sheet:
+            logger.error(
+                "[QC rules] No sheet for %s in %s. Looked for %r; available: %s",
+                country_code, QC_RULES_FILE, target, list(xl.sheet_names),
+            )
+            return {}
+        df = xl.parse(found_sheet)
+        if "ID" not in df.columns:
+            logger.error(
+                "[QC rules] Sheet %r for %s has no 'ID' column (columns: %s)",
+                found_sheet, country_code, list(df.columns)[:12],
+            )
+            return {}
+        df["ID"] = df["ID"].astype(str).str.strip()
+        df = df[df["ID"].notna() & (df["ID"] != "") & (df["ID"] != "nan")]
+        rules = df.set_index("ID").to_dict(orient="index")
+        logger.info("[QC rules] %s -> sheet %r, %d rules", country_code, found_sheet, len(rules))
+        return rules
+    except Exception as e:
+        # Was a bare `except: pass`, so a missing or corrupt workbook looked
+        # exactly like a country with no rules.
+        logger.error("[QC rules] Failed loading %s for %s: %s", QC_RULES_FILE, country_code, e)
+        return {}
 
 
 # ── Rule-based re-verification for the checks that have a deterministic answer ─
@@ -482,7 +513,9 @@ def _verify_false_approval(check_key: str, rec: dict, rule: dict, weights: set, 
             if not _color_recognised(color_val, valid_colors):
                 if _ai_rescued():
                     return ""
-                return "Color Invalid (Not In colors.txt)"
+                # Plain wording: the reader does not care which file the
+                # list of valid colors lives in.
+                return "Color Not Recognised"
     elif check_key == "warranty":
         if _clean(rule.get("Warranty", "")).lower() == "mandatory" and not _clean(rec.get("PRODUCT_WARRANTY")):
             return "Warranty Field Empty"
@@ -633,9 +666,12 @@ def evaluate_all_checks(data: pd.DataFrame, country_code: str) -> pd.DataFrame:
     weights = load_weight_categories()
     color_re = get_color_regex()
     qc_rules = load_qc_excel(country_code)
-    cols = [c for c in _NEEDED if c in data.columns]
-    # Deduplicate: if the CSV has duplicate column names pandas will drop
-    # data silently in .to_dict(). Take only the first occurrence of each.
+    # Deduplicate BOTH sides. The frame's own labels were already handled, but
+    # `cols` itself repeats Title_Language_Check_Status/Reason — title_weight
+    # and title_english share those two columns — so the selection rebuilt a
+    # duplicate-labelled frame and .to_dict() dropped keys again, warning
+    # "columns are not unique, some columns will be omitted" on every run.
+    cols = list(dict.fromkeys(c for c in _NEEDED if c in data.columns))
     _dedup_data = data.loc[:, ~data.columns.duplicated()]
     records = _dedup_data[cols].to_dict("records")
     status_cols_present = {status_col for status_col, _ in _CHECK_COLUMNS.values() if status_col in data.columns}
@@ -1054,8 +1090,12 @@ def verify_category_rejections_with_ai(
     if rejected.empty:
         return pd.DataFrame(columns=empty_cols)
 
-    cols = [c for c in _CATEGORY_AI_COLS + ["PRODUCT_SET_SID", "CATEGORY", "Initial_Category_Path"] if c in rejected.columns]
-    # Deduplicate columns before converting to records to avoid silent data loss
+    # Same duplicate hazard: _CATEGORY_AI_COLS already contains CATEGORY and
+    # Initial_Category_Path, and the concatenation below adds them again.
+    cols = list(dict.fromkeys(
+        c for c in _CATEGORY_AI_COLS + ["PRODUCT_SET_SID", "CATEGORY", "Initial_Category_Path"]
+        if c in rejected.columns
+    ))
     rejected = rejected.loc[:, ~rejected.columns.duplicated()]
     cols = [c for c in cols if c in rejected.columns]
     records = rejected[cols].to_dict("records")

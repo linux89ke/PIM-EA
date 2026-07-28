@@ -35,18 +35,121 @@ _WHITE = RGBColor(0xFF, 0xFF, 0xFF)
 # counted in the Overview, not tabled individually.
 _REPORTABLE_VERDICTS = ["False Approval", "False Rejection", "Needs Manual Review", "AI Error"]
 
-_VERDICT_INTRO = {
-    "False Approval": "were approved by the pipeline, but re-checking against the file's own "
-                       "mandatory-attribute rules for this category indicates they should not "
-                       "have been approved.",
-    "False Rejection": "were rejected by the pipeline, but re-checking against the file's own "
-                        "rules for this category shows the rejection was incorrect.",
-    "Needs Manual Review": "cannot be resolved automatically from the data alone and require a "
-                            "human to review — often because they depend on visual inspection or "
-                            "a subjective AI suggestion.",
-    "AI Error": "could not be properly evaluated because the check itself failed (e.g. a gateway "
-                "timeout or bad response) rather than returning a real finding.",
+# Plain-English wording for the report. The old text was the same abstract
+# sentence for every check ("re-checking against the file's own rules for this
+# category shows the rejection was incorrect"), which told the reader nothing
+# about WHAT was wrong. These phrases name the actual thing that was checked,
+# so a paragraph reads like: "These 3 products were rejected for missing FDA or
+# regulatory documents. But this category doesn't require FDA documents, so
+# they should have been approved."
+
+# What the product was rejected for.
+_REJECTED_FOR = {
+    "category": "because the category looked wrong for the product",
+    "color": "because the color was missing or not recognised",
+    "warranty": "because the warranty details were missing",
+    "variation": "because the variation was missing",
+    "fda": "for missing FDA or regulatory documents",
+    "title_weight": "because the title was missing a weight or volume",
+    "title_english": "because the title was not in English",
+    "name_brand": "because the product name and the brand name did not match",
+    "image_quality": "because the image quality was too low",
+    "brand_image": "because a brand was spotted on the product image",
 }
+
+# What the category's own rule actually says — the contradiction.
+_NOT_REQUIRED = {
+    "category": "the category is a valid fit for this product",
+    "color": "this category does not require a color",
+    "warranty": "this category does not require warranty details",
+    "variation": "this category does not require a variation",
+    "fda": "this category does not require FDA documents",
+    "title_weight": "this category does not require a weight or volume in the title",
+    "title_english": "the title is in English",
+    "name_brand": "the name and the brand do match",
+    "image_quality": "the image is good enough",
+    "brand_image": "there is no brand problem with the image",
+}
+
+_IS_REQUIRED = {
+    "category": "the category is wrong for this product",
+    "color": "this category does require a color, and it is missing",
+    "warranty": "this category does require warranty details, and they are missing",
+    "variation": "this category does require a variation, and it is missing",
+    "fda": "this category does require FDA documents, and they are missing",
+    "title_weight": "this category does require a weight or volume in the title, and it is missing",
+    "title_english": "the title is not in English",
+    "name_brand": "the name and the brand do not match",
+    "image_quality": "the image quality is too low",
+    "brand_image": "there is a brand on the image that should not be there",
+}
+
+
+# Reason types worded "<thing> Present But Rejected" mean something different
+# from the rest: the product was NOT missing the attribute at all — the file's
+# own data contradicts its own rejection. Saying "this category does not require
+# it" there would be plainly wrong, so these get their own phrasing.
+# A value that is present but not recognised is not the same as a missing one.
+_INVALID_VALUE = {
+    "color": "the color that is filled in is not one the system recognises",
+}
+
+_VALUE_PRESENT = {
+    "warranty": "the warranty details are actually filled in",
+    "title_weight": "the title does contain a weight or volume",
+    "color": "the color is actually filled in",
+    "variation": "the variation is actually filled in",
+    "fda": "the FDA documents are actually there",
+}
+
+
+def _n_products(n: int) -> str:
+    """'1 product' / '12 products' — the overview read '1 products' otherwise."""
+    return f"{n:,} product" if n == 1 else f"{n:,} products"
+
+
+def _explain(check_key: str, reason_type: str, verdict: str, n: int) -> str:
+    """One plain-English sentence describing what this group of products means."""
+    if n == 1:
+        subject, verb, pronoun, obj, needs = "This product", "was", "It", "it", "needs"
+    else:
+        subject, verb, pronoun, obj, needs = f"These {n} products", "were", "They", "them", "need"
+
+    if verdict == "False Rejection":
+        why = _REJECTED_FOR.get(check_key, "by this check")
+        if "present but rejected" in str(reason_type).lower():
+            rule = _VALUE_PRESENT.get(check_key, "the value is actually there in the file")
+        else:
+            rule = _NOT_REQUIRED.get(check_key)
+        if rule:
+            return (f"{subject} {verb} rejected {why}. But {rule}, so the rejection was "
+                    f"wrong — {pronoun.lower()} should have been approved.")
+        return (f"{subject} {verb} rejected {why}, but the file's own data shows the "
+                f"rejection was wrong.")
+
+    if verdict == "False Approval":
+        rt = str(reason_type).lower()
+        if "not recognised" in rt or "invalid" in rt:
+            rule = _INVALID_VALUE.get(check_key)
+        else:
+            rule = _IS_REQUIRED.get(check_key)
+        if rule:
+            return f"{subject} {verb} approved, but {rule}. {pronoun} should have been rejected."
+        return (f"{subject} {verb} approved, but the file's own data shows "
+                f"{pronoun.lower()} should have been rejected.")
+
+    if verdict == "Needs Manual Review":
+        return (f"{subject} cannot be decided from the file alone. Someone needs to look at "
+                f"{obj} — usually to check the photo, or to judge a suggestion the AI was "
+                f"unsure about.")
+
+    if verdict == "AI Error":
+        return (f"{subject} {verb} never actually checked. The check itself failed — normally "
+                f"a timeout or a bad reply from the service — so this is not a problem with "
+                f"the {'product' if n == 1 else 'products'}. {pronoun} still {needs} to be "
+                f"checked properly.")
+
+    return f"{subject} {needs} attention."
 
 
 def _shade_cell(cell, hex_color: str):
@@ -248,17 +351,42 @@ def build_docx_report(
     n_dup = int(counts.get("Duplicate", 0))
     n_skip = int(counts.get("Skipped", 0))
 
+    # Short sentences, one idea each. This was previously a single ~90-word
+    # sentence that a reader had to unpick to find the numbers that matter.
     doc.add_paragraph(
-        f"The rule-based QC validation system evaluated {total:,} products, approving {approved:,} "
-        f"and rejecting {rejected:,}. This targeted audit re-examined every one of the file's own "
-        f"per-check decisions, confirming {n_true_rej:,} rejections were correct. It identified "
-        f"{n_false_approvals:,} potential false approvals and {n_false_rej:,} potential false "
-        f"rejections requiring attention, plus {n_manual:,} case(s) needing manual review and "
-        f"{n_ai_error:,} case(s) where a check itself failed rather than returning a real result "
-        f"(including AI/gateway errors and image extraction failures such as broken connections "
-        f"or timeouts). Separately, {n_dup:,} product(s) were flagged as duplicates and {n_skip:,} "
-        f"were excluded before QC (prohibited/inactive/tester categories)."
+        f"QC looked at {total:,} products in total. It approved {approved:,} of them "
+        f"and rejected {rejected:,}."
     )
+    doc.add_paragraph(
+        f"This audit went back over every one of those decisions and checked them "
+        f"against the rules for each product's own category. {n_true_rej:,} of the "
+        f"rejections were correct and need no action."
+    )
+    doc.add_paragraph(
+        f"The audit found {_n_products(n_false_rej)} that {'was' if n_false_rej == 1 else 'were'} "
+        f"rejected when {'it' if n_false_rej == 1 else 'they'} should have passed, and "
+        f"{_n_products(n_false_approvals)} that {'was' if n_false_approvals == 1 else 'were'} "
+        f"approved when {'it' if n_false_approvals == 1 else 'they'} should have been rejected. "
+        f"These are the ones worth acting on first."
+    )
+    if n_manual:
+        doc.add_paragraph(
+            f"Another {_n_products(n_manual)} cannot be settled from the file on their own "
+            f"and {'needs' if n_manual == 1 else 'need'} a person to look at {'it' if n_manual == 1 else 'them'}."
+        )
+    if n_ai_error:
+        doc.add_paragraph(
+            f"{_n_products(n_ai_error)} could not be checked at all, because the check itself "
+            f"failed — a broken connection, a timeout, or an image that could not be opened. "
+            f"{'This is not a problem' if n_ai_error == 1 else 'These are not problems'} with the "
+            f"{'product' if n_ai_error == 1 else 'products'}, but {'it has' if n_ai_error == 1 else 'they have'} not been checked yet."
+        )
+    if n_dup or n_skip:
+        doc.add_paragraph(
+            f"Separately, {_n_products(n_dup)} {'was' if n_dup == 1 else 'were'} flagged as duplicates, "
+            f"and {n_skip:,} {'was' if n_skip == 1 else 'were'} set aside before QC even started "
+            f"because their category is prohibited, inactive, or a tester."
+        )
 
     # ── 3. Issues Found ────────────────────────────────────────────────────
     doc.add_heading("3. Issues Found", level=1)
@@ -283,12 +411,13 @@ def build_docx_report(
                         continue
                     any_issue = True
 
+                    _case_word = "Case" if len(sub) == 1 else "Cases"
                     doc.add_heading(
-                        f"Issue {issue_num} — {label}: {reason_type} ({verdict}, {len(sub)} Cases)",
+                        f"Issue {issue_num} — {label}: {reason_type} ({verdict}, {len(sub)} {_case_word})",
                         level=2,
                     )
                     issue_num += 1
-                    doc.add_paragraph(f"These {len(sub)} product(s) {_VERDICT_INTRO[verdict]}")
+                    doc.add_paragraph(_explain(check_key, reason_type, verdict, len(sub)))
                     # AI Error cases (gateway timeouts, bad responses, image
                     # extraction failures) can number in the hundreds on a
                     # rough run and are rarely individually actionable — the
