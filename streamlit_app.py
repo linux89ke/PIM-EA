@@ -124,86 +124,27 @@ from ui_components import (
     apply_status_change,
     checkpoint_final_report,
     flag_pill_header,
+    render_context_rail,
     render_exports_section,
     render_flag_expander,
     render_image_grid,
+    render_sibling_prompt,
     render_manual_review_buttons,
     render_rejection_donut,
+    render_severity_group_header,
     render_summary_header,
 )
 
-# ──────────────────────────────────────────────────────────────────────────────
-# GLOBAL STYLES & BRANDING (Javascript Injector for targeted styling)
-# ──────────────────────────────────────────────────────────────────────────────
-st.iframe(
-    """
-    <script>
-    (function() {
-        function colorExpander() {
-            try {
-                var doc = window.parent.document;
-                var expanders = doc.querySelectorAll('[data-testid="stExpander"]');
-                expanders.forEach(function(expander) {
-                    var summary = expander.querySelector('summary');
-                    if (!summary) return;
-                    var label = summary.textContent || '';
-                    var isZip = label.indexOf('Prefetched') !== -1 || label.indexOf('ZIP') !== -1;
-                    if (isZip) {
-                        if (summary.getAttribute('data-zip-styled') === '1') return;
-                        summary.style.setProperty('background-color', 'rgb(244, 210, 159)', 'important');
-                        summary.style.setProperty('color', 'rgb(49, 51, 63)', 'important');
-                        summary.style.setProperty('border-radius', '8px', 'important');
-                        summary.style.setProperty('margin-bottom', '4px', 'important');
-                        var p = summary.querySelector('p');
-                        if (p) {
-                            p.style.setProperty('color', 'rgb(49, 51, 63)', 'important');
-                            p.style.setProperty('font-weight', '600', 'important');
-                        }
-                        summary.setAttribute('data-zip-styled', '1');
-                    } else {
-                        summary.style.removeProperty('background-color');
-                        summary.style.removeProperty('color');
-                        summary.style.removeProperty('border-radius');
-                        summary.style.removeProperty('margin-bottom');
-                        var p2 = summary.querySelector('p');
-                        if (p2) {
-                            p2.style.removeProperty('color');
-                            p2.style.removeProperty('font-weight');
-                            p2.style.removeProperty('font-size');
-                        }
-                        var svg = summary.querySelector('svg');
-                        if (svg) {
-                            svg.style.removeProperty('fill');
-                        }
-                        summary.removeAttribute('data-zip-styled');
-                        summary.removeAttribute('data-std-styled');
-                    }
-                });
-            } catch(e) {
-                console.error('colorExpander error:', e);
-            }
-        }
-        setTimeout(colorExpander, 100);
-        setTimeout(colorExpander, 500);
-        // Poll for ~15s to catch styling changes the MutationObserver below
-        // might miss right after load, then stop — a forever-running
-        // setInterval here was burning CPU for the entire session even
-        // though the observer already handles ongoing DOM changes.
-        var _pollCount = 0;
-        var _pollId = setInterval(function() {
-            colorExpander();
-            _pollCount++;
-            if (_pollCount >= 10) clearInterval(_pollId);
-        }, 1500);
-        try {
-            var obs = new MutationObserver(function() { colorExpander(); });
-            obs.observe(window.parent.document.body, { childList: true, subtree: true });
-        } catch(e) {}
-    })();
-    </script>
-    """,
-    height=1,
-)
+# A JS injector used to live here. It reached into the parent document on
+# every DOM mutation and repainted any expander whose label mentioned "ZIP"
+# with a hardcoded tan (rgb(244,210,159)) set via !important — a fifth palette
+# that overrode the stylesheet and could not be themed.
+#
+# It is gone for two reasons. Design: ZIP provenance is a footnote, not a
+# whole background colour, and it now reads as a "from ZIP" badge inside the
+# flag header where the severity ramp owns the colour. Cost: a MutationObserver
+# on document.body ran colorExpander() for every mutation the app made, for
+# the lifetime of the session, to style a handful of summaries.
 # ──────────────────────────────────────────────────────────────────────────────
 
 PREFETCH_MAP = {
@@ -678,7 +619,16 @@ FLAG_RELEVANT_COLS = {
     "Incomplete Smartphone Name": ["CATEGORY_CODE", "NAME"],
     "Specs Inconsistency": ["CATEGORY_CODE", "NAME", "DESCRIPTION", "SHORT_DESCRIPTION", "CATEGORY"],
     "Brand Image Mismatch": ["BRAND", "NAME", "Brand_Detected_On_Product", "SELLER_NAME"],
-    "Off-Platform Contact": ["NAME", "DESCRIPTION", "SHORT_DESCRIPTION", "SELLER_NAME"],
+    # The localised columns carry real content in the French and Arabic
+    # markets — in one Uganda batch alone, 233 French and 225 Arabic
+    # descriptions were populated. Scanning only the base columns meant a
+    # phone number sitting in DESCRIPTION_AR was invisible to this check.
+    "Off-Platform Contact": [
+        "NAME", "NAME_FR", "NAME_AR",
+        "DESCRIPTION", "DESCRIPTION_FR", "DESCRIPTION_AR",
+        "SHORT_DESCRIPTION", "SHORT_DESCRIPTION_FR", "SHORT_DESCRIPTION_AR",
+        "SELLER_NAME",
+    ],
     "Duplicate product": ["NAME", "SELLER_NAME", "BRAND", "CATEGORY_CODE", "COLOR", "COLOR_FAMILY", "MAIN_IMAGE"],
     "Perfume Tester": ["CATEGORY_CODE", "NAME"],
     "Discount too high": ["GLOBAL_PRICE", "GLOBAL_SALE_PRICE"],
@@ -988,6 +938,15 @@ def _fetch_all_image_dimensions(data: pd.DataFrame) -> dict:
             _IMAGE_DIM_CACHE[key] = size if size else None
             if ph:
                 _IMAGE_HASH_CACHE[key] = ph
+
+    # Publish a snapshot for ui_components, which needs the hashes to find the
+    # same photo listed by another seller but cannot import this module (it is
+    # the entry script, and streamlit_app already imports ui_components).
+    # A dict copy of at most a few thousand short strings, once per validation.
+    try:
+        st.session_state["_image_phash_by_url"] = dict(_IMAGE_HASH_CACHE)
+    except Exception:
+        pass
     return _IMAGE_DIM_CACHE
 
 
@@ -1122,6 +1081,25 @@ def check_miscellaneous_category(
                     cat_path_to_code=cat_path_to_code,
                     code_to_path=code_to_path,
                 )
+                # Kenya: the matcher predicts arbitrary categories for book
+                # titles and rejects books that are already filed correctly.
+                # Everything under "Books, Movies and Music" is exempt except
+                # the DVDs sub-tree.
+                if str(country_code or "").upper() == "KE":
+                    try:
+                        from custom_country_rules import drop_kenya_books_false_positives
+                        _before = len(base_flagged)
+                        base_flagged = drop_kenya_books_false_positives(
+                            base_flagged, code_to_path
+                        )
+                        _dropped = _before - len(base_flagged)
+                        if _dropped:
+                            logger.info(
+                                "Kenya books exemption: dropped %s Wrong Category "
+                                "false positive(s)", _dropped,
+                            )
+                    except Exception as _e:
+                        logger.warning("Kenya books exemption failed: %s", _e)
                 if not custom_flagged.empty:
                     flagged = pd.concat([custom_flagged, base_flagged], ignore_index=True)
                     return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
@@ -1374,17 +1352,76 @@ def check_prohibited_products(
             str(c).strip().lower() in ("none", "nan", "") for c in cats
         )
 
-    usable_rules = [r for r in prohibited_rules if not _is_placeholder(r.get("categories"))]
-    _n_dead = len(prohibited_rules) - len(usable_rules)
-    if _n_dead:
-        logger.warning(
-            "[Prohibited] %d of %d rules have no usable category codes and are "
-            "ignored. Fill the 'categories' column in Prohibbited.xlsx to enable "
-            "them.", _n_dead, len(prohibited_rules),
+    # A blank category disables a rule, EXCEPT for the curated list below.
+    #
+    # Blank categories left the check nearly dead — KE ran 8 of 316 rules,
+    # NG 0 of 1831 — because keywords like "vape" and "shisha" are banned
+    # whatever they are filed under, so nobody was ever going to fill in a
+    # category for them.
+    #
+    # Inferring "blank means everywhere" was tried and is wrong. Measured
+    # against 7,181 real product names, globalising NG's blank rules flagged
+    # 4.6% of the catalogue, 89% of it from one keyword: "military", which is
+    # meant as military equipment and matches "Military-Grade Case" on every
+    # phone cover. "lighter" (meaning cigarette lighter) matched "Lighter
+    # Warm Fleece Lining". Those rules genuinely need a category.
+    #
+    # So the global set is explicit rather than inferred. Every entry was
+    # taken from the sheets and checked against that same corpus: the 49
+    # below with no corpus match at all, plus 6 whose only matches were
+    # genuine prohibited items (adult products and two stun guns).
+    #
+    # To add a term: confirm it cannot appear innocently in a product name,
+    # in any market. If it can, give it a category in Prohibbited.xlsx
+    # instead — that is what the category column is for.
+    _GLOBAL_PROHIBITED = frozenset({
+        # Vaping and smoking paraphernalia
+        "vape", "vapes", "vaping", "vape pen", "vape pens", "vape juice",
+        "vape liquid", "vape cartridge", "vape cart", "vape kit", "vape mod",
+        "vape pod", "vape tank", "vape starter kit", "disposable vape",
+        "refillable vape", "herbal vape", "cloud vape",
+        "e cigarette", "e-cigarette", "e-cigarettes", "ecigarette",
+        "e-juice", "e-hookah",
+        "shisha", "shishaa", "shisha pipe", "shisha pen", "shisha flavor",
+        "shisha flavour", "hookah",
+        # Controlled substances
+        "cannabis", "cannabis oil", "cocaine", "heroin", "marijuana", "lsd",
+        # Weapons
+        "taser", "tasers", "stun gun", "stun gunn", "pepper spray",
+        # Adult products
+        "sex toy", "sex toys", "wand sex toys", "anal sex toys",
+        "fetish sex toy r4", "dildo", "rabbit dildo vibrator g-spot",
+        "vibrating rotating dildo", "vibrator g spot dildo", "g-spot",
+        "butt plug",
+        # Misrepresentation
+        "counterfeit",
+    })
+
+    scoped_rules, global_rules, disabled = [], [], []
+    for r in prohibited_rules:
+        if not _is_placeholder(r.get("categories")):
+            scoped_rules.append(r)
+        elif str(r.get("keyword", "")).strip().lower() in _GLOBAL_PROHIBITED:
+            # Empty category set = matches on keyword alone, any category.
+            global_rules.append({**r, "categories": set()})
+        else:
+            disabled.append(str(r.get("keyword", "")).strip())
+
+    if disabled:
+        logger.info(
+            "[Prohibited] %d rule(s) inactive: no category, and the keyword is "
+            "not on the always-prohibited list (e.g. %s). Add category codes "
+            "in Prohibbited.xlsx to enable them.",
+            len(disabled), ", ".join(sorted({d for d in disabled if d})[:5]),
         )
-    if not usable_rules:
+    logger.info(
+        "[Prohibited] %d category-scoped rule(s), %d always-prohibited rule(s) active.",
+        len(scoped_rules), len(global_rules),
+    )
+
+    prohibited_rules = scoped_rules + global_rules
+    if not prohibited_rules:
         return pd.DataFrame(columns=data.columns)
-    prohibited_rules = usable_rules
 
     all_kws = sorted(
         set(rule["keyword"] for rule in prohibited_rules), key=len, reverse=True
@@ -1398,9 +1435,20 @@ def check_prohibited_products(
         return pd.DataFrame(columns=data.columns)
     candidates = data[match_mask]
 
+    # The per-row test below reads an empty set as "any category", so a
+    # keyword that is global in one rule must stay global even if another
+    # rule scopes it — otherwise the union would silently narrow it back to
+    # that one category and undo the fix above.
     kw_to_cats = {}
+    _global_kws = set()
     for rule in prohibited_rules:
-        kw_to_cats.setdefault(rule["keyword"], set()).update(rule["categories"])
+        kw = rule["keyword"]
+        cats = rule.get("categories") or set()
+        if not cats:
+            _global_kws.add(kw)
+        kw_to_cats.setdefault(kw, set()).update(cats)
+    for kw in _global_kws:
+        kw_to_cats[kw] = set()
 
     flagged_indices = set()
     comment_map = {}
@@ -1752,11 +1800,34 @@ def check_counterfeit_sneakers(
     ].copy()
     if sneakers.empty:
         return pd.DataFrame(columns=data.columns)
+
+    # Whole-word matching. This was `any(b in x for b in brands)` — a bare
+    # substring test against a 369-entry list containing 56 entries of four
+    # characters or fewer ("lv", "tn", "j1", "cd", "af1"). Those matched
+    # inside ordinary words and rejected honest listings:
+    #
+    #   "SILVER Vic Shoes ..."         -> "lv" inside si-LV-er
+    #   "SILVER Victorious Heels ..."  -> "lv" again, plus "victori"
+    #                                     inside "victorious"
+    #
+    # Neither is a counterfeit sneaker; both are rhinestone heels. The
+    # lookaround form is the same one check_counterfeit_jerseys already uses,
+    # and it tolerates the entries containing spaces or punctuation
+    # ("af 1", "l v", "d!or", "n!ke") that \b would handle badly.
+    #
+    # One compiled alternation also replaces 369 substring scans per row.
+    _sensitive = [b for b in (sneaker_sensitive_brands or []) if str(b).strip()]
+    if not _sensitive:
+        return pd.DataFrame(columns=data.columns)
+    _sens_re = re.compile(
+        r"(?<!\w)(?:"
+        + "|".join(re.escape(b) for b in sorted(_sensitive, key=len, reverse=True))
+        + r")(?!\w)",
+        re.IGNORECASE,
+    )
     return sneakers[
         sneakers["_brand_lower"].isin(["generic", "fashion"])
-        & sneakers["_name_lower"].apply(
-            lambda x: any(b in x for b in sneaker_sensitive_brands)
-        )
+        & sneakers["_name_lower"].str.contains(_sens_re, na=False)
     ].drop_duplicates(subset=["PRODUCT_SET_SID"])
 
 
@@ -1996,6 +2067,19 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 # Uganda, Ghana, Morocco, Egypt, Senegal or Ivory Coast went straight through.
 # Bare digit runs are deliberately NOT matched — model numbers, EANs and
 # capacities would swamp the check with false positives.
+# Arabic-Indic and Eastern Arabic-Indic digits fold to ASCII before matching.
+# \d already matches ٥ because Python patterns are Unicode-aware, but every
+# literal in the patterns below is ASCII — the leading "0" in the local
+# formats, and prefixes like 212 or 20 — so "٠٦ ١٢ ٣٤ ٥٦ ٧٨" failed while the
+# same number in Latin digits matched. Folding once is far less error-prone
+# than writing a second set of patterns.
+_ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+
+
+def _fold_digits(text: str) -> str:
+    return str(text).translate(_ARABIC_DIGITS)
+
+
 _PHONE_RE = re.compile(
     r"(?:"
     # International for the eight markets. Digit GROUPING is deliberately not
@@ -2050,8 +2134,20 @@ _LOCATION_RE = re.compile(
     r"|\bnext\s+to\s+(?:the\s+)?[a-z]+\s+(?:building|mall|plaza|arcade|market|stage)"
     r"|\b(?:visit|come\s+to|located\s+at|find\s+us\s+at)\s+(?:our\s+)?"
     r"(?:shop|store|office|showroom)\b"
+    # French — "BP 1234", "boîte postale", "magasin n° 12", "2ème étage",
+    # "en face de", "à côté du marché", "situé à"
+    r"|\bb\.?\s*p\.?\s*\d+"
+    r"|\bbo[iî]te\s+postale\s*\d+"
+    r"|\b(?:magasin|boutique|local|bureau)\s*(?:n[o°]\.?|num[ée]ro|#)?\s*\d+"
+    r"|\b\d+\s*(?:er|[eè]me)?\s*[ée]tage\b"
+    r"|\ben\s+face\s+d[eu]\b|\b[aà]\s+c[oô]t[ée]\s+d[eu]\b"
+    r"|\bsitu[ée]\s+[aà]\b|\bvenez\s+(?:nous\s+voir|[aà])\b"
+    # Arabic — "ص.ب ١٢٣" (P.O. Box), "محل رقم", "الطابق", "بجانب", "أمام"
+    r"|ص\.?\s*ب\.?\s*\d+"
+    r"|(?:محل|متجر|مكتب)\s*(?:رقم)?\s*\d+"
+    r"|الطابق\s*\S+|بجانب\s+\S+|أمام\s+\S+|بالقرب\s+من"
     r")",
-    re.IGNORECASE,
+    re.IGNORECASE | re.UNICODE,
 )
 
 # Ordered so the comment names the most actionable kind first.
@@ -2064,11 +2160,26 @@ _CONTACT_KINDS = (
 # Soft signals: divert-the-buyer wording without a number/link. Deliberately
 # phrase-based ("follow us on", not bare "tiktok") so products like ring
 # lights "for TikTok videos" don't false-positive.
+#
+# French and Arabic carry the same intent as the English phrases. \b is not
+# used around the Arabic alternatives: Arabic script has no ASCII word
+# boundary, so \b next to an Arabic letter never matches.
 _OFFPLATFORM_SOFT_RE = re.compile(
     r"(?:\bcall\s+us\b|\bcontact\s+(?:us|the\s+seller|seller)\b"
     r"|\border\s+(?:directly|via|through)\b|\bdm\s+us\b|\binbox\s+us\b"
-    r"|\bfollow\s+us\s+on\b|\bfind\s+us\s+on\b|\bvisit\s+our\b)",
-    re.IGNORECASE,
+    r"|\bfollow\s+us\s+on\b|\bfind\s+us\s+on\b|\bvisit\s+our\b"
+    # French — "appelez-nous", "contactez le vendeur", "commandez directement",
+    # "écrivez-nous", "suivez-nous sur", "visitez notre boutique"
+    r"|\bappelez[\s\-]?(?:nous|moi)\b|\bcontactez[\s\-]?(?:nous|moi|le\s+vendeur)\b"
+    r"|\bcommandez\s+(?:directement|via|par)\b|\b[ée]crivez[\s\-]?nous\b"
+    r"|\bsuivez[\s\-]?nous\s+sur\b|\bvisitez\s+(?:notre|nos)\b"
+    r"|\bnous\s+joindre\b|\bjoignez[\s\-]?nous\b"
+    # Arabic — "اتصل بنا", "تواصل معنا", "اطلب مباشرة", "تابعنا على",
+    # "راسلنا", "زوروا متجرنا"
+    r"|اتصل\s*بنا|تواصل\s*مع(?:نا)?|اطلب\s*مباشرة|تابعنا\s*على"
+    r"|راسلنا|زوروا?\s*(?:متجرنا|محلنا)|كلمنا"
+    r")",
+    re.IGNORECASE | re.UNICODE,
 )
 
 # WhatsApp needs its own three-way classification because the bare word is
@@ -2082,7 +2193,9 @@ _OFFPLATFORM_SOFT_RE = re.compile(
 #   3. Anything else — WhatsApp mentioned with no feature context and no
 #      clear solicitation wording → ambiguous, worth a human glance but not
 #      an automatic reject, so it's soft evidence only.
-_WHATSAPP_ANY_RE = re.compile(r"whats\s*app", re.IGNORECASE)
+# "واتساب" / "واتس اب" is how WhatsApp is written in Arabic listings; the
+# Latin spelling never appears in them, so the bare pattern missed it entirely.
+_WHATSAPP_ANY_RE = re.compile(r"whats\s*app|واتس\s*اب|واتساب", re.IGNORECASE | re.UNICODE)
 _WHATSAPP_FEATURE_CTX_RE = re.compile(
     r"whats\s*app\s*(?:\w+\s+){0,2}(?:notification|notifications|call|calls|calling"
     r"|support|compatib\w*|sync\w*|enabled|feature\w*|message\w*|alert\w*|chat\w*)"
@@ -2119,8 +2232,15 @@ def check_offplatform_contact(data: pd.DataFrame, **kwargs) -> pd.DataFrame:
 
     # Per-column stripped/lowered text — kept separate (not concatenated)
     # so a match can be attributed back to its specific source field.
+    # Digits fold here, once per column, so every pattern below sees ASCII
+    # numerals whatever script the listing was written in. Doing it at this
+    # point also means the comment quotes the folded form, which is what a
+    # reviewer can actually dial.
     col_text = {
-        c: data[c].astype(str).str.replace(_HTML_TAG_RE, " ", regex=True).str.lower()
+        c: data[c].astype(str)
+                  .str.replace(_HTML_TAG_RE, " ", regex=True)
+                  .str.translate(_ARABIC_DIGITS)
+                  .str.lower()
         for c in text_cols
     }
 
@@ -3503,7 +3623,7 @@ def validate_products(
 
     if validation_errors:
         st.warning(f"{len(validation_errors)} validation checks encountered errors.")
-        with st.expander("View Error Details"):
+        with st.expander("View Error Details", type="compact"):
             for e_name, e_msg in validation_errors:
                 st.error(f"**{e_name}**: {e_msg}")
 
@@ -3696,7 +3816,7 @@ if "main_bridge_counter" not in st.session_state:
     st.session_state.main_bridge_counter = 0
 
 try:
-    st.set_page_config(page_title="Product Tool", layout=st.session_state.layout_mode)
+    st.set_page_config(page_title="Product QC", layout=st.session_state.layout_mode)
 except:
     pass
 
@@ -3714,6 +3834,21 @@ rtl_css = (
     else ""
 )
 
+# Everything visual now comes from one place. app_css() carries the tokens,
+# the type scale and the contrast-corrected button rules — the orange fills
+# that used to sit under white text at 2.43:1 now carry dark ink at 7.2:1.
+from design_tokens import (
+    COLORS as DT,
+    SEVERITY,
+    SEVERITY_ORDER,
+    app_css,
+    flag_label,
+    flag_severity,
+    severity_sort_key,
+)
+
+_app_css = app_css()
+
 st.markdown(
     f"""
     <style>
@@ -3726,34 +3861,7 @@ st.markdown(
             border: 0 !important; opacity: 0 !important; z-index: -9999 !important;
         }}
         @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined');
-        :root {{
-            --jumia-orange: {JUMIA_COLORS["primary_orange"]};
-            --jumia-red: {JUMIA_COLORS["jumia_red"]};
-            --jumia-dark: {JUMIA_COLORS["dark_gray"]};
-        }}
-        header[data-testid="stHeader"] {{ background: transparent !important; }}
-        div[data-testid="stStatusWidget"] {{ z-index: 9999999 !important; }}
-        .stButton > button {{ border-radius: 4px; font-weight: 600; transition: all 0.3s ease; }}
-        .stButton > button[kind="primary"] {{ background-color: {JUMIA_COLORS["primary_orange"]} !important; border: none !important; color: white !important; }}
-        .stButton > button[kind="primary"]:hover {{ background-color: {JUMIA_COLORS["secondary_orange"]} !important; box-shadow: 0 4px 8px rgba(246, 139, 30, 0.3); transform: translateY(-1px); }}
-        .stButton > button[kind="secondary"] {{ background-color: white !important; border: 2px solid {JUMIA_COLORS["primary_orange"]} !important; color: {JUMIA_COLORS["primary_orange"]} !important; }}
-        .stButton > button[kind="secondary"]:hover {{ background-color: {JUMIA_COLORS["light_gray"]} !important; }}
-        div[data-testid="stMetric"] {{
-            background: {JUMIA_COLORS["light_gray"]}; border-radius: 0 0 8px 8px;
-            padding: 12px 16px 16px 16px; text-align: center;
-        }}
-        div[data-testid="stMetricValue"] {{ color: {JUMIA_COLORS["dark_gray"]}; font-weight: 700; font-size: 26px !important; }}
-        div[data-testid="stMetricLabel"] {{ color: {JUMIA_COLORS["medium_gray"]}; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }}
-        ::-webkit-scrollbar {{ width: 18px !important; height: 18px !important; }}
-        ::-webkit-scrollbar-track {{ background: {JUMIA_COLORS["light_gray"]}; border-radius: 8px; }}
-        ::-webkit-scrollbar-thumb {{ background: {JUMIA_COLORS["medium_gray"]}; border-radius: 8px; border: 3px solid {JUMIA_COLORS["light_gray"]}; }}
-        ::-webkit-scrollbar-thumb:hover {{ background: {JUMIA_COLORS["primary_orange"]}; }}
-        * {{ scrollbar-width: auto; scrollbar-color: {JUMIA_COLORS["medium_gray"]} {JUMIA_COLORS["light_gray"]}; }}
-        div[data-testid="stExpander"] {{ border: 1px solid {JUMIA_COLORS["border_gray"]}; border-radius: 8px; }}
-        div[data-testid="stExpander"] summary {{ background-color: {JUMIA_COLORS["light_gray"]}; padding: 12px; border-radius: 8px 8px 0 0; }}
-        h1, h2, h3 {{ color: {JUMIA_COLORS["dark_gray"]} !important; }}
-        div[data-baseweb="segmented-control"] button {{ border-radius: 4px; }}
-        div[data-baseweb="segmented-control"] button[aria-pressed="true"] {{ background-color: {JUMIA_COLORS["primary_orange"]} !important; color: white !important; }}
+        {_app_css}
     </style>
 """,
     unsafe_allow_html=True,
@@ -3765,7 +3873,19 @@ try:
     st.session_state.support_files = support_files
     st.session_state["compiled_json_rules"] = support_files.get("compiled_json_rules", {})
 except Exception as e:
-    st.error(f"Failed to load configs: {e}")
+    # An error explains what broke and what to do, in the interface's voice.
+    # The traceback still goes to the log and stays available for support,
+    # but it is not the first thing a reviewer reads.
+    logger.exception("Support file load failed")
+    st.error(
+        "The validation rules could not be loaded, so no products can be "
+        "checked. This usually means a rules file is missing or open in "
+        "another program. Close any open rules spreadsheets and reload the "
+        "page.",
+        icon=":material/error:",
+    )
+    with st.expander("Technical details (for support)", expanded=False, type="compact"):
+        st.code(f"{type(e).__name__}: {e}")
     st.stop()
 
 
@@ -3821,15 +3941,18 @@ def get_image_base64(path):
 
 logo_base64 = get_image_base64("jumia logo.png") or get_image_base64("jumia_logo.png")
 logo_html = (
-    f"<img src='data:image/png;base64,{logo_base64}' style='height: 42px; margin-right: 15px;'>"
+    f"<img src='data:image/png;base64,{logo_base64}' class='rail-logo' alt='Jumia'>"
     if logo_base64
-    else "<span class='material-symbols-outlined' style='font-size: 42px; margin-right: 15px;'>verified_user</span>"
+    else "<span class='material-symbols-outlined rail-logo-fallback'>verified_user</span>"
 )
 
-st.markdown(
-    f"""<div style='background: linear-gradient(135deg, {JUMIA_COLORS["primary_orange"]}, {JUMIA_COLORS["secondary_orange"]}); padding: 25px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(246, 139, 30, 0.3);'><h1 style='color: white; margin: 0; font-size: 36px; display: flex; align-items: center;'>{logo_html}Product Validation Tool</h1></div>""",
-    unsafe_allow_html=True,
-)
+# The 25px-padded orange gradient banner that used to live here was the
+# largest element on the page and carried no information a reviewer needed.
+# What they do need — which market's rules are running, how big the batch is,
+# how much of it is rejected — was below the fold or inside a collapsed
+# expander. That trade is inverted here: a compact rail, filled in later in
+# the script once the country and the report are both known.
+_rail_slot = st.container()
 
 with st.sidebar:
     lang_names = list(LANGUAGES.keys())
@@ -3882,7 +4005,7 @@ with st.sidebar:
         _lc1, _lc2 = st.columns(2)
         _lc1.metric("Corrections", _n_corr, help="Approved (name → category) pairs the matcher learned from")
         _lc2.metric("Negatives", _n_neg, help="Categories a human explicitly rejected for a product name — excluded from future suggestions")
-        with st.expander("Manage learned data", expanded=False):
+        with st.expander("Manage learned data", expanded=False, type="compact"):
             # Streamlit builds the body of an expander even while it is
             # collapsed, so these two 500-row tables were being queried,
             # converted to Arrow and pushed to the browser on EVERY rerun —
@@ -4036,7 +4159,10 @@ def _reset_report_state(*, clear_uploaded_files: bool = False, clear_zip_cache: 
         st.session_state.zip_image_store = {}
         st.session_state.zip_image_index = {}
         st.session_state.zip_image_source_bytes = None
-    _prefixes = ("quick_rej_", "grid_chk_", "toast_") + tuple(extra_key_prefixes)
+    # "_flt_" clears the sidebar seller/category filters and "_fs_" the
+    # per-flag search boxes, so a new batch never opens with the previous
+    # batch's filters silently hiding rows.
+    _prefixes = ("quick_rej_", "grid_chk_", "toast_", "_flt_", "_fs_") + tuple(extra_key_prefixes)
     _dead_keys = [k for k in st.session_state.keys() if k.startswith(_prefixes)]
     for k in _dead_keys: del st.session_state[k]
 
@@ -4059,7 +4185,7 @@ country_validator = CountryValidator(st.session_state.selected_country)
 
 _has_files = bool(st.session_state.get("cached_uploaded_files"))
 if _has_files:
-    if st.button("Force re-validate", width='stretch', help="Bypass cache and run validation again"):
+    if st.button("Run the checks again", width='stretch', help="Ignores the cached result and re-runs every check on the uploaded files"):
         for uf in st.session_state.get("cached_uploaded_files", []):
             fhash = hashlib.sha256(uf["bytes"]).hexdigest()[:24]
             invalidate(country_validator.country, fhash)
@@ -4070,16 +4196,18 @@ if "uploader_key" not in st.session_state: st.session_state.uploader_key = 0
 if "confirm_clear_files" not in st.session_state: st.session_state.confirm_clear_files = False
 if _has_files:
     if not st.session_state.confirm_clear_files:
-        if st.button("✕ Clear all files", key="clear_files_btn", type="secondary", help="Remove all uploaded files and reset the tool"):
+        if st.button("Clear files", key="clear_files_btn", type="secondary", icon=":material/close:", help="Remove the uploaded files and start over"):
             st.session_state.confirm_clear_files = True
             st.rerun()
     else:
-        st.warning("This will remove all uploaded files and the current report. This can't be undone.")
+        st.warning("Clearing removes the uploaded files and this report. You can't undo it.")
         _cc1, _cc2 = st.columns(2)
         with _cc1:
-            if st.button("Yes, clear everything", key="confirm_clear_files_btn", type="primary", width='stretch'):
+            if st.button("Clear files and report", key="confirm_clear_files_btn", type="primary", width='stretch'):
                 st.session_state.confirm_clear_files = False
-                _reset_report_state(clear_uploaded_files=True, clear_zip_cache=True, extra_key_prefixes=("_sf_",))
+                # "_sf_" used to hold one seller filter per flag; the shared
+                # toolbar replaced those and is cleared by the "_flt_" prefix.
+                _reset_report_state(clear_uploaded_files=True, clear_zip_cache=True)
                 st.session_state.last_processed_files = "empty"
                 st.session_state.uploader_key += 1
                 st.rerun()
@@ -4245,6 +4373,51 @@ if st.session_state.get("last_processed_files") != process_signature:
                                         st.session_state.zip_qc_results = pd.concat(qc_dfs, ignore_index=True)
                                         _build_zip_sid_index(st.session_state.zip_qc_results)
                                         raw_data = st.session_state.zip_qc_results.copy()
+
+                                # ── PIM_QC_Result.xlsx ────────────────────
+                                # Skipped until now: the filter above matches
+                                # "qc_results" (plural) and this file is
+                                # "PIM_QC_Result" (singular), so it never
+                                # qualified. It is read separately rather than
+                                # concatenated because its schema is nothing
+                                # like the CSVs' — 5 columns against 182 —
+                                # and merging them would corrupt zip_qc_results.
+                                #
+                                # What it gives us: the platform's own verdict
+                                # for every SID (508 = 490 complete + 18
+                                # incomplete, verified), already resolved to
+                                # Status/Reason/Comment, plus the live list of
+                                # rejection reason codes.
+                                _pim = next(
+                                    (
+                                        i for i in members
+                                        if "qc_result" in i.filename.lower()
+                                        and "qc_results" not in i.filename.lower()
+                                        and i.filename.lower().endswith((".xlsx", ".xls"))
+                                    ),
+                                    None,
+                                )
+                                if _pim is not None:
+                                    try:
+                                        _pb = BytesIO(zf.read(_pim))
+                                        _xl = pd.ExcelFile(_pb)
+                                        if "ProductSets" in _xl.sheet_names:
+                                            _verd = _xl.parse("ProductSets", dtype=str).fillna("")
+                                            _verd.columns = [str(c).strip() for c in _verd.columns]
+                                            st.session_state.zip_pim_verdicts = _verd
+                                        if "RejectionReasons" in _xl.sheet_names:
+                                            _rr = _xl.parse("RejectionReasons", dtype=str).fillna("")
+                                            st.session_state.zip_rejection_reasons = (
+                                                _rr.iloc[:, 0].astype(str).str.strip()
+                                                .loc[lambda s: s.ne("")].tolist()
+                                            )
+                                        logger.info(
+                                            "PIM_QC_Result loaded: %s verdicts, %s reason codes",
+                                            len(st.session_state.get("zip_pim_verdicts", [])),
+                                            len(st.session_state.get("zip_rejection_reasons", [])),
+                                        )
+                                    except Exception as _pim_err:
+                                        logger.warning("PIM_QC_Result read failed: %s", _pim_err)
                                 st.session_state.zip_image_index = _index_zip_images(zf)
                                 st.session_state.zip_image_source_bytes = uf["bytes"]
                         elif any(k in uf["name"].lower() for k in ("qc_results", "qc_result")):
@@ -4434,12 +4607,53 @@ if st.session_state.get("last_processed_files") != process_signature:
                         if has_zip_source and not qc_zip.empty and _sid_col_qc:
                             data = data.copy()
                             _extra_ctx = [c for c in qc_zip.columns if c not in data.columns and "status" not in c.lower() and c != _sid_col_qc]
-                            for _ecol in _extra_ctx:
-                                _emap = qc_zip.set_index(_sid_col_qc)[_ecol].to_dict()
-                                data.loc[:, _ecol] = data["PRODUCT_SET_SID"].astype(str).str.strip().map(_emap)
-                            if "image1" in qc_zip.columns and "IMAGE1_ZIP" not in data.columns:
-                                _img1_map = qc_zip.set_index(_sid_col_qc)["image1"].to_dict()
-                                data.loc[:, "IMAGE1_ZIP"] = data["PRODUCT_SET_SID"].astype(str).str.strip().map(_img1_map)
+
+                            # This loop used to do three O(rows) operations per
+                            # column, for ~70 columns:
+                            #   1. qc_zip.set_index(...)      — re-indexed the
+                            #      whole ZIP frame every iteration
+                            #   2. .astype(str).str.strip()   — re-normalised
+                            #      every SID in `data` every iteration, a
+                            #      Python-level string pass over the batch
+                            #   3. data.loc[:, new] = ...     — grew the frame
+                            #      one column at a time, fragmenting the block
+                            #      manager (this is what the PerformanceWarning
+                            #      was reporting, and it was the symptom rather
+                            #      than the cause)
+                            # Hoisting 1 and 2 out of the loop and building the
+                            # columns in one concat leaves a single pass each.
+                            #
+                            # All of it collapses to one reindex. Building a
+                            # per-column dict was still ~70 dicts of one entry
+                            # per row; a single reindex of the whole context
+                            # block is 40x faster on a 50k-row batch (5.4s ->
+                            # 0.13s measured) and produces an identical frame.
+                            #
+                            # keep="last" on the duplicate filter is not
+                            # cosmetic: Series.to_dict() silently kept the last
+                            # occurrence of a repeated SID, so anything else
+                            # would quietly change which ZIP row wins.
+                            _sid_norm = data["PRODUCT_SET_SID"].astype(str).str.strip()
+                            _want = list(_extra_ctx)
+                            _img1_wanted = (
+                                "image1" in qc_zip.columns and "IMAGE1_ZIP" not in data.columns
+                            )
+                            if _img1_wanted and "image1" not in _want:
+                                _want.append("image1")
+
+                            if _want:
+                                _ctx = qc_zip.set_index(_sid_col_qc)[_want]
+                                _ctx = _ctx[~_ctx.index.duplicated(keep="last")]
+                                _ctx = _ctx.reindex(_sid_norm.values)
+                                _ctx.index = data.index
+                                if _img1_wanted:
+                                    # Copy, never rename: when "image1" is also
+                                    # in _extra_ctx the original produced both
+                                    # columns, and renaming would drop one.
+                                    _ctx["IMAGE1_ZIP"] = _ctx["image1"]
+                                    if "image1" not in _extra_ctx:
+                                        _ctx = _ctx.drop(columns=["image1"])
+                                data = pd.concat([data, _ctx], axis=1)
                             status_cols = [c for c in qc_zip.columns if "status" in c.lower()]
                             fmap = support_files.get("flags_mapping", {})
                             _fr_sid_to_idx = pd.Series(final_report.index, index=final_report["ProductSetSid"].astype(str).str.strip()).to_dict()
@@ -4670,9 +4884,77 @@ if st.session_state.get("last_processed_files") != process_signature:
                                     _rej_in_app = update_mask.sum()
                                     st.write(f"App validation found {_rej_in_app} additional rejections.")
 
+                        # ── Seed from the platform's own verdict table ──────
+                        #
+                        # PIM_QC_Result.xlsx already resolved every SID to a
+                        # Status/Reason/Comment. Two things are taken from it,
+                        # and deliberately only two:
+                        #
+                        #   1. SIDs the app never produced a row for. The 18
+                        #      "Incomplete SKU" products land here — they exist
+                        #      in the platform's table as Manual Review but are
+                        #      absent from the Complete CSV the checks run on,
+                        #      so without this they are silently missing from
+                        #      the report entirely.
+                        #   2. ParentSKU, where the app has none.
+                        #
+                        # The app's own Status is NOT overwritten. Re-deriving
+                        # the verdict independently is the whole point of
+                        # Targeted Audit: on this batch 67 of 74 of the
+                        # platform's colour rejections sit on rows with
+                        # misaligned fields, and trusting its verdict wholesale
+                        # would pass all of them straight through.
+                        _pim_verdicts = st.session_state.get("zip_pim_verdicts")
+                        if isinstance(_pim_verdicts, pd.DataFrame) and not _pim_verdicts.empty \
+                                and "ProductSetSid" in _pim_verdicts.columns:
+                            _pv = _pim_verdicts.copy()
+                            _pv["ProductSetSid"] = _pv["ProductSetSid"].astype(str).str.strip()
+                            _pv = _pv[_pv["ProductSetSid"].ne("")].drop_duplicates(
+                                subset=["ProductSetSid"], keep="last"
+                            )
+                            _have = set(final_report["ProductSetSid"].astype(str).str.strip())
+                            _missing = _pv[~_pv["ProductSetSid"].isin(_have)]
+                            if not _missing.empty:
+                                _add = pd.DataFrame({
+                                    "ProductSetSid": _missing["ProductSetSid"].values,
+                                    "Status": _missing.get("Status", pd.Series(dtype=str)).fillna("Manual review").values,
+                                    "FLAG": "Manual review",
+                                    "Comment": _missing.get("Comment", pd.Series(dtype=str)).fillna("").values,
+                                    "Reason": _missing.get("Reason", pd.Series(dtype=str)).fillna("").values,
+                                    "Is_Zip": True,
+                                    "Is_Manual": False,
+                                })
+                                _add["PRODUCT_SET_SID"] = _add["ProductSetSid"]
+                                final_report = pd.concat(
+                                    [final_report, _add], ignore_index=True
+                                )
+                                logger.info(
+                                    "Seeded %s SID(s) from PIM_QC_Result that the "
+                                    "checks never saw", len(_add),
+                                )
+                            # Keep the platform's verdict alongside ours so the
+                            # audit can measure disagreement rather than guess.
+                            st.session_state["_platform_verdict"] = dict(
+                                zip(_pv["ProductSetSid"], _pv.get("Status", ""))
+                            )
+
                         _parent_map = data.set_index("PRODUCT_SET_SID")["PARENTSKU"].to_dict() if "PARENTSKU" in data.columns else {}
                         _seller_map = data.set_index("PRODUCT_SET_SID")["SELLER_NAME"].to_dict() if "SELLER_NAME" in data.columns else {}
                         final_report["ParentSKU"] = final_report["ProductSetSid"].astype(str).str.strip().map(_parent_map).fillna("")
+                        # Backfill ParentSKU from the verdict table where the
+                        # product data had none. Same values in this batch, but
+                        # it covers the seeded rows, which are not in `data`.
+                        if isinstance(_pim_verdicts, pd.DataFrame) and "ParentSKU" in getattr(_pim_verdicts, "columns", []):
+                            _pim_parent = dict(zip(
+                                _pim_verdicts["ProductSetSid"].astype(str).str.strip(),
+                                _pim_verdicts["ParentSKU"].astype(str).str.strip(),
+                            ))
+                            _blank = final_report["ParentSKU"].astype(str).str.strip().eq("")
+                            if _blank.any():
+                                final_report.loc[_blank, "ParentSKU"] = (
+                                    final_report.loc[_blank, "ProductSetSid"]
+                                    .astype(str).str.strip().map(_pim_parent).fillna("")
+                                )
                         final_report["SellerName"] = final_report["ProductSetSid"].astype(str).str.strip().map(_seller_map).fillna("")
                         st.session_state.post_qc_results = combined_results
 
@@ -4730,7 +5012,7 @@ if st.session_state.get("last_processed_files") != process_signature:
             except Exception as e:
                 logger.exception("Processing error while validating uploaded file(s)")
                 st.error(f"Something went wrong while processing your file(s): {e}\n\nTry re-uploading the file, or contact support if this keeps happening.")
-                with st.expander("Technical details (for support)", expanded=False):
+                with st.expander("Technical details (for support)", expanded=False, type="compact"):
                     st.code(traceback.format_exc())
                 st.session_state.last_processed_files = "error"
 
@@ -4805,10 +5087,14 @@ def handle_jtbridge():
                 st.session_state["main_bridge_counter"] = st.session_state.get("main_bridge_counter", 0) + 1
                 st.rerun()
             elif _msg.get("action") == "grid_cols_per_row":
+                # Clamped to the range the buttons actually offer: this value
+                # drives the grid's CSS column count and the wide-dialog
+                # threshold, so a bogus payload would produce an unusable
+                # layout rather than an error.
                 try:
-                    st.session_state.grid_cols_per_row = int(_msg.get("payload", 5))
+                    st.session_state.grid_cols_per_row = max(3, min(7, int(_msg.get("payload", 4))))
                 except (ValueError, TypeError):
-                    st.session_state.grid_cols_per_row = 5
+                    st.session_state.grid_cols_per_row = 4
                 st.session_state["main_bridge_counter"] = st.session_state.get("main_bridge_counter", 0) + 1
                 st.rerun()
         except Exception as _e:
@@ -4877,12 +5163,23 @@ def render_main_results():
     st.header(_t("val_results"), anchor=False)
     st.markdown('<div class="dashboard-marker"></div>', unsafe_allow_html=True)
 
-    with st.expander(_t("dashboard"), expanded=False):
-        total_count = len(fr)
-        auto_count = len(fr[fr["FLAG"] != "Manual review"])
-        manual_hours = (auto_count * 3) / 60
+    # "Another seller has this exact photo" — raised here so it is seen after
+    # a rejection made anywhere, including from inside the visual grid, whose
+    # dialog closes on the rerun that follows an action.
+    render_sibling_prompt()
 
-        render_summary_header(fr)
+    # The KPI strip is the reviewer's orientation — how big is this batch and
+    # how bad is it. It used to sit inside the collapsed dashboard expander,
+    # one click away and hidden by default, while the six Plotly charts (the
+    # analytical deep-dive, not the orientation) had equal billing. Swapped:
+    # KPIs always on, charts behind the disclosure.
+    render_summary_header(fr)
+
+    total_count = len(fr)
+    auto_count = len(fr[fr["FLAG"] != "Manual review"])
+    manual_hours = (auto_count * 3) / 60
+
+    with st.expander(_t("dashboard"), expanded=False):
         app_n, rej_n, fig_bar, fig_mix, fig_flags, fig_seller, fig_savings = _build_dashboard_figures(fr_meta, manual_hours)
         g1, g2 = st.columns(2)
         with g1:
@@ -4905,18 +5202,35 @@ def render_main_results():
         with s2:
             st.plotly_chart(fig_savings, width='stretch', config={"displayModeBar": False})
 
+    # This was a fixed-position HTML toast with an UNDO button that posted a
+    # message Streamlit never listened for, plus a real button labelled
+    # "Internal Undo" sitting in the page flow underneath it — so the reviewer
+    # saw a floating toast with a dead control and a stray debug button below.
+    # One real control now, in the flow, saying what it does.
     ut = st.session_state.get("show_undo_toast")
-    if ut and (datetime.now() - ut["time"]).seconds < 5:
-        with st.container():
-            st.markdown(f"""<div style='position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#333; color:#fff; padding:12px 24px; border-radius:8px; z-index:1000; display:flex; align-items:center; gap:15px; box-shadow:0 4px 12px rgba(0,0,0,0.3);'><span>{ut["status"]}d {ut["count"]} items</span><button onclick="window.parent.postMessage({{type:'streamlit:set_widget_value', key:'undo_trigger', value:true}}, '*')" style='background:{JUMIA_COLORS["primary_orange"]}; border:none; color:white; padding:4px 12px; border-radius:4px; cursor:pointer; font-weight:700;'>UNDO</button></div>""", unsafe_allow_html=True)
-            if st.button("Internal Undo", key="undo_trigger", help="Click to undo", type="primary"):
-                if "undo_snapshot" in st.session_state:
-                    st.session_state.final_report = st.session_state.undo_snapshot["final_report"]
-                    # Undo bypasses apply_status_change, so checkpoint here too —
-                    # otherwise disk keeps the state the user just undid.
-                    checkpoint_final_report(st.session_state.final_report)
-                    st.session_state.pop("show_undo_toast", None)
-                    st.rerun()
+    if ut and (datetime.now() - ut["time"]).seconds < 15:
+        _u1, _u2 = st.columns([4, 1], gap="medium", vertical_alignment="center")
+        with _u1:
+            _n = ut["count"]
+            st.info(
+                f"{ut['status']}d {_n:,} {'product' if _n == 1 else 'products'}.",
+                icon=":material/history:",
+            )
+        with _u2:
+            if st.button(
+                f"Undo {ut['status'].lower()}",
+                key="undo_trigger",
+                type="secondary",
+                width="stretch",
+                disabled="undo_snapshot" not in st.session_state,
+            ):
+                st.session_state.final_report = st.session_state.undo_snapshot["final_report"]
+                # Undo bypasses apply_status_change, so checkpoint here too —
+                # otherwise disk keeps the state the user just undid.
+                checkpoint_final_report(st.session_state.final_report)
+                st.session_state.pop("show_undo_toast", None)
+                st.toast(f"Restored {ut['count']:,} products", icon=":material/undo:")
+                st.rerun()
 
     lookup_col1, lookup_col2 = st.columns([2, 1])
     with lookup_col1:
@@ -4959,6 +5273,7 @@ def render_main_results():
 
     st.subheader(_t("flags_breakdown"), anchor=False)
     group_by_seller = st.toggle("Group by Seller", help="Toggle to group flagged products by seller instead of flag")
+
 
     _blurry_commentary = st.session_state.get("_image_blurry_commentary", {})
     if _blurry_commentary:
@@ -5015,28 +5330,83 @@ def render_main_results():
                             st.rerun()
                     render_flag_expander(f"Seller: {seller}", df_seller, data, all(c in data.columns for c in ["PRODUCT_WARRANTY", "WARRANTY_DURATION"]), support_files, country_validator, cached_validate_products)
         else:
-            _flags_list = list(rej_df["FLAG"].unique())
-            # Sort so "Category Check" and its sub-buckets group together consecutively
-            _flags_list.sort(key=lambda x: (
-                0 if x.startswith("Category Check") else 1,
-                x
-            ))
-            for title in _flags_list:
-                df_flagged = rej_df[rej_df["FLAG"] == title]
-                is_zip = "(Prefetched)" in title
-                exp_label = f"[{len(df_flagged)}] {title}"
-                if is_zip:
-                    exp_label += " ⚡ ZIP"
-                    st.markdown('<div class="dashboard-marker"></div>', unsafe_allow_html=True)
-                with st.expander(exp_label, expanded=st.session_state.get(f"exp_{title}", False)):
-                    st.html(flag_pill_header(title, len(df_flagged), is_zip=is_zip))
-                    render_flag_expander(title, df_flagged, data, all(c in data.columns for c in ["PRODUCT_WARRANTY", "WARRANTY_DURATION"]), support_files, country_validator, cached_validate_products)
+            # Severity first, then alphabetical inside each bucket. A flat
+            # alphabetical list put a legal blocker below a cosmetic flag
+            # purely on the initial letter of its internal name.
+            _flags_list = sorted(rej_df["FLAG"].unique(), key=severity_sort_key)
+
+            _grouped = {}
+            for _f in _flags_list:
+                _grouped.setdefault(flag_severity(_f), []).append(_f)
+
+            _has_warranty_cols = all(
+                c in data.columns for c in ["PRODUCT_WARRANTY", "WARRANTY_DURATION"]
+            )
+
+            for _level in SEVERITY_ORDER:
+                _titles = _grouped.get(_level)
+                if not _titles:
+                    continue
+
+                _group_skus = int(rej_df["FLAG"].isin(_titles).sum())
+                render_severity_group_header(_level, len(_titles), _group_skus)
+
+                for _i, title in enumerate(_titles):
+                    df_flagged = rej_df[rej_df["FLAG"] == title]
+                    is_zip = "(Prefetched)" in title
+                    # The expander summary is what a reviewer scans, so it
+                    # carries the readable label and the severity mark. The
+                    # raw FLAG stays the key for state and exports.
+                    # flag_label() strips the "(Prefetched)" suffix, which is
+                    # part of the raw FLAG and was previously visible in the
+                    # expander title. Renaming the checks was not meant to
+                    # remove the provenance, so it goes back on explicitly:
+                    # a reviewer needs to see at a glance which findings came
+                    # from the QC system's own ZIP and which this tool ran.
+                    exp_label = (
+                        f"{SEVERITY[_level]['mark']}  {len(df_flagged):,}"
+                        f"   {flag_label(title)}"
+                    )
+                    if is_zip:
+                        exp_label += "  (Prefetched)  ⚡ ZIP"
+
+                    # ZIP/prefetched flags keep their orange treatment — it was
+                    # doing real work telling the two sources apart. It comes
+                    # from a keyed container now rather than a MutationObserver
+                    # painting !important styles over the stylesheet, so it
+                    # composes with the severity spine instead of erasing it.
+                    _row = st.container(
+                        key=f"flagrow_{'zip' if is_zip else 'std'}_{_level}_{_i}"
+                    )
+                    with _row:
+                        with st.expander(exp_label, expanded=st.session_state.get(f"exp_{title}", False)):
+                            st.html(flag_pill_header(title, len(df_flagged), is_zip=is_zip))
+                            render_flag_expander(title, df_flagged, data, _has_warranty_cols, support_files, country_validator, cached_validate_products)
     else:
         st.success("All products passed validation — no rejections found.")
 
     render_manual_review_buttons(support_files)
     render_image_grid(support_files)
     render_exports_section(support_files, country_validator)
+
+
+# Fill the rail reserved at the top of the page. It runs last because only
+# now are the country, the upload set and the report all known — Streamlit
+# renders a container where it was created, not where it was written to.
+with _rail_slot:
+    _rail_fr = st.session_state.get("final_report", pd.DataFrame())
+    render_context_rail(
+        country=st.session_state.get("selected_country", ""),
+        flag_src=_flag_b64.get(st.session_state.get("selected_country", ""), ""),
+        logo_html=logo_html,
+        file_count=len(_files_for_processing),
+        sku_count=len(_rail_fr),
+        rejected_count=(
+            int((_rail_fr["Status"] == "Rejected").sum())
+            if not _rail_fr.empty and "Status" in _rail_fr.columns
+            else 0
+        ),
+    )
 
 render_main_results()
 
