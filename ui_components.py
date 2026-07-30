@@ -2397,8 +2397,11 @@ def build_fast_grid_html(
     overflow-y:auto;overflow-x:hidden;
     /* --grid-top-h is measured in JS because the toolbar wraps to two rows
        on narrow screens; the fallback covers the first paint. */
-    max-height:calc(100vh - var(--grid-top-h, 56px) - 16px);
-    padding-bottom:84px;  /* clear the fixed batch bar */
+    max-height:calc(100vh - var(--grid-top-h, 0px) - 16px);
+    /* Measured, not fixed: the bottom bar now also carries language,
+       sort and filter, so it wraps to two rows on narrow screens and
+       a hardcoded 84px would let it cover the last row of cards. */
+    padding-bottom:calc(var(--grid-bot-h, 84px) + 14px);
     scroll-behavior:smooth;
   }}
   /* Every numeric in a card — SID, price, dimensions — in tabular mono so a
@@ -2417,17 +2420,18 @@ def build_fast_grid_html(
   body{{background:var(--bg);color:var(--text);padding:8px 8px 80px 8px;overflow-x:hidden;width:100%;transition:background .2s, color .2s;}}
 
   .ctrl-bar{{position:-webkit-sticky;position:sticky;top:0;z-index:99999;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;background:var(--card);backdrop-filter:blur(8px);border-bottom:2px solid var(--accent);border-radius:4px;margin-bottom:12px;box-shadow:0 4px 16px rgba(0,0,0,0.15);}}
-  .ctrl-bar.top-bar{{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;scrollbar-color:rgba(0,0,0,.35) transparent;}}
-  /* Below roughly a 13" laptop's content width the toolbar has more controls
-     than room. Wrapping to a second row keeps them all reachable; the
-     sideways scroll hid them behind a scrollbar most people never found. */
+  /* The .ctrl-bar.top-bar rules that were here — nowrap plus a horizontal
+     scroll and three webkit-scrollbar rules to style it — went with the top
+     bar itself. They matched nothing once it was removed. The bottom bar wraps
+     by default, which is what the media query below was overriding them to do
+     anyway.
+
+     Below roughly a 13" laptop's content width the bar has more controls than
+     room, and the reason dropdown has to give up its max-width to let the rest
+     fit on the second row. */
   @media (max-width: 1100px) {{
-    .ctrl-bar.top-bar{{flex-wrap:wrap;overflow-x:visible;overflow-y:visible;row-gap:8px;}}
     .rsearch-wrap{{max-width:none;}}
   }}
-  .ctrl-bar.top-bar::-webkit-scrollbar{{height:8px;}}
-  .ctrl-bar.top-bar::-webkit-scrollbar-thumb{{background:rgba(0,0,0,.28);border-radius:999px;}}
-  .ctrl-bar.top-bar::-webkit-scrollbar-track{{background:transparent;}}
 
   #grid-search {{
     flex: 1;
@@ -2457,11 +2461,50 @@ def build_fast_grid_html(
   .empty-state .title{{font-size:15px;font-weight:800;color:var(--text);margin-bottom:4px;}}
   .empty-state .desc{{font-size:12px;color:var(--text);opacity:.74;}}
   .empty-state .actions{{display:flex;gap:8px;flex-wrap:wrap;}}
-  /* bottom:26px is NOT slack — it is exactly the height of #cols-strip, the
-     fixed column-count bar pinned at bottom:0. Dropping this to 0 puts the
-     batch bar (z-index 10000) straight over the strip (z-index 9999) and the
-     3/4/5/6/7 column buttons vanish. */
-  .bottom-bar {{position: fixed; bottom: 26px; left: 0; width: 100%; top: auto; border-bottom: none; border-top: 1px solid rgba(246, 139, 30, 0.2); margin: 0; z-index: 10000; box-shadow: 0 -4px 16px rgba(0,0,0,0.1); background: var(--card); padding: 10px 16px;}}
+  /* bottom:0 now that #cols-strip is gone. It used to be 26px, which was not
+     slack but exactly the strip's height — the column-count buttons were a
+     second fixed bar underneath this one, and dropping to 0 put the batch bar
+     (z-index 10000) straight over them. The 3/4/5/6/7 buttons live in this bar
+     now, so the strip and the offset both went. */
+  .bottom-bar {{position: fixed; bottom: 0; left: 0; width: 100%; top: auto; border-bottom: none; border-top: 1px solid rgba(246, 139, 30, 0.2); margin: 0; z-index: 10000; box-shadow: 0 -4px 16px rgba(0,0,0,0.1); background: var(--card); padding: 10px 16px;}}
+  /* A hairline before the column buttons, so a group of bare numbers reads as
+     its own control rather than more batch actions. */
+  .cols-group{{display:flex;align-items:center;gap:6px;padding-left:10px;margin-left:4px;border-left:1px solid var(--border);}}
+  .cols-group .cols-label{{font-size:11px;font-weight:700;color:var(--text-muted);white-space:nowrap;letter-spacing:.04em;}}
+  @media (max-width: 900px) {{ .cols-group .cols-label {{display:none;}} }}
+
+  /* ── Floating mode ────────────────────────────────────────────────────
+     Docked (default) the bar is opaque, full width, and #card-grid reserves
+     its height so a card can never end up underneath it. Floating, it becomes
+     a translucent island and the reservation drops to a few pixels, handing
+     its whole height back to the cards. The bar is position:fixed either way
+     — the only real difference is whether the grid reserves room for it. */
+  .bottom-bar.floating{{
+    left:12px; right:12px; width:auto; bottom:12px;
+    border:1px solid rgba(246,139,30,.35); border-radius:12px;
+    background:color-mix(in srgb, var(--card) 88%, transparent);
+    backdrop-filter:blur(12px) saturate(1.1);
+    -webkit-backdrop-filter:blur(12px) saturate(1.1);
+    box-shadow:0 8px 28px rgba(26,25,23,.18);
+  }}
+  /* color-mix is recent; without it the rule above is dropped and the bar
+     would be fully transparent over the cards. */
+  @supports not (background: color-mix(in srgb, red 50%, transparent)) {{
+    .bottom-bar.floating{{background:rgba(255,255,255,.9);}}
+  }}
+  /* Collapsed is a manual choice, never automatic. Select All, language, sort
+     and cards-per-row all live in this bar, and those are exactly what you
+     reach for when nothing is selected yet — so collapsing on an empty
+     selection would hide the controls at the moment they are needed. */
+  .bottom-bar.collapsed{{left:auto; right:12px; width:auto; padding:6px 10px;}}
+  .bottom-bar.collapsed > *:not(.bar-toggle):not(.sel-count-text){{display:none !important;}}
+  .bottom-bar.collapsed .sel-count-text{{margin-right:2px;}}
+  .bar-toggle{{display:inline-flex;align-items:center;justify-content:center;
+    min-width:28px;height:28px;padding:0 6px;border:1px solid var(--border);
+    border-radius:6px;background:#fff;color:var(--text);cursor:pointer;
+    font-size:13px;line-height:1;}}
+  .bar-toggle:hover{{border-color:var(--accent);}}
+  .bar-toggle[aria-pressed="true"]{{background:var(--accent);color:var(--ink-on-accent);border-color:var(--accent);}}
 
   .sel-count{{font-weight:700;color:{OT};font-size:13px;min-width:80px;font-family:var(--font-mono);font-variant-numeric:tabular-nums slashed-zero;}}
   .reason-sel{{flex:1;min-width:160px;padding:6px 10px;border:1px solid #ccc;border-radius:4px;font-size:12px;background:#fff;cursor:pointer;}}
@@ -2821,44 +2864,11 @@ def build_fast_grid_html(
   <div style="margin-top:16px;font-weight:700;color:#333;font-size:16px;">Updating Language...</div>
 </div>
 
-<div class="ctrl-bar top-bar">
-
-  <span class="lang-wrap" title="Change language">
-    <span class="lang-ico">{_ICON_GLOBE}</span>
-    <select id="iframe-lang-sel" class="lang-sel" aria-label="Change language" onchange="document.getElementById('lang-loading').style.display='flex'; sendMsg('change_lang', this.value)">
-      <option value="en" {"selected" if lang=="en" else ""}>EN</option>
-      <option value="fr" {"selected" if lang=="fr" else ""}>FR</option>
-      <option value="ar" {"selected" if lang=="ar" else ""}>AR</option>
-    </select>
-  </span>
-
-  <span class="sel-count-text" style="font-weight:700; color:var(--accent-text); font-size:13px; font-family:var(--font-mono); font-variant-numeric:tabular-nums slashed-zero;">0 {labels_dict["items_pending"]}</span>
-  <select class="reason-sel" id="batch-reason-top">
-    <option value="REJECT_POOR_IMAGE">{labels_dict['poor_img']}</option>
-    <option value="REJECT_IMG_STRETCHED">{labels_dict['img_stretched']}</option>
-    <option value="REJECT_IMG_BLURRY">{labels_dict['img_blurry']}</option>
-    <option value="REJECT_IMG_MISMATCH">{labels_dict['img_mismatch']}</option>
-    <option value="REJECT_IMG_INFRINGING">{labels_dict['img_infringing']}</option>
-    <option value="REJECT_IMG_TOO_MANY">{labels_dict['img_too_many']}</option>
-    <option value="REJECT_WRONG_CAT">{labels_dict['wrong_cat']}</option>
-    <option value="REJECT_FAKE">{labels_dict['fake_prod']}</option>
-    <option value="REJECT_BRAND">{labels_dict['restr_brand']}</option>
-    <option value="REJECT_WRONG_BRAND">{labels_dict.get('wrong_brand', 'Wrong Brand')}</option>
-    <option value="REJECT_PROHIBITED">{labels_dict.get('prohibited', 'Prohibited')}</option>
-    <option value="REJECT_COLOR">{labels_dict.get('missing_color', 'Missing Color')}</option>
-    <option value="REJECT_FDA">FDA</option>
-    <option value="REJECT_DUPLICATE">{labels_dict.get('sort_duplicates', 'Duplicate')}</option>
-    {extra_reason_options_html}
-    <option value="OTHER_CUSTOM">{labels_dict.get('other_custom', 'Other (Custom)')}</option>
-  </select>
-  <button class="batch-btn" onclick="doBatchReject('top')">{labels_dict["batch_reject"]}</button>
-  <button class="icon-btn" onclick="doBatchUndo()" title="{labels_dict["undo"]}" aria-label="{labels_dict["undo"]}">{_ICON_UNDO}</button>
-  <button class="desel-btn" onclick="window.doSelectAll()">{labels_dict["select_all"]}</button>
-  <button class="desel-btn" onclick="doDeselAll()">{labels_dict["deselect_all"]}</button>
-  <button class="icon-btn" style="margin-left:auto;" onclick="gridScrollTo('bottom')" title="{_t("go_bottom")}" aria-label="{_t("go_bottom")}">{_ICON_BOTTOM}</button>
-  {sort_html}
-  {filter_html}
-</div>
+<!-- The top control bar is gone. Every batch control on it (reason, Batch
+     Reject, Select All, Deselect All, undo) duplicated the fixed bottom bar,
+     which is on screen at all times anyway. Its three unique controls -
+     language, sort and filter - moved down there. That reclaims ~55px in a
+     modal that had roughly 370px left for cards. -->
 
 <div id="shortcut-help" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);
   z-index:9999999;align-items:center;justify-content:center;">
@@ -2892,6 +2902,14 @@ def build_fast_grid_html(
 </div>
 
 <div class="ctrl-bar bottom-bar">
+  <span class="lang-wrap" title="Change language">
+    <span class="lang-ico">{_ICON_GLOBE}</span>
+    <select id="iframe-lang-sel" class="lang-sel" aria-label="Change language" onchange="document.getElementById('lang-loading').style.display='flex'; sendMsg('change_lang', this.value)">
+      <option value="en" {"selected" if lang=="en" else ""}>EN</option>
+      <option value="fr" {"selected" if lang=="fr" else ""}>FR</option>
+      <option value="ar" {"selected" if lang=="ar" else ""}>AR</option>
+    </select>
+  </span>
   <span class="sel-count-text" style="font-weight:700; color:var(--accent-text); font-size:13px; font-family:var(--font-mono); font-variant-numeric:tabular-nums slashed-zero;">0 {labels_dict["items_pending"]}</span>
   <select class="reason-sel" id="batch-reason-bottom">
     <option value="REJECT_POOR_IMAGE">{labels_dict["poor_img"]}</option>
@@ -2915,7 +2933,17 @@ def build_fast_grid_html(
   <button class="icon-btn" onclick="doBatchUndo()" title="{labels_dict["undo"]}" aria-label="{labels_dict["undo"]}">{_ICON_UNDO}</button>
   <button class="desel-btn" onclick="window.doSelectAll()">{labels_dict["select_all"]}</button>
   <button class="desel-btn" onclick="doDeselAll()">{labels_dict["deselect_all"]}</button>
+  {sort_html}
+  {filter_html}
+  <span class="cols-group">
+    <span class="cols-label">Cards per row</span>
+    {_cols_btns}
+  </span>
   <button class="icon-btn" style="margin-left:auto;" onclick="gridScrollTo('top')" title="Back to top" aria-label="Back to top">{_ICON_TOP}</button>
+  <button class="bar-toggle" id="bar-float-btn" onclick="toggleBarFloat()" aria-pressed="false"
+          title="Float the bar over the cards" aria-label="Float the bar over the cards">&#9679;</button>
+  <button class="bar-toggle" id="bar-collapse-btn" onclick="toggleBarCollapse()" aria-expanded="true"
+          title="Collapse the bar" aria-label="Collapse the bar">&#9660;</button>
 </div>
 
 <div id="zoom-backdrop" onclick="closeZoom()"></div>
@@ -2950,6 +2978,28 @@ var IMAGES = {{}};
 function imgFor(card) {{
   if (!card) return PLACEHOLDER;
   return card.img || IMAGES[card.sid] || PLACEHOLDER;
+}}
+
+// Announce that the listener below is live.
+//
+// The broadcaster used to fire blind: four attempts, 250ms apart, 750ms in
+// total. This document is ~110KB of HTML and ~65KB of JS, so on a cold Cloud
+// container it is routinely still parsing when the last attempt goes out.
+// Every message then lands on a frame with no listener, CARDS stays empty,
+// and the grid draws "No products match your filters" over a batch of 863 —
+// until any interaction triggers a rerun and a fresh send that happens to
+// win the race.
+//
+// Same delivery route the SYNC_ACK below already uses: parent plus every
+// sibling frame, because the broadcaster is a sibling iframe, not the parent.
+function _announceGridReady() {{
+  try {{
+    var _rdy = {{type: 'GRID_READY'}};
+    window.parent.postMessage(_rdy, '*');
+    for (var _r = 0; _r < window.parent.frames.length; _r++) {{
+      try {{ window.parent.frames[_r].postMessage(_rdy, '*'); }} catch(_e) {{}}
+    }}
+  }} catch(_e) {{}}
 }}
 
 window.addEventListener('message', function(e) {{
@@ -3004,6 +3054,12 @@ window.addEventListener('message', function(e) {{
     }}
   }}
 }});
+// Listener is registered — safe to ask for the payload now. Repeated on
+// DOMContentLoaded and load in case the broadcaster iframe had not yet
+// executed when this ran.
+_announceGridReady();
+window.addEventListener('DOMContentLoaded', _announceGridReady);
+window.addEventListener('load', _announceGridReady);
 var LABELS = {labels_json};
 var DEFAULT_PAGE_SIZE = {items_per_page};
 var PAGE_SIZE_OPTIONS = [20, 50, 100, 200, 500];
@@ -3916,9 +3972,12 @@ window.undoReject = function(sid) {{
   }}, 400);
 }};
 
+// pos is vestigial — there was a second copy of these controls in a top bar,
+// and every call site passes 'bottom' now. Kept in the signature so the inline
+// onclick in the markup does not have to change; ignored.
 window.doBatchReject = function(pos) {{
-  var selectId = pos === 'top' ? 'batch-reason-top' : 'batch-reason-bottom';
-  var sel = document.getElementById(selectId);
+  var sel = document.getElementById('batch-reason-bottom');
+  if (!sel) return;
   var br = sel.value;
   if (br === 'OTHER_CUSTOM') {{
     showCustomReasonPanel(function(cmt) {{
@@ -4114,10 +4173,10 @@ document.addEventListener('keydown', function(e) {{
   }}
 }});
 
-['batch-reason-top','batch-reason-bottom'].forEach(function(id) {{
-  var el = document.getElementById(id);
+(function() {{
+  var el = document.getElementById('batch-reason-bottom');
   if (el) el.addEventListener('change', function() {{ _lastReason = this.value; }});
-}});
+}})();
 
 // Searchable reject-reason dropdown. The dropdown grew past 30 options once
 // every check got a manual reason — scrolling a native <select> that long is
@@ -4320,7 +4379,7 @@ function enhanceReasonSelect(selectId) {{
     if (!wrap.contains(e.target) && !panel.contains(e.target)) closePanel();
   }});
 }}
-enhanceReasonSelect('batch-reason-top');
+// batch-reason-top went with the top bar; only the bottom select remains.
 enhanceReasonSelect('batch-reason-bottom');
 
 // #card-grid is the scroll container, so its height has to be the iframe
@@ -4328,17 +4387,206 @@ enhanceReasonSelect('batch-reason-bottom');
 // wraps to a second row under 1100px, so that is measured rather than
 // assumed. Re-measured on resize and after the grid re-renders.
 window.sizeGridScroll = function() {{
-  var bar = document.querySelector('.ctrl-bar.top-bar');
-  var h = bar ? Math.ceil(bar.getBoundingClientRect().height) : 56;
-  document.documentElement.style.setProperty('--grid-top-h', h + 'px');
+  // --grid-top-h is 0 now: the top bar is gone and nothing sits above the
+  // cards inside the iframe. The variable stays because #card-grid's
+  // max-height still subtracts it, and a future header would only have to
+  // set it here.
+  document.documentElement.style.setProperty('--grid-top-h', '0px');
+  var bot = document.querySelector('.ctrl-bar.bottom-bar');
+  var bh = bot ? Math.ceil(bot.getBoundingClientRect().height) : 84;
+  /* Floating means the grid stops reserving the bar's height and the cards
+     scroll underneath it — that reclaim is the entire point of the mode. A
+     few pixels are still held back so the last row clears the bar's shadow
+     rather than touching it. */
+  if (bot && bot.classList.contains('floating')) bh = 10;
+  document.documentElement.style.setProperty('--grid-bot-h', bh + 'px');
+}};
+
+/* ── Dock / float / collapse ──────────────────────────────────────────────
+   Kept in localStorage rather than session state: it changes nothing outside
+   this iframe, so a round trip to Python would cost a rerun for a purely
+   visual preference. That is the opposite of the old in-grid dark mode toggle,
+   which was removed precisely because it themed only the iframe and left the
+   grid dark inside a light app — this has no counterpart outside to fall out
+   of step with. */
+window.applyBarMode = function() {{
+  var bot = document.querySelector('.ctrl-bar.bottom-bar');
+  if (!bot) return;
+  var floating = false, collapsed = false;
+  try {{
+    floating = localStorage.getItem('gridBarFloat') === '1';
+    collapsed = localStorage.getItem('gridBarCollapsed') === '1';
+  }} catch (e) {{}}
+  collapsed = collapsed && floating;   // docked and collapsed would just be a gap
+  bot.classList.toggle('floating', floating);
+  bot.classList.toggle('collapsed', collapsed);
+  var fb = document.getElementById('bar-float-btn');
+  if (fb) {{
+    fb.setAttribute('aria-pressed', floating ? 'true' : 'false');
+    fb.title = floating ? 'Dock the bar below the cards' : 'Float the bar over the cards';
+    fb.setAttribute('aria-label', fb.title);
+  }}
+  var cb = document.getElementById('bar-collapse-btn');
+  if (cb) {{
+    cb.style.display = floating ? '' : 'none';   // nothing to collapse when docked
+    cb.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    cb.innerHTML = collapsed ? '&#9650;' : '&#9660;';
+    cb.title = collapsed ? 'Expand the bar' : 'Collapse the bar';
+    cb.setAttribute('aria-label', cb.title);
+  }}
+  window.sizeGridScroll();
+}};
+window.toggleBarFloat = function() {{
+  try {{
+    var on = localStorage.getItem('gridBarFloat') === '1';
+    localStorage.setItem('gridBarFloat', on ? '0' : '1');
+    if (on) localStorage.setItem('gridBarCollapsed', '0');  // don't return collapsed
+  }} catch (e) {{}}
+  window.applyBarMode();
+}};
+window.toggleBarCollapse = function() {{
+  try {{
+    var on = localStorage.getItem('gridBarCollapsed') === '1';
+    localStorage.setItem('gridBarCollapsed', on ? '0' : '1');
+  }} catch (e) {{}}
+  window.applyBarMode();
 }};
 window.addEventListener('resize', window.sizeGridScroll);
 window.addEventListener('load', window.sizeGridScroll);
 sizeGridScroll();
+// After sizeGridScroll exists, so the reservation is right on first paint.
+window.applyBarMode();
 try {{
-  var _bar = document.querySelector('.ctrl-bar.top-bar');
-  if (_bar && window.ResizeObserver) new ResizeObserver(window.sizeGridScroll).observe(_bar);
+  // Same-document observer, so this one does fire — unlike the cross-frame
+  // attempt further down. It catches the bar wrapping to a second row.
+  var _bot = document.querySelector('.ctrl-bar.bottom-bar');
+  if (_bot && window.ResizeObserver) new ResizeObserver(window.sizeGridScroll).observe(_bot);
 }} catch(e) {{}}
+
+/* ── Size the iframe to the space the dialog actually leaves ───────────────
+   Python cannot read the browser height, so st.iframe(height=...) is a guess
+   sized for the smallest supported screen. The dialog backdrop
+   (div[data-testid="stDialog"]) is overflow-y:auto and the panel inside it is
+   overflow:visible with no max-height, so the panel simply grows to fit its
+   content and the backdrop scrolls it. Measured at 1366x768: panel 968px in a
+   768px viewport, putting the iframe's bottom edge 168px below the fold. The
+   batch bar is position:fixed against the *iframe* viewport, so it was pinned
+   correctly the whole time — it just went off screen with the iframe.
+
+   CSS alone cannot fix this. Streamlit sizes the stElementContainer wrapper
+   from the Python height argument, so setting only the iframe's height leaves
+   a 468px iframe inside a 620px wrapper and an empty gap below the cards.
+   Both boxes have to move together.
+
+   st.iframe renders a srcdoc iframe, which inherits the parent's origin, so
+   window.frameElement and the parent document are both reachable — verified
+   against the live DOM. That makes the grid the only place with all three
+   facts: the real viewport height, its own offset within the dialog, and how
+   much dialog chrome sits below it. So it sizes itself.
+
+   Everything is measured, not assumed. Nothing here depends on a Streamlit
+   emotion class or on the number of control rows above the grid. */
+var MIN_H = 320, MAX_H = 1600, GAP = 16;
+var _lastFitW = -1, _lastFitH = -1;
+window.fitToViewport = function(force) {{
+  var fe;
+  try {{ fe = window.frameElement; }} catch (e) {{ return; }}   // cross-origin
+  if (!fe) return;                                            // not embedded
+  var pw = window.parent, wrap = fe.parentElement;
+
+  /* Bail out before touching layout unless the viewport actually changed.
+     innerWidth/innerHeight are plain property reads; getBoundingClientRect
+     below forces a synchronous layout, which on a 500-card grid measures
+     3ms — 6ms/s at two ticks a second, sustained for as long as the modal is
+     open, and 20ms/s while the DOM is being mutated. Gating on the cheap
+     reads takes the idle cost of the timer to roughly nothing while still
+     catching every resize. Callers that know the geometry moved for another
+     reason — the open animation, a re-render clobbering our styles — pass
+     force and skip the gate. */
+  if (!force && pw.innerWidth === _lastFitW && pw.innerHeight === _lastFitH) return;
+  _lastFitW = pw.innerWidth; _lastFitH = pw.innerHeight;
+
+  var top = fe.getBoundingClientRect().top;
+
+  /* Whatever the dialog puts below the grid — the close row, its padding —
+     measured as the gap between the wrapper's bottom and the panel's. Taken
+     from current geometry so it stays correct when those rows change height,
+     and it is a distance between two elements that both move together, so it
+     does not drift as this function resizes things. */
+  var below = 0;
+  try {{
+    var panel = pw.document.querySelector('[data-testid="stDialog"] section[role="dialog"]');
+    if (panel) below = Math.max(0, panel.getBoundingClientRect().bottom
+                                   - (wrap || fe).getBoundingClientRect().bottom);
+  }} catch (e) {{}}
+
+  var h = Math.round(pw.innerHeight - top - below - GAP);
+  h = Math.max(MIN_H, Math.min(MAX_H, h));
+  var px = h + 'px';
+  if (fe.style.height !== px) {{
+    fe.style.setProperty('height', px, 'important');
+    fe.style.setProperty('max-height', px, 'important');
+  }}
+  /* The wrapper needs flex-basis, not just height. Streamlit gives it
+     flex: 0 0 <python height>px inside a column flex container, where the
+     basis is the main size and wins over the height property outright —
+     setting height alone left a 356px iframe in a 620px wrapper with the
+     inline rule marked !important and losing anyway. Setting both collapses
+     the wrapper with the iframe, which is what lets the dialog shrink:
+     measured overflow 296px -> 32px, and the 32px that remains is the
+     backdrop's own padding, not hidden content. */
+  if (wrap && wrap.style.height !== px) {{
+    wrap.style.setProperty('flex', '0 0 ' + px, 'important');
+    wrap.style.setProperty('height', px, 'important');
+  }}
+  return h;
+}};
+
+/* React re-renders overwrite inline styles it set itself — observed once in
+   testing, the wrapper snapping back to its Python height. Watch the style
+   attribute and re-apply. The height check inside fitToViewport() makes this
+   idempotent, so re-entry from our own write cannot loop. */
+(function() {{
+  var poll  = function() {{ try {{ window.fitToViewport(false); }} catch (e) {{}} }};
+  var force = function() {{ try {{ window.fitToViewport(true);  }} catch (e) {{}} }};
+  force();
+  window.addEventListener('load', force);
+  window.addEventListener('resize', force);
+  try {{ window.parent.addEventListener('resize', force); }} catch (e) {{}}
+  /* A resize event alone is not enough: it fires while the dialog is still
+     relaying out, so the measurement reads stale geometry, computes the height
+     it already has, and the guard in fitToViewport turns it into a no-op — the
+     grid then sits at its old size until something else nudges it. Measured:
+     resizing 768 -> 1080 left the grid at 356px.
+
+     A ResizeObserver was the obvious answer and does not work here. Observing a
+     parent-document element from inside the iframe never fired, and neither did
+     one constructed in the parent — 0 callbacks either way, not even the initial
+     one that observe() is supposed to deliver. So it re-checks on a timer.
+
+     The timer is the cheap variant: fitToViewport() returns immediately unless
+     window.innerWidth/innerHeight changed, which are property reads that do not
+     touch layout. Only the events and observers below, which know the geometry
+     moved for a reason the viewport size cannot show, force a real measurement.
+     Without that gate this cost 3ms of forced layout per tick on a 500-card
+     grid — 6ms/s idle and 20ms/s while the DOM was being mutated, for as long
+     as the modal stayed open. */
+  setInterval(poll, 500);
+  try {{
+    var fe = window.frameElement;
+    if (fe && window.MutationObserver) {{
+      // React clobbering our inline styles leaves the viewport unchanged, so
+      // this has to force — the gate would otherwise swallow the recovery.
+      var mo = new MutationObserver(force);
+      mo.observe(fe, {{attributes: true, attributeFilter: ['style']}});
+      if (fe.parentElement) mo.observe(fe.parentElement, {{attributes: true, attributeFilter: ['style']}});
+    }}
+  }} catch (e) {{}}
+  /* The dialog animates open, so the first measurement can land before the
+     panel has settled. These force for the same reason: the viewport is not
+     changing, the panel underneath it is. Four reads over the first second. */
+  [60, 180, 400, 800].forEach(function(t) {{ setTimeout(force, t); }});
+}})();
 
 // The page no longer scrolls, the grid does — so the nav buttons have to
 // move the container, not the window.
@@ -4394,10 +4642,10 @@ try {{
 
 </script>
 
-<div id="cols-strip" style="position:fixed;bottom:0;left:0;width:100%;z-index:9999;background:var(--card);border-top:1px solid var(--border);display:flex;align-items:center;gap:6px;padding:2px 12px;height:26px;">
-  <span style="font-size:11px;font-weight:700;color:var(--text-muted);white-space:nowrap;letter-spacing:.04em;">Cards per row</span>
-  {_cols_btns}
-</div>
+<!-- #cols-strip lived here: a second fixed bar, 26px tall, holding only the
+     3/4/5/6/7 buttons and their label. Five small buttons do not need a band
+     of their own, and it forced the batch bar to sit at bottom:26px to clear
+     it. The buttons are in .cols-group inside the batch bar now. -->
 
 </body>
 </html>"""
@@ -4539,48 +4787,59 @@ def visual_review_modal(support_files):
     seller_opts.sort()
     category_opts.sort()
 
-    c1, c2, c3, c4 = st.columns(
-        [1.5, 1.5, 1.5, 0.8], gap="large", vertical_alignment="bottom"
-    )
+    # Search stays inline — it is used constantly. Seller and category move
+    # into a popover: they are set occasionally, and as a permanent row they
+    # cost a full band of a modal that had ~370px left for cards. The button
+    # carries the active count so a hidden filter can never be forgotten.
+    _n_active = len(curr_sellers or []) + len(curr_categories or [])
+    c1, c2, c4 = st.columns([2.2, 1.2, 0.9], gap="medium", vertical_alignment="bottom")
     with c1:
         c1a, c1b = st.columns([6, 1], vertical_alignment="bottom", gap="small")
         with c1a:
             search_n = st.text_input(
                 "Search by Name, Brand, or SID", placeholder="Product name, brand, SID…", icon=":material/search:",
+                label_visibility="collapsed",
                 key="grid_search_n",
             )
         with c1b:
             st.button("✖", key="clr_n", help="Clear search", on_click=_clear_grid_search_n, disabled=not bool(curr_search_n))
     with c2:
-        c2a, c2b = st.columns([6, 1], vertical_alignment="bottom", gap="small")
-        with c2a:
-            search_sellers = st.multiselect(
-                "Filter by Seller",
-                options=seller_opts,
-                default=curr_sellers,
-                key="grid_filter_sellers",
-            )
-        with c2b:
-            st.button("✖", key="clr_sellers", help="Clear seller filter", on_click=_clear_grid_filter_sellers, disabled=not bool(curr_sellers))
-    with c3:
-        c3a, c3b = st.columns([6, 1], vertical_alignment="bottom", gap="small")
-        with c3a:
-            search_categories = st.multiselect(
-                "Filter by Category",
-                options=category_opts,
-                default=curr_categories,
-                key="grid_filter_categories",
-            )
-        with c3b:
-            st.button("✖", key="clr_categories", help="Clear category filter", on_click=_clear_grid_filter_categories, disabled=not bool(curr_categories))
+        with st.popover(
+            f"Filters ({_n_active})" if _n_active else "Filters",
+            use_container_width=True,
+            help="Filter the grid by seller or category",
+        ):
+            fa, fb = st.columns([6, 1], vertical_alignment="bottom", gap="small")
+            with fa:
+                search_sellers = st.multiselect(
+                    "Seller", placeholder="All sellers",
+                    options=seller_opts, default=curr_sellers,
+                    key="grid_filter_sellers",
+                )
+            with fb:
+                st.button("✖", key="clr_sellers", help="Clear seller filter",
+                          on_click=_clear_grid_filter_sellers, disabled=not bool(curr_sellers))
+            ga, gb = st.columns([6, 1], vertical_alignment="bottom", gap="small")
+            with ga:
+                search_categories = st.multiselect(
+                    "Category", placeholder="All categories",
+                    options=category_opts, default=curr_categories,
+                    key="grid_filter_categories",
+                )
+            with gb:
+                st.button("✖", key="clr_categories", help="Clear category filter",
+                          on_click=_clear_grid_filter_categories, disabled=not bool(curr_categories))
 
     curr_flag = st.session_state.get("grid_filter_flag", "")
     curr_sort = st.session_state.get("grid_sort_issue", "")
 
     with c4:
-        if st.button("✕ Close", key="close_modal_top", type="secondary", use_container_width=True):
-            st.session_state.show_review_modal = False
-            st.rerun()
+        # The modal had two close buttons, one here and one under the footer.
+        # This one also sat alone on its own row: c4 stacks its children, and
+        # the search and filter columns are bottom-aligned to the slider below,
+        # so the whole left of this band was empty. Dropping it takes the band
+        # with it. Close Review at the bottom is the survivor.
+        #
         # 500 per page is only offered in wide mode (6 or 7 columns). More
         # columns means smaller cards, so 500 of them stays a sensible page; at
         # 5 columns the same 500 cards make the grid iframe roughly 36,000px
@@ -4605,15 +4864,26 @@ def visual_review_modal(support_files):
         def _on_ipp_change():
             st.session_state.grid_items_per_page = st.session_state[_slider_key]
 
-        st.select_slider(
-            "Items per page",
-            options=_ipp_opts,
-            key=_slider_key,
-            on_change=_on_ipp_change,
-            help=("500 per page is available in wide mode (6 or 7 columns)."
-                  if _allow_500 else
-                  "Switch to 6 or 7 columns to unlock 500 per page."),
-        )
+        # In a popover rather than inline. A select_slider carries its label
+        # above the track, making it the tallest widget in this row and setting
+        # the height of the whole band; every other control here is one input
+        # high. Behind a button the band collapses to that single height, and
+        # page size is a setting you change occasionally, not a control you
+        # need under the cursor.
+        with st.popover(
+            f"View · {st.session_state.get('grid_items_per_page', 50)}",
+            use_container_width=True,
+            help="How many products to show per page",
+        ):
+            st.select_slider(
+                "Items per page",
+                options=_ipp_opts,
+                key=_slider_key,
+                on_change=_on_ipp_change,
+                help=("500 per page is available in wide mode (6 or 7 columns)."
+                      if _allow_500 else
+                      "Switch to 6 or 7 columns to unlock 500 per page."),
+            )
         st.session_state.grid_items_per_page = st.session_state[_slider_key]
 
     if "_grid_page_contexts" not in st.session_state:
@@ -4744,7 +5014,9 @@ def visual_review_modal(support_files):
         # shrinks the result set to 7 pages should land on page 7, not 1.
         st.session_state.grid_page = total_pages - 1
 
-    st.markdown(f"<div style='margin-bottom:-10px;color:#6b7280;font-size:12px;'>Total items: {len(review_data)}</div>", unsafe_allow_html=True)
+    # 'Total items' used to sit on its own line above a separate 'Page (of N)'
+    # label — two rows saying one thing. The count now rides on the page
+    # control at the bottom.
 
     # ------------------------------------------------------------------
     # Pagination controls
@@ -4790,34 +5062,10 @@ def visual_review_modal(support_files):
     if "jump_bot" not in st.session_state:
         st.session_state.jump_bot = st.session_state.get("grid_page", 0) + 1
 
-    pg_cols = st.columns([1, 2, 1], vertical_alignment="bottom", gap="small")
-    with pg_cols[0]:
-        st.button(
-            "⬅ Prev",
-            key="prev_top",
-            use_container_width=True,
-            disabled=st.session_state.get("grid_page", 0) == 0,
-            on_click=_prev_page,
-        )
-    with pg_cols[1]:
-        st.number_input(
-            f"Page (of {total_pages})",
-            min_value=1,
-            max_value=max(1, total_pages),
-            key="jump_top",
-            on_change=_jump_from_widget,
-            args=("jump_top",),
-        )
-    with pg_cols[2]:
-        st.button(
-            "Next ➡",
-            key="next_top",
-            use_container_width=True,
-            disabled=st.session_state.grid_page >= total_pages - 1,
-            on_click=_next_page,
-        )
-
-    st.progress(min(1.0, (st.session_state.grid_page + 1) / total_pages))
+    # Top pagination removed. Prev/Next, the page number and the progress bar
+    # were rendered twice — once here and again below the cards — costing
+    # ~105px of a modal that only had ~370px left for cards. The bottom pair
+    # is kept because paging is something you do *after* reviewing a screen.
 
     with st.spinner("Loading new page..."):
         page_start = st.session_state.grid_page * ipp
@@ -4957,23 +5205,28 @@ def visual_review_modal(support_files):
 
     st.markdown("""
     <style>
+    /* st.container(key=...) emits class="st-key-<key>". It does NOT emit a
+       data-element-key attribute — measured against the live 1.60 DOM, that
+       selector matches zero elements. This block was written with it and had
+       therefore never applied: the iframe's height came entirely from the
+       st.iframe(height=...) argument below, and both the calc(100vh - 190px)
+       and the calc(100vh - 300px) that replaced it were dead letters. */
     div[data-testid="stElementContainer"]:has(iframe),
-    div[data-element-key="grid_iframe_container"],
-    div[data-element-key="grid_iframe_container"] iframe {
+    div.st-key-grid_iframe_container,
+    div.st-key-grid_iframe_container iframe {
         width: 100% !important;
         max-width: 100% !important;
     }
-    /* Python cannot read the browser height, so st.iframe(height=...) below
-       is sized for the smallest supported screen. CSS can, so the rendered
-       element gets a viewport-relative height instead: the grid fills a big
-       monitor and still fits a 768px laptop, with no round-trip and nothing
-       environment-specific — it behaves the same locally and on Cloud.
-       The iframe's internal 100vh follows the element box, so #card-grid's
-       scroll region adapts to this automatically. */
-    div[data-element-key="grid_iframe_container"] iframe {
-        height: calc(100vh - 190px) !important;
-        min-height: 420px !important;
-        max-height: 1400px !important;
+    /* Height is NOT set here. Streamlit sizes the stElementContainer wrapper
+       from the Python height argument, so styling the iframe alone leaves the
+       wrapper at its original height and opens an empty gap below the grid
+       (measured: iframe 468px inside a 620px wrapper). Both boxes have to move
+       together, and only the browser knows the viewport — so the grid sizes
+       itself from inside via frameElement. See fitToViewport() in the grid JS.
+       min-height guards the first paint, before that script has run. */
+    div.st-key-grid_iframe_container iframe {
+        min-height: 320px !important;
+        max-height: 1600px !important;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -5021,9 +5274,14 @@ def visual_review_modal(support_files):
           var acked = false;
           var timer = null;
           window.addEventListener('message', function(ev) {{
-            if (ev.data && ev.data.type === 'SYNC_ACK') {{
+            if (!ev.data) return;
+            if (ev.data.type === 'SYNC_ACK') {{
               acked = true;
               if (timer) {{ clearTimeout(timer); timer = null; }}
+            }} else if (ev.data.type === 'GRID_READY') {{
+              // The grid finished parsing and is listening. Deliver now
+              // rather than hoping a blind retry coincides with it.
+              send(0);
             }}
           }});
           function send(attemptsLeft) {{
@@ -5034,35 +5292,51 @@ def visual_review_modal(support_files):
               }}
             }} catch(e) {{}}
             if (attemptsLeft > 0) {{
-              timer = setTimeout(function() {{ send(attemptsLeft - 1); }}, 250);
+              timer = setTimeout(function() {{ send(attemptsLeft - 1); }}, 400);
             }}
           }}
-          send(3);
+          // GRID_READY is the real trigger; this is the safety net for the
+          // case where the grid announced itself before this script existed.
+          // 12 attempts at 400ms covers ~5s of cold-start parsing, against
+          // the 750ms the old blind loop allowed.
+          send(12);
         }})();
         </script>
         """
         st.iframe(_sync_html, height=1)
-    st.markdown("---")
 
-    pg_cols_bot = st.columns([1, 2, 1], vertical_alignment="bottom", gap="small")
-    with pg_cols_bot[0]:
+    # One footer row instead of four stacked bands. Measured on a real batch,
+    # the count line, the Prev/Next row, the progress bar and Close Review came
+    # to ~180px between them, plus a horizontal rule and the gap left by the
+    # zero-height sync iframe above. All of it now fits on one line, and since
+    # the grid sizes itself to the space the dialog leaves, every pixel saved
+    # here becomes a pixel of cards.
+    #
+    # The rule is gone: a divider immediately above a bordered button row draws
+    # a line next to a line.
+    _page_now = st.session_state.get("grid_page", 0)
+    _pg = st.columns([0.9, 1.5, 0.9, 2.2, 1.1], vertical_alignment="center", gap="small")
+    with _pg[0]:
         st.button(
             "⬅ Prev",
             key="prev_bot",
             use_container_width=True,
-            disabled=st.session_state.get("grid_page", 0) == 0,
+            disabled=_page_now == 0,
             on_click=_prev_page,
         )
-    with pg_cols_bot[1]:
+    with _pg[1]:
+        # Label collapsed — the caption beside it already says which page this
+        # is and how many there are, so a label would repeat it.
         st.number_input(
-            f"Page (of {total_pages})",
+            f"{len(review_data):,} items · page of {total_pages}",
             min_value=1,
             max_value=max(1, total_pages),
             key="jump_bot",
             on_change=_jump_from_widget,
             args=("jump_bot",),
+            label_visibility="collapsed",
         )
-    with pg_cols_bot[2]:
+    with _pg[2]:
         st.button(
             "Next ➡",
             key="next_bot",
@@ -5070,12 +5344,13 @@ def visual_review_modal(support_files):
             disabled=st.session_state.grid_page >= total_pages - 1,
             on_click=_next_page,
         )
-
-    st.progress(min(1.0, (st.session_state.grid_page + 1) / total_pages))
-
-    if st.button("✖ Close Review", key="close_bot_fallback", use_container_width=True, type="secondary"):
-        st.session_state.show_review_modal = False
-        st.rerun()
+    with _pg[3]:
+        st.caption(f"{len(review_data):,} items · page {_page_now + 1} of {total_pages}")
+        st.progress(min(1.0, (_page_now + 1) / total_pages))
+    with _pg[4]:
+        if st.button("✖ Close", key="close_bot_fallback", use_container_width=True, type="secondary"):
+            st.session_state.show_review_modal = False
+            st.rerun()
 
 
 @st.fragment
