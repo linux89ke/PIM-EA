@@ -89,8 +89,10 @@ from data_utils import (
     create_match_key_vectorized,
     df_hash,
     filter_by_country,
+    find_predecessor_decisions,
     load_df_parquet,
     load_manual_decisions,
+    preview_decision_merge,
     propagate_metadata,
     save_df_parquet,
     standardize_input_data,
@@ -133,6 +135,7 @@ from ui_components import (
     render_rejection_donut,
     render_severity_group_header,
     render_summary_header,
+    render_override_history,
 )
 
 # A JS injector used to live here. It reached into the parent document on
@@ -4172,6 +4175,26 @@ def _reset_report_state(*, clear_uploaded_files: bool = False, clear_zip_cache: 
     st.session_state.display_df_cache = {}
     st.session_state.pop("_grid_review_data_cache", None)
     st.session_state.pop("_grid_warm_urls", None)
+
+    # Everything below is scoped to one uploaded batch and used to survive a
+    # new upload, which is how products from a previous file kept appearing.
+    # quick_rejects and _stagedRejections carried the old batch's manual
+    # rejections onto the new one; the _zip_* maps answered image and status
+    # lookups for products that were no longer loaded; post_qc_results made the
+    # approval re-check consult the previous batch's flags.
+    #
+    # current_sig_hash is the dangerous one: it is the filename
+    # checkpoint_final_report() writes to, so leaving it set meant the new
+    # batch's report was saved over the previous batch's cache entry.
+    for _k in (
+        "quick_rejects", "_stagedRejections", "post_qc_results", "zip_qc_results",
+        "_zip_sid_index", "_zip_status_cols", "_zip_prefetch_map",
+        "current_sig_hash", "_data_filtered_ref",
+        # Waivers and the carry-forward offer are both per batch too.
+        "_flag_overrides", "_predecessor_offer", "_predecessor_handled",
+    ):
+        st.session_state.pop(_k, None)
+
     if clear_uploaded_files:
         st.session_state.cached_uploaded_files = []
     if clear_zip_cache:
@@ -4274,7 +4297,15 @@ def _upload_digest(rec: dict) -> str:
     return digest
 
 
-process_signature = (str(sorted([f["name"] + _upload_digest(f) for f in _files_for_processing])) + f"_{country_validator.code}" if _files_for_processing else "empty")
+# Kept as a list as well as folded into the signature string. The signature is
+# hashed into an opaque filename, so on its own it cannot answer "was an
+# earlier journal written for a subset of these files?" — which is what makes
+# decisions findable after a ZIP is added to a batch already under review.
+_process_file_tokens = sorted(f["name"] + _upload_digest(f) for f in _files_for_processing)
+st.session_state._process_file_tokens = _process_file_tokens
+st.session_state._process_country = country_validator.code
+
+process_signature = (str(_process_file_tokens) + f"_{country_validator.code}" if _files_for_processing else "empty")
 
 # Row-count estimation re-opens every uploaded ZIP/Excel file, so only redo it
 # when the uploaded file set actually changes rather than on every rerun (click,
@@ -4307,7 +4338,12 @@ if _total_estimated_rows > _large_file_threshold:
     st.info(f"**Large file detected** (~{_total_estimated_rows:,} rows estimated) — validation may take 30–60 seconds. Image checks run in parallel to keep things fast.", icon=":material/hourglass_top:")
 
 if st.session_state.get("last_processed_files") != process_signature:
-    _reset_report_state()
+    # clear_zip_cache, because the file set has changed: the previous ZIP's
+    # image index is keyed on name/brand, so leaving it loaded lets a product
+    # from the new upload resolve to an image out of the old archive.
+    # _prepare_lazy_zip_images() repopulates it below for whatever ZIP is in
+    # the new set, or leaves it empty when there is none.
+    _reset_report_state(clear_zip_cache=True)
 
     if process_signature == "empty":
         st.session_state.last_processed_files = "empty"
@@ -5035,6 +5071,89 @@ if st.session_state.get("last_processed_files") != process_signature:
                     st.code(traceback.format_exc())
                 st.session_state.last_processed_files = "error"
 
+
+# ── Carry decisions forward when the upload grows ──────────────────────────
+# Adding the image ZIP to a batch already under review changes the file set, so
+# the journal written during that review is keyed under a signature nothing
+# looks up again — the decisions are on disk and unreachable, and the run looks
+# like it reset. This finds a journal written for a strict subset of what is
+# now uploaded and offers it back.
+#
+# Deliberately an offer, not an automatic merge. Re-applying yesterday's
+# verdicts onto a report the reviewer has not looked at yet is not something to
+# do silently, and the counts below are the only chance to notice that a
+# journal is older or larger than expected before it lands.
+if (
+    st.session_state.get("last_processed_files") == process_signature
+    and process_signature != "empty"
+    and st.session_state.get("_predecessor_handled") != process_signature
+    and "_predecessor_offer" not in st.session_state
+):
+    try:
+        _pred = find_predecessor_decisions(
+            st.session_state.get("_process_file_tokens"),
+            st.session_state.get("_process_country", ""),
+            process_signature,
+        )
+        if _pred:
+            _pred["preview"] = preview_decision_merge(
+                st.session_state.get("final_report"), _pred["decisions"]
+            )
+            # Nothing of ours survives in this report, so there is nothing to
+            # offer and no reason to interrupt.
+            if _pred["preview"]["matched"] > 0:
+                st.session_state._predecessor_offer = _pred
+            else:
+                st.session_state._predecessor_handled = process_signature
+        else:
+            st.session_state._predecessor_handled = process_signature
+    except Exception:
+        # Never let recovery break the run it is trying to protect.
+        logger.exception("Predecessor decision lookup failed")
+        st.session_state._predecessor_handled = process_signature
+
+_offer = st.session_state.get("_predecessor_offer")
+if _offer:
+    _pv = _offer["preview"]
+    _added = ", ".join(t.rsplit(".", 1)[0][:40] for t in _offer.get("added", [])) or "new file(s)"
+    _age = time.time() - (_offer.get("saved_at") or time.time())
+    _ago = (f"{int(_age // 86400)}d ago" if _age >= 86400 else
+            f"{int(_age // 3600)}h ago" if _age >= 3600 else
+            f"{int(_age // 60)}m ago" if _age >= 60 else "just now")
+    with st.container(border=True):
+        st.warning(
+            f"**{_pv['total']:,} manual decisions found from an earlier run of this batch** "
+            f"({_ago}). This upload adds {len(_offer.get('added', []))} file(s).",
+            icon=":material/history:",
+        )
+        _m1, _m2, _m3 = st.columns(3)
+        _m1.metric("Will be re-applied", f"{_pv['matched']:,}")
+        _m2.metric("No longer in report", f"{_pv['missing']:,}",
+                   help="Products decided earlier that this upload no longer contains. They are skipped.")
+        _m3.metric("Differ from current", f"{_pv['conflicts']:,}",
+                   help="Rows where your earlier decision disagrees with what validation just produced — "
+                        "including anything the newly added file flagged. Your decision wins.")
+        if _pv["conflicts"]:
+            st.caption(
+                f"Your earlier decision overrides validation on {_pv['conflicts']:,} row(s). "
+                "Anything the new file flagged there will be overwritten by what you already chose."
+            )
+        _b1, _b2 = st.columns([1, 1])
+        if _b1.button(f"Re-apply {_pv['matched']:,} decisions", type="primary",
+                      width="stretch", key="pred_apply"):
+            _n = apply_manual_decisions(st.session_state.final_report, _offer["decisions"])
+            checkpoint_final_report(st.session_state.final_report)
+            st.session_state._predecessor_handled = process_signature
+            st.session_state.pop("_predecessor_offer", None)
+            st.toast(f"Re-applied {_n:,} decision(s)", icon=":material/history:")
+            st.rerun()
+        if _b2.button("Start fresh", width="stretch", key="pred_skip",
+                      help="Keep validation's results. The earlier decisions stay on disk."):
+            st.session_state._predecessor_handled = process_signature
+            st.session_state.pop("_predecessor_offer", None)
+            st.rerun()
+
+
 @st.fragment
 def handle_jtbridge():
     _bridge_val = st.text_input(
@@ -5193,6 +5312,9 @@ def render_main_results():
     # analytical deep-dive, not the orientation) had equal billing. Swapped:
     # KPIs always on, charts behind the disclosure.
     render_summary_header(fr)
+    # Only renders when something has actually been waived, so it costs a dict
+    # lookup on a normal run.
+    render_override_history()
 
     total_count = len(fr)
     auto_count = len(fr[fr["FLAG"] != "Manual review"])
