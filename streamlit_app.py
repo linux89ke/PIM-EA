@@ -70,6 +70,9 @@ from api_client import (
 
 # ── NEW MODULAR IMPORTS ───────────────────────────────────────────────────────
 from constants import (
+    TV_COLOR_EXEMPT_NODE, TV_COLOR_EXEMPT_PREFIX,
+    ASPECT_ADVISORY_TALL, ASPECT_ADVISORY_WIDE,
+    ASPECT_REJECT_TALL, ASPECT_REJECT_WIDE,
     COUNTRY_VALIDATOR_CONFIG,
     FLAG_CACHE_DIR,
     GRID_COLS,
@@ -972,9 +975,12 @@ def check_image_stretched(data: pd.DataFrame, _image_cache: dict = None) -> pd.D
         w, h = dims
         if w > 0:
             ratio = h / w
-            if ratio > 1.5:
+            # Only the extreme tier rejects. Between the two bounds the image
+            # is merely unusual, and that is left to the grid to show as
+            # commentary — see ASPECT_ADVISORY_* below.
+            if ratio > ASPECT_REJECT_TALL:
                 url_issues[url] = f"Image Stretched - Tall Aspect Ratio ({w}x{h})"
-            elif ratio < 0.6:
+            elif ratio < ASPECT_REJECT_WIDE:
                 url_issues[url] = f"Image Stretched - Wide Aspect Ratio ({w}x{h})"
 
     if not url_issues:
@@ -2523,6 +2529,25 @@ def load_valid_colors() -> set:
     return valid_set
 
 
+def tv_exempt_category_codes(support_files: Dict = None) -> set:
+    """Category codes under the TV path prefix, resolved from the category map.
+
+    Empty when the map is unavailable, which makes the exemption a no-op rather
+    than something that silently exempts everything or nothing in particular.
+    """
+    if support_files is None:
+        support_files = st.session_state.get("support_files", {}) or {}
+    code_to_path = support_files.get("code_to_path") or {}
+    if not code_to_path:
+        return set()
+    return {
+        clean_category_code(str(code))
+        for code, path in code_to_path.items()
+        if str(path).strip() == TV_COLOR_EXEMPT_NODE
+        or str(path).startswith(TV_COLOR_EXEMPT_PREFIX)
+    }
+
+
 def check_missing_color(
     data: pd.DataFrame,
     pattern: re.Pattern,
@@ -2531,9 +2556,12 @@ def check_missing_color(
 ) -> pd.DataFrame:
     if not {"CATEGORY_CODE", "NAME"}.issubset(data.columns) or pattern is None:
         return pd.DataFrame(columns=data.columns)
-    target = data[
-        data["_cat_clean"].isin(set(clean_category_code(c) for c in color_categories))
-    ].copy()
+    _cats = set(clean_category_code(c) for c in color_categories)
+    # Temporary exemption, off by default. A television has no meaningful
+    # colour to declare, so the check produces rejections nobody acts on.
+    if st.session_state.get("tv_color_exempt"):
+        _cats -= tv_exempt_category_codes()
+    target = data[data["_cat_clean"].isin(_cats)].copy()
     if target.empty:
         return pd.DataFrame(columns=data.columns)
     has_color = "COLOR" in data.columns
@@ -4006,6 +4034,37 @@ with st.sidebar:
         st.toast("Cache cleared! (Locked files skipped)", icon="🧹")
         st.rerun()
     st.markdown("---")
+    # ── Temporary rule overrides ──────────────────────────────────────────
+    # Kept visibly separate from display settings: these change what gets
+    # rejected, not how it looks, and they are meant to be switched off again.
+    st.header("Temporary rules")
+    _tv_prev = bool(st.session_state.get("tv_color_exempt", False))
+    _tv_now = st.toggle(
+        "Exempt TVs from colour checks",
+        value=_tv_prev,
+        key="tv_color_exempt",
+        help=(
+            "Skips the Missing COLOR check for everything under "
+            "Electronics / Television & Video / Televisions / …, and approves "
+            "anything the ZIP rejected for colour in those categories. Off by "
+            "default. Televisions only — not DVD players, VCRs, AV receivers, "
+            "satellite equipment, mounts, remotes or TV furniture."
+        ),
+    )
+    if _tv_now != _tv_prev:
+        # The exemption changes validation output, so the current report is
+        # stale the moment it is flipped. Forcing a reprocess is the honest
+        # response — leaving the old verdicts on screen under a new rule is
+        # how a "temporary" setting turns into a silently wrong batch.
+        st.session_state.last_processed_files = None
+        st.rerun()
+    if _tv_now:
+        _tv_n = len(tv_exempt_category_codes())
+        st.caption(
+            f":orange[TV colour exemption is ON]"
+            + (f" — {_tv_n} categories" if _tv_n else " — category map unavailable, no effect")
+        )
+    st.markdown("---")
     st.header(_t("display_settings"))
     new_mode = ("wide" if "Wide" in st.radio("Layout Mode", ["Centered", "Wide"], index=1 if st.session_state.get("layout_mode", "wide") == "wide" else 0) else "centered")
     if new_mode != st.session_state.get("layout_mode", "wide"):
@@ -4580,6 +4639,42 @@ if st.session_state.get("last_processed_files") != process_signature:
                                             st.rerun()
                                     st.stop()
 
+                        # ── Same guard, for files with no country column ──────
+                        # The block above needs ACTIVE_STATUS_COUNTRY. Without
+                        # it nothing filters and nothing is detected, so a
+                        # Uganda file selected as Kenya was validated end to end
+                        # under Kenyan rules and came back labelled Kenya —
+                        # every verdict on it wrong, and nothing said so.
+                        # det_names now carries the SKU-prefix inference, which
+                        # is the only signal left in that case.
+                        if ("ACTIVE_STATUS_COUNTRY" not in data_prop.columns
+                                and det_names
+                                and country_validator.country not in det_names
+                                and st.session_state.get("_country_override_sig") != process_signature):
+                            _guess = det_names[0]
+                            _status.update(label="Country mismatch detected", state="error", expanded=True)
+                            st.warning(
+                                f"This file has no country column, and its SKUs look like **{_guess}** — "
+                                f"but **{country_validator.country}** is selected. Nothing can be filtered by "
+                                f"country here, so every one of the {len(data_prop):,} rows would be validated "
+                                f"against {country_validator.country}'s rules.",
+                                icon=":material/flag:",
+                            )
+                            _n1, _n2 = st.columns(2)
+                            with _n1:
+                                if st.button(f"Switch to {_guess} and Reprocess", type="primary",
+                                             icon=":material/swap_horiz:", key="cmg_switch_nocol"):
+                                    st.session_state.selected_country = _guess
+                                    set_country_pref(_guess)
+                                    st.session_state.country_bridge_counter += 1
+                                    st.rerun()
+                            with _n2:
+                                if st.button(f"Process as {country_validator.country} anyway "
+                                             f"({len(data_prop):,} rows)", key="cmg_continue_nocol"):
+                                    st.session_state._country_override_sig = process_signature
+                                    st.rerun()
+                            st.stop()
+
                         actual_counts = data_filtered.groupby("PRODUCT_SET_SID")["PRODUCT_SET_SID"].transform("count")
                         if "COUNT_VARIATIONS" in data_filtered.columns:
                             file_counts = pd.to_numeric(data_filtered["COUNT_VARIATIONS"], errors="coerce").fillna(1)
@@ -4712,6 +4807,13 @@ if st.session_state.get("last_processed_files") != process_signature:
                             status_cols = [c for c in qc_zip.columns if "status" in c.lower()]
                             fmap = support_files.get("flags_mapping", {})
                             _fr_sid_to_idx = pd.Series(final_report.index, index=final_report["ProductSetSid"].astype(str).str.strip()).to_dict()
+                            # Resolved once per batch, not per row: this walks
+                            # the whole category map. Empty set when the toggle
+                            # is off, which makes the branch below a no-op.
+                            _tv_exempt_codes = (
+                                tv_exempt_category_codes(support_files)
+                                if st.session_state.get("tv_color_exempt") else set()
+                            )
                             _data_by_sid = {sid: grp for sid, grp in data.groupby(data["PRODUCT_SET_SID"].astype(str).str.strip(), sort=False)}
                             _zip_result_rows: dict = {}
                             _rej_in_zip = 0
@@ -4813,6 +4915,27 @@ if st.session_state.get("last_processed_files") != process_signature:
                                             continue
 
                                     if "color" in _base_key.lower():
+                                        # TV exemption, when enabled: the ZIP's
+                                        # colour verdict is overridden outright
+                                        # for these categories, without the
+                                        # usual requirement that a recognised
+                                        # COLOR value be present — the whole
+                                        # point is that these products do not
+                                        # carry one.
+                                        if _tv_exempt_codes:
+                                            _tv_grp = _data_by_sid.get(_sid)
+                                            _tv_code = ""
+                                            if _tv_grp is not None and not _tv_grp.empty and "CATEGORY_CODE" in _tv_grp.columns:
+                                                _tv_code = clean_category_code(str(_tv_grp["CATEGORY_CODE"].iloc[0]))
+                                            if _tv_code and _tv_code in _tv_exempt_codes:
+                                                final_report.at[_fidx, "Status"] = "Approved"
+                                                final_report.at[_fidx, "FLAG"] = "Approved by User"
+                                                final_report.at[_fidx, "Comment"] = "Colour check exempt (TV category)"
+                                                final_report.at[_fidx, "Reason"] = ""
+                                                final_report.at[_fidx, "Is_Zip"] = True
+                                                final_report.at[_fidx, "zip_override"] = "color_tv_exempt"
+                                                continue
+
                                         missing_col_df = res_zip.get("Missing COLOR") if res_zip else None
                                         # To override a color rejection, the product must pass the main
                                         # validation AND have a COLOR value that is recognised in colors.txt.
