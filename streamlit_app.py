@@ -671,7 +671,14 @@ FLAG_RELEVANT_COLS = {
 try:
     from general_rules import relevant_columns as _general_relevant_columns
 
-    FLAG_RELEVANT_COLS.update(_general_relevant_columns())
+    # Union, not replace. A rule can be filed under an existing flag —
+    # "Wrong Category" has a built-in check of its own reading NAME and
+    # CATEGORY — and update() would have narrowed that entry to whatever
+    # columns the rule declares. The cache would then miss an edit to a column
+    # the built-in check reads and serve its previous verdict.
+    for _flag, _cols in _general_relevant_columns().items():
+        _existing = FLAG_RELEVANT_COLS.get(_flag) or []
+        FLAG_RELEVANT_COLS[_flag] = sorted(set(_existing) | set(_cols))
 except Exception:  # a broken rules file must not stop the app importing
     logging.getLogger(__name__).exception("general_rules: could not read column map")
 
@@ -824,6 +831,18 @@ if "zip_image_index" not in st.session_state:
     st.session_state.zip_image_index = {}
 if "zip_image_source_bytes" not in st.session_state:
     st.session_state.zip_image_source_bytes = None
+
+# TV colour exemption — ON by default, temporarily, until the seven television
+# categories are set to "No Need" in QC Check Validaton.xlsx. That sheet is
+# what actually asserts televisions need a colour; this is an override sitting
+# on top of it, which is why it is meant to be removed rather than kept.
+#
+# Seeded here rather than left to the sidebar toggle's default. Three of the
+# four places that read this use a bare .get(), which returns None when the key
+# is absent — so on the first run of a session, before the sidebar has
+# rendered, the exemption would silently be off for the batch being processed.
+if "tv_color_exempt" not in st.session_state:
+    st.session_state.tv_color_exempt = True
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 SID_COLUMN_CANDIDATES = ["PRODUCT_SET_SID", "ProductSetSid", "Product Set SID", "cod_productset_sid", "SID"]
@@ -3657,10 +3676,21 @@ def validate_products(
                                 _r = res.set_index("PRODUCT_SET_SID")["Reason"].to_dict()
                                 final_res["Reason"] = final_res["PRODUCT_SET_SID"].astype(str).map(_r)
 
+                        # Merge, not overwrite. Two checks can share a flag —
+                        # a general rule filed under "Wrong Category" runs
+                        # alongside the built-in check of that name — and an
+                        # assignment here would silently discard whichever
+                        # finished first, leaving a check that appears to run
+                        # and find nothing.
+                        _prev = batch_results.get(name)
+                        if _prev is not None and not _prev.empty:
+                            final_res = pd.concat([_prev, final_res], ignore_index=True)
+                            if "PRODUCT_SET_SID" in final_res.columns:
+                                final_res = final_res.drop_duplicates(subset=["PRODUCT_SET_SID"])
                         batch_results[name] = final_res
                         rejected_sids.update(_expanded)
                     else:
-                        batch_results[name] = pd.DataFrame(columns=data.columns)
+                        batch_results.setdefault(name, pd.DataFrame(columns=data.columns))
                 except Exception as e:
                     logger.error(f"Validation error in '{name}': {e}")
                     validation_errors.append((name, str(e)))
@@ -4085,7 +4115,7 @@ with st.sidebar:
     # Kept visibly separate from display settings: these change what gets
     # rejected, not how it looks, and they are meant to be switched off again.
     st.header("Temporary rules")
-    _tv_prev = bool(st.session_state.get("tv_color_exempt", False))
+    _tv_prev = bool(st.session_state.get("tv_color_exempt", True))
     _tv_now = st.toggle(
         "Exempt TVs from colour checks",
         value=_tv_prev,
@@ -4093,9 +4123,10 @@ with st.sidebar:
         help=(
             "Skips the Missing COLOR check for everything under "
             "Electronics / Television & Video / Televisions / …, and approves "
-            "anything the ZIP rejected for colour in those categories. Off by "
-            "default. Televisions only — not DVD players, VCRs, AV receivers, "
-            "satellite equipment, mounts, remotes or TV furniture."
+            "anything the ZIP rejected for colour in those categories, and "
+            "reports those as false rejections in the audit. ON by default, "
+            "temporarily. Televisions only — not DVD players, VCRs, AV "
+            "receivers, satellite equipment, mounts, remotes or TV furniture."
         ),
     )
     if _tv_now != _tv_prev:
