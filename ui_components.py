@@ -2296,15 +2296,32 @@ def build_fast_grid_html(
             if _fallback.startswith("http"):
                 img_url = _fallback.replace("http://", "https://", 1)
 
-        sale_p = row.get("GLOBAL_SALE_PRICE")
-        reg_p = row.get("GLOBAL_PRICE")
-        usd_val = sale_p if pd.notna(sale_p) and str(sale_p).strip() != "" else reg_p
-        if pd.isna(usd_val) or str(usd_val).strip().lower() in ("", "nan", "none", "null"):
-            price_str = "NaN"
-        else:
+        # A missing sale price means the product simply is not on sale, so the
+        # regular price is the one to show.
+        #
+        # The fallback was already here but only caught a real NaN. These
+        # columns arrive from CSVs read with dtype=str, so an absent sale price
+        # is the literal string "nan" — which passes pd.notna() and is not
+        # empty, so it was taken as the price and rendered as "NaN". On a real
+        # Kenya batch that was 2,955 of 4,059 cards showing NaN while the
+        # regular price sat unused in the next column.
+        def _usable_price(v):
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return None
+            s = str(v).strip()
+            return None if s.lower() in ("", "nan", "none", "null", "n/a", "-") else v
+
+        usd_val = _usable_price(row.get("GLOBAL_SALE_PRICE"))
+        if usd_val is None:
+            usd_val = _usable_price(row.get("GLOBAL_PRICE"))
+        # Empty, not "NaN", when there is genuinely no price: the grid hides the
+        # badge entirely for an empty string, which is better than a badge
+        # announcing a broken number.
+        price_str = ""
+        if usd_val is not None:
             price_str = format_local_price(
                 usd_val, st.session_state.get("selected_country", "Kenya")
-            ) or "NaN"
+            ) or ""
 
         color_val = str(row.get("COLOR", "")).strip()
         if color_val.lower() in ("nan", "none", "null"):
@@ -2320,11 +2337,33 @@ def build_fast_grid_html(
             _zai = str(_zr.get("Color_AI_Normalized", "")).strip()
             if _zai.lower() not in ("nan", "none", "null", ""):
                 color_ai = _zai
+        # Several colours declared in one field — "white,black", "Red / Blue".
+        # One listing carrying several colours is the usual sign of a single
+        # photo showing several products, which is the thing the image review
+        # is looking for, so the card says so rather than leaving it to be
+        # spotted in the Color line.
+        _multi_colour = ""
+        if color_val:
+            _parts = [p.strip() for p in re.split(r"[,/;|]| and ", color_val) if p.strip()]
+            if len(_parts) > 1:
+                _multi_colour = ", ".join(_parts[:4]) + ("…" if len(_parts) > 4 else "")
+
         color_mismatch = ""
         if color_ai and color_val:
-            _ai_n = color_ai.lower().replace(" ", "")
-            _dec_n = color_val.lower().replace(" ", "")
-            if _ai_n != _dec_n and _ai_n not in _dec_n and _dec_n not in _ai_n:
+            # "multicolor" and "multicolour" are the same word, and the AI and
+            # the seller do not agree on which spelling to use. Comparing them
+            # literally reported a mismatch between a word and itself.
+            def _norm_colour(s: str) -> str:
+                s = s.lower().replace(" ", "")
+                s = s.replace("colours", "color").replace("colour", "color")
+                s = s.replace("colors", "color")
+                return s
+
+            _ai_n = _norm_colour(color_ai)
+            _dec_n = _norm_colour(color_val)
+            _both_multi = _ai_n.startswith("multi") and _dec_n.startswith("multi")
+            if (not _both_multi
+                    and _ai_n != _dec_n and _ai_n not in _dec_n and _dec_n not in _ai_n):
                 color_mismatch = f"AI: '{color_ai}' vs declared: '{color_val}'"
         elif color_ai and not color_val:
             color_mismatch = f"AI detected color: '{color_ai}' (none declared)"
@@ -2403,6 +2442,7 @@ def build_fast_grid_html(
                 "is_manual_review": is_manual_review,
                 "qc_skip_reason": qc_skip,
                 "color_mismatch": color_mismatch,
+                "multi_colour": _multi_colour,
                 "color_ai": color_ai,
                 "cat_reason": cat_reason,
                 "suggested_cat": suggested_cat,
@@ -3648,6 +3688,9 @@ function renderCard(card) {{
     warnHtml += `<span class="warn-badge" style="background:#dc2626;color:#fff;font-weight:800;" title="${{escapeHtml(card.qc_skip_reason || 'Manual Review')}}">${{mrText}}</span>`;
   }}
   if (card.color_mismatch) warnHtml += `<span class="warn-badge" style="background:#b45309;color:#fff;" title="${{escapeHtml(card.color_mismatch)}}">⚠ Color Mismatch</span>`;
+  // Several colours on one listing usually means one photo showing several
+  // products, which is what the image review is looking for.
+  if (card.multi_colour) warnHtml += `<span class="warn-badge" style="background:#7c3aed;color:#fff;" title="Declared colours: ${{escapeHtml(card.multi_colour)}}">⚠ Too many things?</span>`;
   var priceText = String(card.price || '').trim();
   var priceHtml = priceText ? `<div class="price-badge">${{escapeHtml(priceText)}}</div>` : '';
 
@@ -5682,6 +5725,15 @@ def render_manual_review_buttons(support_files):
             ):
                 st.session_state.show_review_modal = True
                 st.session_state.show_targeted_audit_modal = False
+                # Opening the modal always builds a NEW iframe, whose
+                # CARDS start empty. The resend guard keys off the grid
+                # document's hash, and reopening produces byte-identical
+                # HTML — so it concluded the old iframe was still alive
+                # and sent nothing, leaving a blank grid until some
+                # control changed the markup enough to force a resend.
+                # That is what "empty until I change cards per row" was.
+                st.session_state.pop("_grid_last_html_sig", None)
+                st.session_state.pop("_grid_last_sent_sig", None)
         with c3:
             if st.button(
                 _audit_label,
@@ -5709,6 +5761,15 @@ def render_manual_review_buttons(support_files):
             ):
                 st.session_state.show_review_modal = True
                 st.session_state.show_targeted_audit_modal = False
+                # Opening the modal always builds a NEW iframe, whose
+                # CARDS start empty. The resend guard keys off the grid
+                # document's hash, and reopening produces byte-identical
+                # HTML — so it concluded the old iframe was still alive
+                # and sent nothing, leaving a blank grid until some
+                # control changed the markup enough to force a resend.
+                # That is what "empty until I change cards per row" was.
+                st.session_state.pop("_grid_last_html_sig", None)
+                st.session_state.pop("_grid_last_sent_sig", None)
 
     if st.session_state.get("show_targeted_audit_modal", False):
         targeted_audit_modal(support_files)

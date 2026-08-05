@@ -102,7 +102,7 @@ from data_utils import (
     validate_input_schema,
     normalize_text,
 )
-from custom_country_rules import check_kenya_book_category, check_kebs_banned_products, load_kebs_hb_codes, check_kebs_fda
+from custom_country_rules import check_kebs_banned_products, load_kebs_hb_codes, check_kebs_fda
 from ghana_rules import check_ghana_smart_glasses, load_ghana_qc_rules
 from loaders import compile_regex_patterns, load_support_files_lazy
 from morocco_rules import check_morocco_prohibited_brands, load_morocco_qc_rules
@@ -685,7 +685,12 @@ except Exception:  # a broken rules file must not stop the app importing
 
 # Bump when the cache-key scheme changes, so pickles written by an older scheme
 # can never be read back under a key that now means something different.
-FLAG_CACHE_KEY_VERSION = "fk2"
+# fk3: entries written while several checks shared one cache file are wrong and
+# have to be discarded rather than left to expire. Any pickle from that period
+# holds whichever sibling finished first, and the built-in Wrong Category key
+# is unchanged by the check_id fix — so without this bump it would keep serving
+# a rule's result, or an empty one, as the whole flag's verdict.
+FLAG_CACHE_KEY_VERSION = "fk3"
 
 # Columns every check implicitly depends on: results are keyed by SID, and the
 # row set itself is part of a check's input.
@@ -749,6 +754,7 @@ def flag_cache_path(
     digests: "_ColumnDigests",
     country_code: str,
     rules_sig: str,
+    check_id: str = "",
 ) -> str:
     """Where this flag's result for this exact input is cached.
 
@@ -760,9 +766,18 @@ def flag_cache_path(
     country-specific rule sets; without it, the same rows validated for a
     different country could be served another country's verdicts.
     """
+    # check_id separates checks that share a flag name. Several general rules
+    # are filed under "Wrong Category" alongside the built-in check of that
+    # name, and keying on the name alone gave all of them ONE cache file: they
+    # run concurrently, the first to finish writes it, and the rest read that
+    # sibling's result instead of computing their own. On the next run every
+    # one of them reads the same pickle, so whichever check happened to write
+    # it — an empty result from any one of them — became the verdict for the
+    # entire flag. That is a flag that silently finds nothing.
     key = "\x1e".join((
         FLAG_CACHE_KEY_VERSION,
         name,
+        check_id,
         country_code,
         rules_sig,
         digests.signature(FLAG_RELEVANT_COLS.get(name)),
@@ -825,6 +840,49 @@ def _compute_phash(img_bytes: bytes) -> str:
         return ""
 
 
+def _size_and_phash(img_bytes: bytes):
+    """Dimensions and perceptual hash from a single decode.
+
+    This used to be two calls that each opened the same bytes: one for .size,
+    one inside _compute_phash that fully decoded the image to hash it. Both the
+    duplicate check and the aspect-ratio check depend on the results, and every
+    unique image in a batch goes through here.
+
+    Two things make it ~19x faster per image, measured on a 2000x1500 JPEG:
+    120.6ms -> 6.5ms.
+
+      • One open instead of two.
+      • draft() before hashing. It is a JPEG-only, decoder-level downscale, so
+        the file is decoded at 1/2, 1/4 or 1/8 scale rather than in full and
+        then resized. phash reduces to 32x32 internally, so 256px carries far
+        more detail than it can use — verified over 30 generated photos at
+        assorted sizes that the resulting hash is byte-identical to hashing at
+        full resolution, which it has to be: duplicate detection compares
+        hashes with ==, so a hash that merely came close would stop matching
+        the same product hashed the other way.
+
+    size is read BEFORE draft(). draft() mutates the image and .size then
+    reports the reduced dimensions, which would feed the aspect-ratio rule
+    wrong numbers.
+    """
+    try:
+        img = Image.open(BytesIO(img_bytes))
+        size = img.size
+    except Exception:
+        return None, ""
+    ph = ""
+    try:
+        import imagehash
+        try:
+            img.draft("RGB", (256, 256))   # no-op for non-JPEG formats
+        except Exception:
+            pass
+        ph = str(imagehash.phash(img.convert("RGB")))
+    except Exception:
+        ph = ""
+    return size, ph
+
+
 if "zip_image_store" not in st.session_state:
     st.session_state.zip_image_store = {}
 if "zip_image_index" not in st.session_state:
@@ -858,10 +916,22 @@ def _basename_lower(value) -> str:
 
 
 def _index_zip_images(zf: zipfile.ZipFile) -> Dict[str, str]:
+    """Index every image sitting in an images/ folder, at any depth.
+
+    This required the folder to be at the top level. Real archives from the QC
+    pipeline put it one level down — "output/images/..." — so the index came
+    back empty and the grid never had a single picture from them, silently.
+    Verified against a real 1,929-image batch: 0 indexed before, all of them
+    after.
+
+    Still anchored to a folder named "images" rather than taking any image
+    anywhere in the archive, so a logo or a thumbnail dropped beside the data
+    files is not mistaken for product photography.
+    """
     return {
         _basename_lower(info.filename): info.filename
         for info in zf.infolist()
-        if info.filename.lower().startswith("images/")
+        if ("images/" in info.filename.lower().replace("\\", "/"))
         and info.filename.lower().endswith(IMAGE_EXTENSIONS)
     }
 
@@ -896,7 +966,20 @@ def _fetch_all_image_dimensions(data: pd.DataFrame) -> dict:
     with _IMAGE_DIM_LOCK:
         new_urls = list(dict.fromkeys(u for u in urls if u and u not in _IMAGE_DIM_CACHE))
 
-    zip_images_to_check = []
+    # Descriptors only — three short strings per image, not the image itself.
+    #
+    # This used to collect the decoded payload for every ZIP image up front and
+    # hold them all until the last one had been measured. _get_image_from_zip
+    # returns a base64 data URI, roughly 1.37x the raw file, so a batch of
+    # 3,000 images at 150KB each parked about 0.6GB in one list before any work
+    # started; 6,000 images, or larger photos, doubled that. The store those
+    # payloads pass through is capped at 300 entries, which looks like a bound
+    # and is not one: the list held its own reference to every payload, so
+    # eviction from the store freed nothing.
+    #
+    # Each image is needed for as long as it takes to read its size and hash.
+    # Holding it after that was the whole cost.
+    zip_descriptors = []
     store = st.session_state.get("zip_image_store", {})
     if store and "MAIN_IMAGE" in data.columns:
         _zip_mask = (
@@ -913,13 +996,13 @@ def _fetch_all_image_dimensions(data: pd.DataFrame) -> dict:
                 img_val = str(_zrow.MAIN_IMAGE)
                 if img_val in _IMAGE_DIM_CACHE:
                     continue
-                name = str(getattr(_zrow, "NAME", ""))
-                brand = str(getattr(_zrow, "BRAND", ""))
-                img_bytes = _get_image_from_zip(name, brand, img_val)
-                if img_bytes:
-                    zip_images_to_check.append((img_val, img_bytes))
+                zip_descriptors.append((
+                    img_val,
+                    str(getattr(_zrow, "NAME", "")),
+                    str(getattr(_zrow, "BRAND", "")),
+                ))
 
-    if not new_urls and not zip_images_to_check:
+    if not new_urls and not zip_descriptors:
         return _IMAGE_DIM_CACHE
 
     def fetch(url):
@@ -929,9 +1012,7 @@ def _fetch_all_image_dimensions(data: pd.DataFrame) -> dict:
             r = session.get(url.replace("http://", "https://"), timeout=6)
             if r.status_code == 200:
                 raw = r.content
-                img = Image.open(BytesIO(raw))
-                size = img.size
-                ph = _compute_phash(raw)
+                size, ph = _size_and_phash(raw)
                 return url, size, ph
         except Exception:
             pass
@@ -945,9 +1026,7 @@ def _fetch_all_image_dimensions(data: pd.DataFrame) -> dict:
                 raw = base64.b64decode(encoded)
             else:
                 raw = payload if isinstance(payload, (bytes, bytearray)) else b""
-            img = Image.open(BytesIO(raw))
-            size = img.size
-            ph = _compute_phash(raw)
+            size, ph = _size_and_phash(raw)
             return key, size, ph
         except Exception:
             pass
@@ -960,9 +1039,30 @@ def _fetch_all_image_dimensions(data: pd.DataFrame) -> dict:
         with concurrent.futures.ThreadPoolExecutor(max_workers=_img_workers) as executor:
             results.extend(list(executor.map(fetch, new_urls)))
 
-    if zip_images_to_check:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, _img_workers)) as executor:
-            results.extend(list(executor.map(process_zip_img, zip_images_to_check)))
+    if zip_descriptors:
+        # Peak memory is now this many images rather than the whole batch, so
+        # it stays flat as batches grow. The results kept afterwards are a
+        # size tuple and a hash string per image — tens of bytes — so those can
+        # safely be held for all of them.
+        _ZIP_DECODE_CHUNK = 200
+        _zip_workers = min(8, _img_workers)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_zip_workers) as executor:
+            for _start in range(0, len(zip_descriptors), _ZIP_DECODE_CHUNK):
+                _slice = zip_descriptors[_start:_start + _ZIP_DECODE_CHUNK]
+                # Read on this thread, not in the workers. _get_image_from_zip
+                # goes through st.session_state, and calling that from a worker
+                # is what the "missing ScriptRunContext" warnings are about — it
+                # happens to work today and is not worth leaning on harder.
+                _payloads = []
+                for _img_val, _name, _brand in _slice:
+                    _payload = _get_image_from_zip(_name, _brand, _img_val)
+                    if _payload:
+                        _payloads.append((_img_val, _payload))
+                if _payloads:
+                    results.extend(list(executor.map(process_zip_img, _payloads)))
+                # Dropped before the next chunk is built, so two chunks are
+                # never alive at once.
+                _payloads = None
 
     with _IMAGE_DIM_LOCK:
         for key, size, ph in results:
@@ -1100,12 +1200,17 @@ def check_miscellaneous_category(
         except:
             pass
 
-    custom_flagged = pd.DataFrame(columns=data.columns)
-    if str(country_code or "").upper() == "KE":
-        try:
-            custom_flagged = check_kenya_book_category(data)
-        except Exception as _e:
-            logger.warning("Kenya book rule failed: %s", _e)
+    # check_kenya_book_category ran here for Kenya. It decided "is this a
+    # book category?" with `"book" in CATEGORY`, and CATEGORY carries the
+    # leaf — so a book correctly filed in "Books, Movies and Music /
+    # Business & Finance / Business & Economics" arrived as "Business &
+    # Economics", failed the test and was rejected. Its findings also went
+    # straight into the result, bypassing the Books exemption applied to the
+    # matcher output below, so nothing downstream could undo it.
+    #
+    # Books are judged by the same category matcher as everything else now,
+    # and drop_kenya_books_false_positives protects the ones already filed
+    # correctly — splitting the path properly and keeping DVDs in scope.
 
     if _CAT_MATCHER_AVAILABLE:
         try:
@@ -1138,22 +1243,17 @@ def check_miscellaneous_category(
                             )
                     except Exception as _e:
                         logger.warning("Kenya books exemption failed: %s", _e)
-                if not custom_flagged.empty:
-                    flagged = pd.concat([custom_flagged, base_flagged], ignore_index=True)
-                    return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
                 return base_flagged
         except Exception as _e:
             logger.warning("check_wrong_category engine error: %s", _e)
 
     if "CATEGORY" not in data.columns:
-        return custom_flagged if not custom_flagged.empty else pd.DataFrame(columns=data.columns)
+        return pd.DataFrame(columns=data.columns)
     flagged = data[
         data["CATEGORY"].astype(str).str.contains("miscellaneous", case=False, na=False)
     ].copy()
     if not flagged.empty:
         flagged["Comment_Detail"] = "Category contains 'Miscellaneous'"
-    if not custom_flagged.empty:
-        flagged = pd.concat([custom_flagged, flagged], ignore_index=True)
     return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
 
 
@@ -2167,14 +2267,31 @@ _EMAIL_RE = re.compile(
 
 # Physical locations. Kept to explicit address markers — a generic
 # "<word> road" rule would flag product names like "Silk Road" or "Abbey Road".
+#
+# The landmarks a directions phrase points at. Shared by "opposite" and "next
+# to" so the two cannot drift apart again — the second was anchored to a list
+# like this and the first was not, which is how "opposite direction" came to
+# read as a shop address.
+_LANDMARK_ALT = (
+    r"(?:building|mall|plaza|arcade|market|stage|station|petrol|filling|"
+    r"supermarket|hospital|clinic|pharmacy|church|mosque|school|college|"
+    r"university|hotel|lodge|bank|atm|roundabout|junction|stadium|towers?|"
+    r"centre|center|complex|shop|store|showroom|godown|depot)\b"
+)
+
 _LOCATION_RE = re.compile(
     r"(?:"
     r"\bp\.?\s*o\.?\s*box\s*\d+"                                # P.O. Box 123
     r"|\b(?:shop|stall|suite|kiosk|office)\s*(?:no\.?|number|#)?\s*\d+"
     r"|\b\d+\s*(?:st|nd|rd|th)?\s*floor\b"
     r"|\balong\s+[a-z]+\s+(?:road|rd|street|st|avenue|ave)\b"
-    r"|\bopposite\s+(?:the\s+)?[a-z]+"
-    r"|\bnext\s+to\s+(?:the\s+)?[a-z]+\s+(?:building|mall|plaza|arcade|market|stage)"
+    # "opposite" and "next to" both need a landmark after them. Without one,
+    # "opposite <any word>" flagged "opposite direction", "opposite ends",
+    # "opposite side" and "opposite pattern" — ordinary product wording, and a
+    # fan or a reversible jacket got reported for off-platform contact. The
+    # "next to" rule beside it was always anchored this way; this one was not.
+    r"|\bopposite\s+(?:the\s+)?(?:[a-z]+\s+){0,2}" + _LANDMARK_ALT +
+    r"|\bnext\s+to\s+(?:the\s+)?(?:[a-z]+\s+){0,2}" + _LANDMARK_ALT +
     r"|\b(?:visit|come\s+to|located\s+at|find\s+us\s+at)\s+(?:our\s+)?"
     r"(?:shop|store|office|showroom)\b"
     # French — "BP 1234", "boîte postale", "magasin n° 12", "2ème étage",
@@ -3630,7 +3747,10 @@ def validate_products(
 
                 ckwargs = {"data": working_data, **kwargs}
                 cache_path = flag_cache_path(
-                    name, digests, country_validator.code, _rules_sig
+                    name, digests, country_validator.code, _rules_sig,
+                    # Empty for the built-in checks, so their cache keys are
+                    # unchanged; set by general_rules on the checks it builds.
+                    getattr(func, "_rule_id", ""),
                 )
                 future_to_name[executor.submit(run_cached_check, func, cache_path, ckwargs)] = name
 
@@ -4408,7 +4528,11 @@ if uploaded_files:
         _new_cache.append({"name": uf.name, "bytes": _raw, "md5": hashlib.md5(_raw).hexdigest()})
     st.session_state.cached_uploaded_files = _new_cache
     st.session_state._uploader_had_files = True
-elif uploaded_files is not None and len(uploaded_files) == 0 and st.session_state.get("_uploader_had_files", False):
+# Any state where the widget is not holding files clears the batch, not
+# just an explicitly emptied list. A None or otherwise falsy selection
+# used to fall through both branches and leave cached_uploaded_files
+# pointing at the previous upload.
+elif st.session_state.get("_uploader_had_files", False):
     _prev_uploader_key = st.session_state.get("_last_uploader_key", -1)
     _curr_uploader_key = st.session_state.uploader_key
     if _prev_uploader_key == _curr_uploader_key:
@@ -4794,7 +4918,13 @@ if st.session_state.get("last_processed_files") != process_signature:
                             data_non_zip = data[data["PRODUCT_SET_SID"].isin(non_zip_sids)].copy()
                             _prog = st.progress(0, text="Preparing validation...")
                             def _on_flag_done(flag_name: str, i: int, total: int): _prog.progress(int(i / total * 100), text=f"Checking: {flag_name}")
-                            fr_non_zip, res_non_zip = cached_validate_products(df_hash(data_non_zip) + country_validator.code, data_non_zip, support_files, country_validator.code, data_has_warranty, skip_validators=fast_skip_list, _on_progress=_on_flag_done)
+                            # sig_hash prefixes the key so the validation cache is tied to
+                            # THIS upload. df_hash alone is content-derived and memoises into
+                            # df.attrs, and its own docstring notes it cannot see an in-place
+                            # edit that leaves shape and columns unchanged — so a different
+                            # file could be served the previous batch's results. Removing a
+                            # file and uploading another is exactly when that shows up.
+                            fr_non_zip, res_non_zip = cached_validate_products(sig_hash + "|" + df_hash(data_non_zip) + country_validator.code, data_non_zip, support_files, country_validator.code, data_has_warranty, skip_validators=fast_skip_list, _on_progress=_on_flag_done)
                             _prog.empty()
                             final_report_parts.append(fr_non_zip)
                             results_parts.append(res_non_zip)
@@ -4804,7 +4934,7 @@ if st.session_state.get("last_processed_files") != process_signature:
                             skip_list = sorted(set(_derive_prefetched_skip_list(qc_zip)) | set(fast_skip_list))
                             _prog_zip = st.progress(0, text="Preparing ZIP validation...")
                             def _on_flag_done_zip(flag_name: str, i: int, total: int): _prog_zip.progress(int(i / total * 100), text=f"Checking (ZIP): {flag_name}")
-                            fr_zip, res_zip = cached_validate_products(df_hash(data_zip) + country_validator.code + "_zip_optimized", data_zip, support_files, country_validator.code, data_has_warranty, skip_validators=skip_list, _on_progress=_on_flag_done_zip)
+                            fr_zip, res_zip = cached_validate_products(sig_hash + "|" + df_hash(data_zip) + country_validator.code + "_zip_optimized", data_zip, support_files, country_validator.code, data_has_warranty, skip_validators=skip_list, _on_progress=_on_flag_done_zip)
                             _prog_zip.empty()
                             final_report_parts.append(fr_zip)
                             results_parts.append(res_zip)

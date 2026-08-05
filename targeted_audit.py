@@ -549,7 +549,8 @@ def _on_audit_dismissed():
 def targeted_audit_modal(support_files):
     _inject_css()
 
-    st.markdown("### :material/fact_check: Targeted Audit")
+    # The dialog's own title bar already reads "Targeted Audit"; an H3 saying it
+    # again cost ~45px of a screen where the findings were below the fold.
 
     fr = st.session_state.get("final_report", pd.DataFrame())
     data = st.session_state.get("all_data_map", pd.DataFrame())
@@ -724,9 +725,13 @@ def targeted_audit_modal(support_files):
     has_results = not results.empty
 
     if has_results:
-        st.markdown('<hr class="audit-divider">', unsafe_allow_html=True)
-
         counts = results["Verdict"].value_counts() if not results.empty else pd.Series(dtype=int)
+
+        # Six metric cards. I replaced these with a pill row to buy vertical
+        # space and it was the wrong trade — this is the summary people look
+        # for, and shrinking it made it read as missing rather than compact.
+        # The space came from the duplicate heading and the merged caption
+        # instead, which cost nothing to look at.
         s1, s2, s3, s4, s5, s6 = st.columns(6)
         s1.metric("❌ False Approvals", int(counts.get("False Approval", 0)))
         s2.metric("⚠️ False Rejections", int(counts.get("False Rejection", 0)))
@@ -763,12 +768,56 @@ def targeted_audit_modal(support_files):
                     st.session_state.pop(_ACTIONED_KEY, None)
                     st.rerun()
 
-        st.markdown('<div class="audit-section-title">Issues by check</div>', unsafe_allow_html=True)
-        st.caption("Correctly confirmed rejections and normal pre-QC exclusions are counted above "
-                   "but not listed here — only items that need a decision or a fix are shown.")
-
+        # Title and caption merged onto one line — the caption was its own
+        # block under a heading that said much the same thing.
+        st.markdown(
+            '<div class="audit-section-title">Issues by check'
+            '<span style="font-weight:400;font-size:0.8rem;opacity:.65;"> — only items '
+            'needing a decision or a fix; confirmed rejections are counted above</span></div>',
+            unsafe_allow_html=True,
+        )
+        # A fixed-height scrolling container was tried here and made things
+        # worse: it reserves its full height whether or not there is anything
+        # in it, so a run with two findings still showed a tall, mostly empty
+        # box, and a run with many put them in a 340px window to scroll
+        # through. Letting the sections size to their content is better on
+        # both counts — the space saved above them is what actually helped.
         any_visible = False
-        for check_key in CHECK_ORDER:
+        # Every check, with its count — including the ones that found nothing.
+        #
+        # Only checks with findings get an expander, so a check that ran and
+        # came back clean is indistinguishable from one that never ran at all.
+        # On a real batch that meant no way to tell that the DVD and Small
+        # Appliances rules had genuinely found nothing, versus being broken.
+        _counts = (
+            results_issues["Check"].value_counts().to_dict()
+            if not results_issues.empty else {}
+        )
+        with st.expander(
+            f"Checks run — {sum(1 for k in CHECK_ORDER if _counts.get(k))} of "
+            f"{len(CHECK_ORDER)} found something",
+            expanded=False, icon=":material/checklist:",
+        ):
+            st.dataframe(
+                pd.DataFrame([
+                    {"Check": CHECK_LABELS[k],
+                     "Findings": int(_counts.get(k, 0)),
+                     "Result": "needs attention" if _counts.get(k) else "clean"}
+                    for k in CHECK_ORDER
+                ]),
+                hide_index=True, width="stretch",
+            )
+
+        # Fewest findings first. The order used to follow CHECK_ORDER, which put
+        # Duplicates and Category — over two thousand rows between them on a
+        # real batch — ahead of an eight-row Color finding. The short lists are
+        # the ones a person can actually work through, and they were the ones
+        # buried.
+        _ordered = sorted(
+            CHECK_ORDER,
+            key=lambda k: (_counts.get(k, 0) or 10**9),
+        )
+        for check_key in _ordered:
             label = CHECK_LABELS[check_key]
             icon = _CHECK_ICONS.get(check_key, "🔹")
 
