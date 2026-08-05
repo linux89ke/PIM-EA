@@ -3691,7 +3691,25 @@ def validate_products(
             for name, func, kw in validations
         ]
 
-    total_tasks = len([v for v in validations if v[0].lower() not in _skip_set and not country_validator.should_skip_validation(v[0])])
+    # Rules from general_rules.py are never skipped by the prefetch skip list.
+    #
+    # That list is keyed on FLAG name, and the hand-written category rules
+    # deliberately file under the built-in "Wrong Category" flag so they land in
+    # the same QC bucket. The ZIP ships a Category_Check_Status column, which
+    # puts "Wrong Category" in the skip set — so "the ZIP already ran its
+    # category check" silently disabled every rule in general_rules.py on
+    # exactly the batches they exist for. The Titan Gel / DVD / Small Appliances
+    # rules only ever ran when no ZIP was loaded.
+    #
+    # These rules are cheap string and regex work on columns already in memory,
+    # and their entire purpose is to catch verdicts the ZIP's AI got wrong, so
+    # there is nothing to save by trusting the ZIP here.
+    def _skipped(name: str, func) -> bool:
+        if getattr(func, "_rule_id", ""):
+            return country_validator.should_skip_validation(name)
+        return name.lower() in _skip_set or country_validator.should_skip_validation(name)
+
+    total_tasks = len([v for v in validations if not _skipped(v[0], v[1])])
     processed_count = 0
     restricted_keys = {}
     validation_errors = []
@@ -3732,7 +3750,7 @@ def validate_products(
         with concurrent.futures.ThreadPoolExecutor(max_workers=_val_workers) as executor:
             future_to_name = {}
             for name, func, kwargs in v_list:
-                if name.lower() in _skip_set or country_validator.should_skip_validation(name):
+                if _skipped(name, func):
                     continue
 
                 working_data = current_data
@@ -4447,6 +4465,15 @@ def _reset_report_state(*, clear_uploaded_files: bool = False, clear_zip_cache: 
         "quick_rejects", "_stagedRejections", "post_qc_results", "zip_qc_results",
         "_zip_sid_index", "_zip_status_cols", "_zip_prefetch_map",
         "current_sig_hash", "_data_filtered_ref",
+        # PIM_QC_Result.xlsx and the verdict map derived from it. These were
+        # missed when the rest of the ZIP state was added here, and they are
+        # the loudest omission of the set: the seeding block below feeds every
+        # SID in zip_pim_verdicts that the checks never saw straight into the
+        # report. zip_qc_results was being cleared while these were not, so a
+        # ZIP from an earlier upload kept injecting its whole verdict table
+        # into the next, unrelated batch — a 2,085-product CSV was reporting
+        # 9,793 products, 7,708 of them from a ZIP no longer loaded.
+        "zip_pim_verdicts", "zip_rejection_reasons", "_platform_verdict",
         # Waivers and the carry-forward offer are both per batch too.
         "_flag_overrides", "_predecessor_offer", "_predecessor_handled",
     ):
@@ -5228,10 +5255,35 @@ if st.session_state.get("last_processed_files") != process_signature:
                                 if str(_r.get("Manual_Review", "")).lower() in ("true", "1", "yes"):
                                     _fidx = _fr_sid_to_idx.get(_sid)
                                     if _fidx is not None:
-                                        final_report.at[_fidx, "Status"] = "Approved"
-                                        final_report.at[_fidx, "FLAG"] = "Manual review"
-                                        final_report.at[_fidx, "Comment"] = "Already Approved"
-                                        final_report.at[_fidx, "Is_Zip"] = True
+                                        # "Already approved" upstream does not overturn a rejection
+                                        # our own checks just made.
+                                        #
+                                        # This wrote Approved unconditionally, and it runs after
+                                        # validation, so it silently replaced every verdict we had
+                                        # reached — prohibited terms, restricted brands, wrong
+                                        # category, all of it. A sexual wellness product filed as a
+                                        # shaving gel was rejected by our rules and then handed back
+                                        # as Approved because the file said a human had seen it.
+                                        #
+                                        # The upstream reviewer approved it against the checks THEY
+                                        # ran; that is not a judgement about a check they never
+                                        # applied. So the override still approves anything we passed,
+                                        # and leaves our rejections alone.
+                                        _cur_status = str(final_report.at[_fidx, "Status"]).strip().lower()
+                                        if _cur_status == "rejected":
+                                            # Keep the rejection, but record that the file disagreed,
+                                            # so the conflict is visible rather than just absent.
+                                            _prev_cmt = str(final_report.at[_fidx, "Comment"] or "").strip()
+                                            _note = "File marked this Already Approved; kept rejected by QC checks"
+                                            final_report.at[_fidx, "Comment"] = (
+                                                f"{_prev_cmt} — {_note}" if _prev_cmt else _note
+                                            )
+                                            final_report.at[_fidx, "Is_Zip"] = True
+                                        else:
+                                            final_report.at[_fidx, "Status"] = "Approved"
+                                            final_report.at[_fidx, "FLAG"] = "Manual review"
+                                            final_report.at[_fidx, "Comment"] = "Already Approved"
+                                            final_report.at[_fidx, "Is_Zip"] = True
                             for _flag, _rows in _zip_result_rows.items():
                                 _combined_r = pd.concat(_rows, ignore_index=True)
                                 if _flag in combined_results and not combined_results[_flag].empty: combined_results[_flag] = pd.concat([combined_results[_flag], _combined_r], ignore_index=True)
@@ -5300,6 +5352,46 @@ if st.session_state.get("last_processed_files") != process_signature:
                             )
                             _have = set(final_report["ProductSetSid"].astype(str).str.strip())
                             _missing = _pv[~_pv["ProductSetSid"].isin(_have)]
+                            # Seed only SIDs the ZIP's own QC CSVs actually
+                            # cover. In every real ZIP checked the verdict
+                            # table and the QC CSVs describe exactly the same
+                            # SID set (KE 804/805, UG 805: zero on either
+                            # side), so this changes nothing for a ZIP that
+                            # matches its batch — the 18 Incomplete SKUs this
+                            # block exists for are in the Incomplete CSV and
+                            # survive.
+                            #
+                            # What it stops is a verdict table that outlives
+                            # the ZIP it came from being poured into an
+                            # unrelated batch. zip_pim_verdicts is now cleared
+                            # on reset, so this is the second line of defence
+                            # rather than the only one, but it is the cheaper
+                            # of the two to reason about: no ZIP loaded means
+                            # nothing to seed, full stop.
+                            if not _missing.empty and not qc_zip.empty:
+                                _qc_sid_col = next(
+                                    (c for c in ("PRODUCT_SET_SID", "ProductSetSid",
+                                                 "Product Set SID", "cod_productset_sid", "SID")
+                                     if c in qc_zip.columns),
+                                    None,
+                                )
+                                if _qc_sid_col:
+                                    _qc_covered = set(
+                                        qc_zip[_qc_sid_col].astype(str).str.strip()
+                                    )
+                                    _dropped = int((~_missing["ProductSetSid"].isin(_qc_covered)).sum())
+                                    if _dropped:
+                                        logger.warning(
+                                            "PIM_QC_Result lists %s SID(s) absent from both the "
+                                            "batch and the ZIP's QC files — not seeded", _dropped,
+                                        )
+                                    _missing = _missing[_missing["ProductSetSid"].isin(_qc_covered)]
+                            elif not _missing.empty:
+                                logger.warning(
+                                    "Discarding %s PIM_QC_Result verdict(s): no ZIP QC data is "
+                                    "loaded for this batch", len(_missing),
+                                )
+                                _missing = _missing.iloc[0:0]
                             if not _missing.empty:
                                 _add = pd.DataFrame({
                                     "ProductSetSid": _missing["ProductSetSid"].values,
