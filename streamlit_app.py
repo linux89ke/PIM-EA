@@ -79,6 +79,7 @@ from constants import (
     JUMIA_COLORS,
     PARQUET_CACHE_DIR,
     REASON_MAP,
+    SNEAKER_BRAND_ALIASES,
 )
 from data_utils import (
     _detect_and_read_csv,
@@ -401,8 +402,19 @@ def _derive_prefetched_skip_list(qc_df: pd.DataFrame) -> List[str]:
         skip.update(
             PREFETCH_VALIDATOR_SKIP_MAP.get(_prefetch_key_from_status_col(col), [])
         )
-    if "Duplicate_Flag" in qc_df.columns:
-        skip.add("Duplicate product")
+    # Duplicate_Flag deliberately does NOT skip our own duplicate check.
+    #
+    # It used to, on the reasonable-sounding grounds that the ZIP had already
+    # looked. It hasn't: Duplicate_Flag is an observation with a single value
+    # ("Duplicate — same seller + product name") and no verdict — there is no
+    # Duplicate_Check_Status beside the other eight *_Check_Status columns, and
+    # of 1,747 duplicate-flagged products the platform rejected in one KE
+    # batch, not one was rejected for being a duplicate.
+    #
+    # So the skip handed the job to something that never does it, and on any
+    # batch with a ZIP duplicates were rejected by nobody while still showing a
+    # badge on the card and filling the audit — handled everywhere except where
+    # it counts.
     return sorted(skip)
 
 
@@ -598,13 +610,24 @@ class CountryValidator:
 
 FLAG_RELEVANT_COLS = {
     "Wrong Category": ["NAME", "CATEGORY", "CATEGORY_CODE"],
-    "Restricted brands": ["NAME", "BRAND", "SELLER_NAME", "CATEGORY_CODE", "CATEGORY"],
-    "Suspected Fake product": ["CATEGORY_CODE", "BRAND", "GLOBAL_SALE_PRICE", "GLOBAL_PRICE"],
+    # DESCRIPTION/SHORT_DESCRIPTION are listed because both checks now read
+    # them. This map also scopes the per-flag cache digest, so leaving them out
+    # would mean an edited description never invalidated the cached result.
+    # "Matched In" says which of the four the brand was actually found in.
+    "Restricted brands": ["NAME", "BRAND", "SELLER_NAME", "CATEGORY_CODE", "CATEGORY",
+                          "DESCRIPTION", "SHORT_DESCRIPTION", "Matched In"],
+    # NAME and the descriptions are listed because the price ceiling now looks
+    # for the brand claim there too, not just in the BRAND field. This map also
+    # scopes the per-flag cache digest.
+    "Suspected Fake product": ["CATEGORY_CODE", "BRAND", "NAME", "GLOBAL_SALE_PRICE",
+                               "GLOBAL_PRICE", "DESCRIPTION", "SHORT_DESCRIPTION"],
     "Seller Not approved to sell Refurb": ["PRODUCT_SET_SID", "CATEGORY_CODE", "SELLER_NAME", "NAME"],
     "Product Warranty": ["PRODUCT_WARRANTY", "WARRANTY_DURATION", "CATEGORY_CODE"],
     "Seller Approve to sell books": ["CATEGORY_CODE", "SELLER_NAME"],
     "Seller Approved to Sell Perfume": ["CATEGORY_CODE", "SELLER_NAME", "BRAND", "NAME"],
-    "Counterfeit Sneakers": ["CATEGORY_CODE", "NAME", "BRAND"],
+    "Counterfeit Sneakers": ["CATEGORY_CODE", "NAME", "BRAND",
+                             "DESCRIPTION", "SHORT_DESCRIPTION", "Matched In",
+                             "Brand Claim"],
     "Suspected counterfeit Jerseys": ["CATEGORY_CODE", "NAME", "SELLER_NAME"],
     "Suspected Fake Perfume": ["CATEGORY_CODE", "NAME", "BRAND"],
     "Unnecessary words in NAME": ["NAME"],
@@ -1263,6 +1286,27 @@ def _to_polars_cached(data_hash: str, data: pd.DataFrame):
     return pl.from_pandas(data)
 
 
+# Restricted brands that are also ordinary English words.
+#
+# These are still matched in NAME and BRAND exactly as before — putting
+# "Simple" in the brand field is a brand claim. They are NOT matched in
+# DESCRIPTION or SHORT_DESCRIPTION, because there the same letters are usually
+# just an adjective.
+#
+# Measured on a real 8,677-product KE batch: scanning descriptions for every
+# restricted brand flagged 205 extra products, and 198 of them were the word
+# "simple" in ordinary prose — "a slim and simple design", "makes everyday
+# cooking simple", "the simple rules make it easy for children". Excluding
+# these words takes the same scan to 7, which is the evasion this is for.
+#
+# Add a word here if a restricted brand starts producing prose false
+# positives; remove one if a brand is genuinely being hidden in descriptions
+# and the noise is worth it.
+RESTRICTED_BRANDS_NOT_SCANNED_IN_PROSE = {
+    "simple", "classic", "original", "premium", "fashion", "generic", "nature",
+}
+
+
 def check_restricted_brands(
     data: pd.DataFrame, country_rules: List[Dict]
 ) -> pd.DataFrame:
@@ -1301,6 +1345,21 @@ def check_restricted_brands(
     if "_name_lower" not in d.columns:
         d["_name_lower"] = d.get("NAME", pd.Series("", index=d.index)).astype(str).str.lower()
 
+    # Free-text surfaces, kept apart from each other so a finding can say which
+    # one the brand was hidden in rather than just "somewhere in the copy".
+    #
+    # Lowercased only at this point. Tag stripping is deferred until after the
+    # pre-filter below, because it is a regex rewrite of every description in
+    # the batch — thousands of long HTML strings — to serve the handful of rows
+    # that survive filtering. Doing it here roughly doubled the cost of the
+    # whole check on an 8,677-product batch.
+    d["_desc_lower"] = (
+        d.get("DESCRIPTION", pd.Series("", index=d.index)).astype(str).str.lower()
+    )
+    d["_sdesc_lower"] = (
+        d.get("SHORT_DESCRIPTION", pd.Series("", index=d.index)).astype(str).str.lower()
+    )
+
     all_keywords = set()
     brand_names_only = set()
     brand_raw_lower_only = set()
@@ -1317,20 +1376,48 @@ def check_restricted_brands(
     _name_norm_pattern = "(?i)" + "|".join(re.escape(k) for k in brand_names_only if k)
     _brand_substr_pattern = "(?i)" + "|".join(r"\b" + re.escape(k) + r"\b" for k in brand_names_only if k)
     
+    # Prose surfaces use their own alternation: the ordinary-word brands are
+    # dropped from it, so "simple" in a description costs nothing here.
+    _prose_names = [
+        k for k in brand_raw_lower_only
+        if k and k not in RESTRICTED_BRANDS_NOT_SCANNED_IN_PROSE
+    ]
+    _prose_pattern = (
+        "(?i)" + "|".join(r"\b" + re.escape(k) + r"\b" for k in _prose_names)
+        if _prose_names else None
+    )
+
     mask = (
         d["_brand_norm"].isin(all_keywords)
         | d["_brand_norm"].str.contains(_brand_substr_pattern, na=False)
         | d["_name_norm"].str.contains(_name_norm_pattern, na=False)
         | d["_name_lower"].str.contains(_name_raw_pattern, na=False)
     )
-    
+    if _prose_pattern:
+        mask = (
+            mask
+            | d["_desc_lower"].str.contains(_prose_pattern, na=False)
+            | d["_sdesc_lower"].str.contains(_prose_pattern, na=False)
+        )
+
     d = d[mask].copy()
 
     if d.empty:
         return pd.DataFrame(columns=data.columns)
 
+    # Now that the batch is down to candidates, strip the HTML. An attribute
+    # value (class="sony-block", a CDN path containing the brand) is not a
+    # brand claim to a shopper, so matching on raw markup would flag listings
+    # that never show the name. The pre-filter above ran on raw text and is
+    # therefore slightly over-inclusive, which is the right way round: it can
+    # only add candidates for this stricter pass to reject.
+    _tag_re = re.compile(r"<[^>]+>")
+    for _c in ("_desc_lower", "_sdesc_lower"):
+        d[_c] = d[_c].str.replace(_tag_re, " ", regex=True)
+
     flagged_indices = set()
     comment_map = {}
+    where_map = {}
     match_details = {}
     for rule in country_rules:
         brand_name = rule["brand"]
@@ -1351,11 +1438,40 @@ def check_restricted_brands(
         )
         main_name_norm_starts = d["_name_norm"].str.startswith(brand_name, na=False)
         main_name_matches = main_name_lower_matches | main_name_norm_starts
-        current_match_mask = main_brand_matches | main_name_matches
+
+        # Same brand, hidden in the copy instead of the labelled fields. Only
+        # consulted for brands that are not ordinary words — see
+        # RESTRICTED_BRANDS_NOT_SCANNED_IN_PROSE.
+        _prose_ok = brand_raw.lower() not in RESTRICTED_BRANDS_NOT_SCANNED_IN_PROSE
+        _word_re = r"\b" + re.escape(brand_raw.lower()) + r"\b"
+        if _prose_ok:
+            desc_matches = d["_desc_lower"].str.contains(
+                _word_re, regex=True, na=False, flags=re.IGNORECASE
+            )
+            sdesc_matches = d["_sdesc_lower"].str.contains(
+                _word_re, regex=True, na=False, flags=re.IGNORECASE
+            )
+        else:
+            desc_matches = pd.Series(False, index=d.index)
+            sdesc_matches = pd.Series(False, index=d.index)
+
+        current_match_mask = (
+            main_brand_matches | main_name_matches | desc_matches | sdesc_matches
+        )
+        # Most specific surface wins, so a product with the brand in both the
+        # name and the description reads as a name match — the description is
+        # only the interesting finding when the labelled fields look clean.
         for idx in d[main_brand_matches].index:
-            match_details[idx] = ("main_brand", brand_raw)
+            match_details[idx] = ("main_brand", brand_raw, "BRAND")
         for idx in d[main_name_matches & ~main_brand_matches].index:
-            match_details[idx] = ("main_name", brand_raw)
+            match_details[idx] = ("main_name", brand_raw, "NAME")
+        _labelled = main_brand_matches | main_name_matches
+        for idx in d[desc_matches & ~_labelled].index:
+            if idx not in match_details:
+                match_details[idx] = ("description", brand_raw, "DESCRIPTION")
+        for idx in d[sdesc_matches & ~_labelled & ~desc_matches].index:
+            if idx not in match_details:
+                match_details[idx] = ("short_description", brand_raw, "SHORT_DESCRIPTION")
         valid_vars = [v for v in rule.get("variations", []) if str(v).strip()]
         if valid_vars:
             sorted_vars = sorted(valid_vars, key=len, reverse=True)
@@ -1387,6 +1503,7 @@ def check_restricted_brands(
                             match_details[idx] = (
                                 "variation",
                                 f"{brand_raw} (as '{var}')",
+                                "BRAND" if var_brand_matches[idx] else "NAME",
                             )
                             break
             current_match_mask = (
@@ -1422,19 +1539,31 @@ def check_restricted_brands(
         if not rejected.empty:
             for idx in rejected.index:
                 flagged_indices.add(idx)
-                match_type, match_info = match_details.get(idx, ("unknown", brand_raw))
+                match_type, match_info, matched_in = match_details.get(
+                    idx, ("unknown", brand_raw, "")
+                )
                 seller_status = (
                     "Seller not in approved list"
                     if rule["sellers"]
                     else "No sellers approved"
                 )
-                comment_map[idx] = f"Restricted Brand: {match_info} - {seller_status}"
+                # Where it was found is part of the finding, not a footnote: a
+                # brand in the DESCRIPTION with a clean NAME and BRAND is a
+                # different thing from a brand in the BRAND field, and the
+                # reviewer needs to see which one they are looking at.
+                _where = f" in {matched_in}" if matched_in else ""
+                comment_map[idx] = (
+                    f"Restricted Brand: {match_info}{_where} - {seller_status}"
+                )
+                where_map[idx] = matched_in
     if not flagged_indices:
         return pd.DataFrame(columns=data.columns)
     flagged_sids = {d.loc[idx, "PRODUCT_SET_SID"] for idx in flagged_indices}
     sid_comment = {d.loc[idx, "PRODUCT_SET_SID"]: comment_map[idx] for idx in flagged_indices}
+    sid_where = {d.loc[idx, "PRODUCT_SET_SID"]: where_map.get(idx, "") for idx in flagged_indices}
     result = data[data["PRODUCT_SET_SID"].isin(flagged_sids)].copy()
     result["Comment_Detail"] = result["PRODUCT_SET_SID"].map(sid_comment)
+    result["Matched In"] = result["PRODUCT_SET_SID"].map(sid_where)
     return result.drop_duplicates(subset=["PRODUCT_SET_SID"])
 
 
@@ -1634,8 +1763,29 @@ def check_prohibited_products(
 
 
 def check_suspected_fake_products(
-    data: pd.DataFrame, suspected_fake_df: pd.DataFrame
+    data: pd.DataFrame, suspected_fake_df: pd.DataFrame,
+    sneaker_category_codes: Optional[List[str]] = None,
 ) -> pd.DataFrame:
+    """Brand claimed + price under the ceiling for that brand and category.
+
+    The ceiling used to be looked up on the declared BRAND field alone, which
+    is the one place a counterfeit listing is careful not to put the brand:
+
+        BRAND "Generic"  NAME "Nike Air Max 90 ..."   -> no ceiling applied
+        BRAND "Airmax"   NAME "Airmax tn ultra"       -> no ceiling applied
+                                                         ("Airmax" is not a
+                                                          column in the sheet)
+
+    A brand is now claimed if it appears in the BRAND field OR as a whole word
+    in NAME — and, inside the sneaker categories, in DESCRIPTION or
+    SHORT_DESCRIPTION too. The description is scoped to sneakers deliberately:
+    across the whole catalogue "compatible with Sony" in an accessory's copy is
+    ordinary, but a sneaker's description naming Nike is a claim about the shoe.
+
+    Price ceilings and their categories come from suspected_fake.xlsx as
+    before — row 0 is the ceiling, the rows beneath it are the categories it
+    applies to, one column per brand.
+    """
     if (
         not all(
             c in data.columns
@@ -1673,15 +1823,97 @@ def check_suspected_fake_products(
             ),
             errors="coerce",
         ).fillna(0)
-        prices = d["price_to_use"].values
-        brands = d["_brand_lower"].values
-        cats = d["_cat_clean"].values
-        d["is_fake"] = [
-            p < brand_cat_price.get((b, c), -1) for p, b, c in zip(prices, brands, cats)
-        ]
-        return d[d["is_fake"] == True][data.columns].drop_duplicates(
-            subset=["PRODUCT_SET_SID"]
+        # Which brands does this listing claim, and where?
+        #
+        # One alternation over the sheet's brand names (about a dozen), run
+        # once per surface rather than per row. Word-bounded, so "Bose" does
+        # not match inside "boses" and "AKG" does not match inside a SKU.
+        _sheet_brands = sorted(
+            {b for (b, _c) in brand_cat_price}, key=len, reverse=True
         )
+        # A sub-brand is a claim on its parent's ceiling. "Airmax 97" and
+        # "Air Jordan 4" are Nike, so they answer to Nike's $45 — without this
+        # they answered to nothing, because neither is a column in the sheet.
+        # Only aliases whose parent actually has a ceiling are worth matching.
+        _alias_terms = {}
+        for _alias, _parent in SNEAKER_BRAND_ALIASES.items():
+            if _parent in _sheet_brands and _alias not in _sheet_brands:
+                _alias_terms[_alias] = _parent
+        _brand_res = {
+            b: re.compile(r"(?<!\w)" + re.escape(b) + r"(?!\w)", re.IGNORECASE)
+            for b in _sheet_brands
+        }
+        _alias_res = {
+            a: re.compile(r"(?<!\w)" + re.escape(a) + r"(?!\w)", re.IGNORECASE)
+            for a in _alias_terms
+        }
+        _tag_re = re.compile(r"<[^>]+>")
+        _name = d.get("NAME", pd.Series("", index=d.index)).astype(str).str.lower()
+
+        _sneaker_cats = {
+            clean_category_code(c) for c in (sneaker_category_codes or [])
+        }
+        _in_sneakers = d["_cat_clean"].isin(_sneaker_cats) if _sneaker_cats else pd.Series(False, index=d.index)
+        if _in_sneakers.any():
+            _blob = (
+                d.get("DESCRIPTION", pd.Series("", index=d.index)).astype(str)
+                + " "
+                + d.get("SHORT_DESCRIPTION", pd.Series("", index=d.index)).astype(str)
+            ).where(_in_sneakers, "").str.replace(_tag_re, " ", regex=True).str.lower()
+        else:
+            _blob = pd.Series("", index=d.index)
+
+        _claims = {}   # brand -> boolean Series
+        for b, rx in _brand_res.items():
+            _claims[b] = (
+                (d["_brand_lower"] == b)
+                | _name.str.contains(rx, na=False)
+                | _blob.str.contains(rx, na=False)
+            )
+        for a, parent in _alias_terms.items():
+            rx = _alias_res[a]
+            _claims[parent] = _claims.get(parent, pd.Series(False, index=d.index)) | (
+                (d["_brand_lower"] == a)
+                | _name.str.contains(rx, na=False)
+                | _blob.str.contains(rx, na=False)
+            )
+
+        prices = d["price_to_use"].values
+        cats = d["_cat_clean"].values
+        _flag = pd.Series(False, index=d.index)
+        _detail = pd.Series("", index=d.index)
+        for b, claimed in _claims.items():
+            if not claimed.any():
+                continue
+            _ceil = pd.Series(
+                [brand_cat_price.get((b, c), -1) for c in cats], index=d.index
+            )
+            _under = claimed & (d["price_to_use"] < _ceil) & (_ceil > 0)
+            if not _under.any():
+                continue
+            # Where the claim came from, so a reviewer can see whether the
+            # seller declared the brand or buried it in the copy.
+            _where = pd.Series("BRAND", index=d.index)
+            _where = _where.mask(d["_brand_lower"] != b, "NAME")
+            _where = _where.mask(
+                (d["_brand_lower"] != b) & ~_name.str.contains(_brand_res[b], na=False),
+                "DESCRIPTION",
+            )
+            _new = _under & ~_flag
+            _detail.loc[_new] = (
+                f"{b.title()} claimed in " + _where.loc[_new]
+                + " but priced under the "
+                + _ceil.loc[_new].astype(int).astype(str) + " ceiling"
+            )
+            _flag = _flag | _under
+
+        d["is_fake"] = _flag
+        out = d[d["is_fake"] == True].copy()
+        if out.empty:
+            return pd.DataFrame(columns=data.columns)
+        out["Comment_Detail"] = _detail.loc[out.index]
+        _cols = list(data.columns) + ["Comment_Detail"]
+        return out[_cols].drop_duplicates(subset=["PRODUCT_SET_SID"])
     except Exception as e:
         logger.warning(f"check_suspected_fake_products: {e}")
         return pd.DataFrame(columns=data.columns)
@@ -1924,11 +2156,57 @@ def check_perfume_tester(
     return flagged.drop_duplicates(subset=["PRODUCT_SET_SID"])
 
 
+# SNEAKER_BRAND_ALIASES lives in constants.py — imported at the top of this
+# file. It moved there because the review grid needs it too, and having
+# ui_components import this module re-executes the entire entry script:
+# Streamlit re-runs every widget in it, which raised duplicate element IDs
+# and fragment errors on every grid render.
+
+# Deliberately empty, and not a placeholder to fill in.
+#
+# A blanket "no seller may list this brand" rule was tried and removed. It
+# reached 213 of 220 known counterfeits, but sellers ARE approved for these
+# brands — the problem is the fake ones, not the brand — so on real data it
+# rejected honest listings: a Timberland mention in a slip-on loafer's copy,
+# a Converse mention in an unrelated fashion sneaker. Rejecting a whole brand
+# is only correct when the brand genuinely has no approved seller, which is
+# not the case here.
+#
+# Add a brand here ONLY when that is actually true for it. Listings that no
+# rule can separate from the real thing belong in the visual review grid,
+# where a human decides from the photograph.
+SNEAKER_BRANDS_NO_APPROVED_SELLER: set = set()
+
+
 def check_counterfeit_sneakers(
     data: pd.DataFrame,
     sneaker_category_codes: List[str],
     sneaker_sensitive_brands: List[str],
+    known_brands: Optional[List[str]] = None,
 ) -> pd.DataFrame:
+    """Sneakers invoking a protected brand the listing does not declare.
+
+    The gate used to be BRAND in ("generic", "fashion"). Measured against 220
+    real counterfeit-suspect listings, that caught zero — including zero of
+    the 33 the source data rated most likely counterfeit. Nobody leaves the
+    field blank any more; they fill it with something derived from the brand
+    they are invoking:
+
+        NAME "Airmax tn ultra black"  BRAND "Airmax"      (not Nike)
+        NAME "Conver all star"        BRAND "Conver"      (not Converse)
+        NAME "j4 black red"           BRAND "Jordana"     (not Jordan)
+        NAME "Fashion 254 Nike ..."   BRAND "Fashion 254" (a seller name)
+
+    So the test is now plausibility rather than emptiness: the listing
+    invokes a protected sneaker brand, and the BRAND field is not a
+    recognised brand at all. A genuine "Nike Air Max 90 / BRAND Nike" passes,
+    because Nike is recognised — an unauthorised seller of real Nike is the
+    restricted-brand check's job, not this one.
+
+    known_brands is brands.txt. It is optional so existing callers that pass
+    only the two lists keep working, but without it this falls back to the
+    old generic/fashion gate and catches almost nothing.
+    """
     if not {"CATEGORY_CODE", "NAME", "BRAND"}.issubset(data.columns):
         return pd.DataFrame(columns=data.columns)
     sneakers = data[
@@ -1963,10 +2241,104 @@ def check_counterfeit_sneakers(
         + r")(?!\w)",
         re.IGNORECASE,
     )
-    return sneakers[
-        sneakers["_brand_lower"].isin(["generic", "fashion"])
-        & sneakers["_name_lower"].str.contains(_sens_re, na=False)
-    ].drop_duplicates(subset=["PRODUCT_SET_SID"])
+    # The same brand name moved out of the title and into the copy is the same
+    # claim to a shopper, so the description and short description are scanned
+    # too. Tags are stripped first — an attribute value is not a claim.
+    #
+    # No ordinary-word exclusion is needed here, unlike the restricted-brand
+    # check: this list is counterfeit sneaker brands, and the surrounding
+    # BRAND == Generic/Fashion condition already keeps it narrow.
+    _tag_re = re.compile(r"<[^>]+>")
+    _desc = (
+        sneakers.get("DESCRIPTION", pd.Series("", index=sneakers.index))
+        .astype(str).str.replace(_tag_re, " ", regex=True).str.lower()
+    )
+    _sdesc = (
+        sneakers.get("SHORT_DESCRIPTION", pd.Series("", index=sneakers.index))
+        .astype(str).str.replace(_tag_re, " ", regex=True).str.lower()
+    )
+    _in_name = sneakers["_name_lower"].str.contains(_sens_re, na=False)
+    _in_desc = _desc.str.contains(_sens_re, na=False)
+    _in_sdesc = _sdesc.str.contains(_sens_re, na=False)
+
+    # Is the declared brand a real brand at all?
+    #
+    # Normalised the same way both sides, so "Air-Max" and "air max" compare
+    # equal. The pseudo-brands are listed explicitly because they are real
+    # entries a seller can pick, not absences — "Fashion" is a selectable
+    # value, and it is never a claim about who made the shoe.
+    _PSEUDO = {"generic", "fashion", "unbranded", "no brand", "none", "n/a", "other", ""}
+
+    def _norm_brand(s):
+        return re.sub(r"[^a-z0-9 ]+", "", str(s).lower()).strip()
+
+    _known = {
+        _norm_brand(b) for b in (known_brands or []) if str(b).strip()
+    } - _PSEUDO
+    _declared = sneakers["_brand_lower"].map(_norm_brand)
+    if _known:
+        _brand_recognised = _declared.isin(_known) & ~_declared.isin(_PSEUDO)
+    else:
+        # No brand list to judge against. Fall back to the old, narrow gate
+        # rather than treating every brand as unrecognised — an empty list
+        # would otherwise flag every sneaker that mentions a protected name,
+        # which is the opposite of a safe default for a missing input.
+        logger.warning(
+            "counterfeit sneakers: no known-brand list supplied, falling back "
+            "to the generic/fashion gate"
+        )
+        _brand_recognised = ~_declared.isin(_PSEUDO)
+
+    # Brands nobody may sell yet. The claim is what matters, so this looks at
+    # every surface and resolves aliases first: "Airmax 97" and "Air Jordan 4"
+    # are Nike claims, and Nike has no approved seller.
+    _blocked_terms = {}
+    for _t, _parent in SNEAKER_BRAND_ALIASES.items():
+        if _parent in SNEAKER_BRANDS_NO_APPROVED_SELLER:
+            _blocked_terms[_t] = _parent
+    for _b in SNEAKER_BRANDS_NO_APPROVED_SELLER:
+        _blocked_terms[_b] = _b
+
+    _claim_text = (
+        sneakers["_name_lower"].astype(str) + " "
+        + sneakers["BRAND"].astype(str).str.lower() + " " + _desc + " " + _sdesc
+    )
+    _blocked_hit = pd.Series(False, index=sneakers.index)
+    _blocked_who = pd.Series("", index=sneakers.index)
+    for _t in sorted(_blocked_terms, key=len, reverse=True):
+        _rx = re.compile(r"(?<!\w)" + re.escape(_t) + r"(?!\w)", re.IGNORECASE)
+        _m = _claim_text.str.contains(_rx, na=False) & ~_blocked_hit
+        if _m.any():
+            _blocked_who.loc[_m] = _blocked_terms[_t]
+            _blocked_hit = _blocked_hit | _m
+
+    hit = sneakers[
+        (~_brand_recognised & (_in_name | _in_desc | _in_sdesc))
+        | _blocked_hit
+    ].copy()
+    if hit.empty:
+        return pd.DataFrame(columns=data.columns)
+
+    # Most specific surface first, same rule as the restricted-brand check:
+    # the description is only the interesting finding when the title is clean.
+    hit["Matched In"] = "SHORT_DESCRIPTION"
+    hit.loc[_in_desc.loc[hit.index], "Matched In"] = "DESCRIPTION"
+    hit.loc[_in_name.loc[hit.index], "Matched In"] = "NAME"
+
+    # Why this one was flagged, in the reviewer's words rather than a rule id.
+    # "Fashion" and friends read differently from an invented brand, and the
+    # two want different follow-up, so they are named separately.
+    _d = hit["_brand_lower"].map(_norm_brand)
+    _b = hit["BRAND"].astype(str)
+    hit["Brand Claim"] = "Brand '" + _b + "' is not a recognised brand"
+    hit.loc[_d.isin(_PSEUDO), "Brand Claim"] = "No brand declared (" + _b + ")"
+    # The no-approved-seller reason wins where both apply: it is the decisive
+    # one, and it is the one a seller can act on.
+    _bw = _blocked_who.loc[hit.index]
+    hit.loc[_bw.ne(""), "Brand Claim"] = (
+        "Claims " + _bw[_bw.ne("")].str.title() + " — no seller is approved for this brand"
+    )
+    return hit.drop_duplicates(subset=["PRODUCT_SET_SID"])
 
 
 def check_counterfeit_jerseys(
@@ -2898,11 +3270,63 @@ _SPEC_RAM_RE1 = re.compile(r"(\d+)\s*gb\s*ram\b", re.IGNORECASE)
 # RAM there is *also* preceded by another spec's "GB " — punctuation, not
 # position, is the reliable signal.
 _SPEC_RAM_RE2 = re.compile(r"\bram\s*[:\-]\s*(\d+)\s*gb\b", re.IGNORECASE)
-_SPEC_STORAGE_GB_RE1 = re.compile(r"(\d+)\s*gb\s*(?:rom|storage|internal(?:\s+storage)?|memory)\b", re.IGNORECASE)
-_SPEC_STORAGE_TB_RE1 = re.compile(r"(\d+)\s*tb\s*(?:rom|storage|internal(?:\s+storage)?|memory)\b", re.IGNORECASE)
+# ssd/hdd/nvme/emmc are how laptops actually state storage — "256GB SSD" is
+# the norm and "256GB Storage" is the exception. Without them the title side
+# extracted nothing and no laptop storage mismatch could ever be found.
+_SPEC_STORAGE_GB_RE1 = re.compile(r"(\d+)\s*gb\s*(?:rom|storage|internal(?:\s+storage)?|ssd|hdd|nvme|emmc)\b", re.IGNORECASE)
+_SPEC_STORAGE_TB_RE1 = re.compile(r"(\d+)\s*tb\s*(?:rom|storage|internal(?:\s+storage)?|memory|ssd|hdd|nvme|emmc)\b", re.IGNORECASE)
 # Same reasoning, mirrored for storage labels.
-_SPEC_STORAGE_RE2 = re.compile(r"\b(?:rom|storage|internal(?:\s+storage)?|memory)\s*[:\-]\s*(\d+)\s*gb\b", re.IGNORECASE)
+_SPEC_STORAGE_RE2 = re.compile(r"\b(?:rom|storage|internal(?:\s+storage)?|ssd|hdd|nvme|emmc)\s*[:\-]\s*(\d+)\s*gb\b", re.IGNORECASE)
+
+# "Memory" is ambiguous and was counted as storage, which is wrong far more
+# often than it is right. On a laptop "16GB Memory" is RAM, so a listing whose
+# title correctly said 256GB SSD was reported as
+#   Storage: title says 256GB, DESCRIPTION says 16GB
+# — the check comparing a storage figure against a RAM one.
+#
+# Resolved by size rather than by label, because the word alone cannot settle
+# it: at or below _MEMORY_IS_RAM_MAX_GB it is RAM, above it is storage. No
+# consumer laptop or phone ships more than 64GB of RAM, and no listing calls
+# 128GB+ of flash "memory" while meaning RAM. TB is unambiguous and stays with
+# storage above.
+_SPEC_MEMORY_RE = re.compile(
+    r"(?:(\d+)\s*gb\s*memory\b|\bmemory\s*[:\-]\s*(\d+)\s*gb\b)", re.IGNORECASE
+)
+_MEMORY_IS_RAM_MAX_GB = 64
 _SPEC_COMBO_RE = re.compile(r"\b(\d+)\s*(?:gb)?\s*[/+]\s*(\d+)\s*gb\b", re.IGNORECASE)
+
+# Operating system, for laptops and desktops. Same failure as RAM and storage
+# and from the same cause — a description reused from another SKU — but with a
+# sharper consequence, since the OS is what the buyer is paying a licence for.
+#
+# Only versioned names are matched. A bare "windows" or "linux" says nothing
+# that can disagree with anything, and matching it would turn every mention
+# into a finding.
+_SPEC_OS_RE = re.compile(
+    r"\b("
+    r"windows\s*(?:11|10|8\.1|8|7)"
+    r"|win\s*(?:11|10|8\.1|8|7)\b"
+    r"|chrome\s*os"
+    r"|mac\s*os(?:\s*x)?"
+    r"|ubuntu(?:\s*\d{2}\.\d{2})?"
+    r"|dos"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_os(text: str) -> set:
+    """Every OS named in `text`, normalised so "Win 11" and "Windows 11" are
+    one value and spacing differences do not read as a disagreement."""
+    out = set()
+    for m in _SPEC_OS_RE.finditer(text):
+        v = re.sub(r"\s+", "", m.group(1).lower())
+        v = v.replace("win11", "windows11").replace("win10", "windows10")
+        v = v.replace("win8.1", "windows8.1").replace("win8", "windows8")
+        v = v.replace("win7", "windows7")
+        v = v.replace("macosx", "macos")
+        out.add(v)
+    return out
 
 
 def _extract_ram_storage(text: str, allow_combo: bool = False) -> tuple:
@@ -2923,10 +3347,23 @@ def _extract_ram_storage(text: str, allow_combo: bool = False) -> tuple:
     storage = {int(m.group(1)) for m in _SPEC_STORAGE_GB_RE1.finditer(text)}
     storage |= {int(m.group(1)) * 1024 for m in _SPEC_STORAGE_TB_RE1.finditer(text)}
     storage |= {int(m.group(1)) for m in _SPEC_STORAGE_RE2.finditer(text)}
+    # "N GB memory" — RAM at consumer sizes, storage above. See the constant.
+    for m in _SPEC_MEMORY_RE.finditer(text):
+        _v = int(m.group(1) or m.group(2))
+        (ram if _v <= _MEMORY_IS_RAM_MAX_GB else storage).add(_v)
     if allow_combo:
         for m in _SPEC_COMBO_RE.finditer(text):
-            ram.add(int(m.group(1)))
-            storage.add(int(m.group(2)))
+            _a, _b = int(m.group(1)), int(m.group(2))
+            # "6/128GB" is RAM/Storage, but "512GB/12GB" is the same shorthand
+            # written the other way round, and a real listing used it:
+            #   "M91 5G Tablet Memory 512GB/12GB Android"
+            # read as RAM=512, which then disagreed with a description saying
+            # 12 and reported "RAM: title says 512GB". Order is settled by size
+            # rather than position — RAM is never the larger of the two.
+            if _a > _b:
+                _a, _b = _b, _a
+            ram.add(_a)
+            storage.add(_b)
     return ram, storage
 
 
@@ -2983,7 +3420,8 @@ def check_specs_inconsistency(
     comments: dict = {}
     for idx in target.index:
         name_ram, name_storage = _extract_ram_storage(name_lower.loc[idx], allow_combo=True)
-        if not name_ram and not name_storage:
+        name_os = _extract_os(name_lower.loc[idx])
+        if not name_ram and not name_storage and not name_os:
             continue
         mismatches = []
         for c in text_cols:
@@ -2991,10 +3429,19 @@ def check_specs_inconsistency(
             if not text.strip():
                 continue
             f_ram, f_storage = _extract_ram_storage(text, allow_combo=False)
+            f_os = _extract_os(text)
             if name_ram and f_ram and not (name_ram & f_ram):
                 mismatches.append(f"RAM: title says {_fmt(name_ram)}, {c} says {_fmt(f_ram)}")
             if name_storage and f_storage and not (name_storage & f_storage):
                 mismatches.append(f"Storage: title says {_fmt(name_storage)}, {c} says {_fmt(f_storage)}")
+            # Same rule as the other two: only a disagreement when the title's
+            # OS appears nowhere in the field, so a description listing several
+            # ("Windows 10 or Windows 11") is not a mismatch.
+            if name_os and f_os and not (name_os & f_os):
+                mismatches.append(
+                    f"OS: title says {'/'.join(sorted(name_os))}, "
+                    f"{c} says {'/'.join(sorted(f_os))}"
+                )
         if mismatches:
             comments[idx] = "Specs inconsistency — " + " | ".join(mismatches)
 
@@ -3097,8 +3544,49 @@ def check_duplicate_products(
     exempt_categories: List[str] = None,
     similarity_threshold: float = 0.70,
     known_colors: List[str] = None,
+    full_data: pd.DataFrame = None,
     **kwargs,
 ) -> pd.DataFrame:
+    # Duplicates are a property of the batch, not of a row, so this has to see
+    # every product even when it is asked about a subset.
+    #
+    # The batch is validated in two passes — ZIP-covered products and the rest —
+    # and each pass only ever saw its own half. Two copies of the same listing,
+    # one in the ZIP and one in the other file, were each unique within their
+    # own pass and neither was flagged. That is precisely the case where you
+    # upload both files to find the overlap.
+    #
+    # Grouping therefore runs over full_data when given, and the result is
+    # filtered back to the subset at the end so each pass still reports only
+    # its own rows.
+    _subset_sids = None
+    if (
+        full_data is not None
+        and not full_data.empty
+        and "PRODUCT_SET_SID" in data.columns
+        and len(full_data) > len(data)
+    ):
+        _subset_sids = set(data["PRODUCT_SET_SID"].astype(str).str.strip())
+        # validate_products derives its helper columns on its own copy of the
+        # batch, and full_data is the caller's frame, which has none of them.
+        # Swapping it in without rebuilding them raised KeyError('_cat_clean')
+        # on the first line that filters exempt categories — caught by the
+        # per-check error handler, so the check returned nothing and the
+        # Duplicate product expander simply never appeared.
+        full_data = full_data.copy()
+        if "_cat_clean" not in full_data.columns and "CATEGORY_CODE" in full_data.columns:
+            full_data["_cat_clean"] = full_data["CATEGORY_CODE"].apply(clean_category_code)
+        for _c, _src in (
+            ("_brand_lower", "BRAND"),
+            ("_seller_lower", "SELLER_NAME"),
+            ("_name_lower", "NAME"),
+        ):
+            if _c not in full_data.columns and _src in full_data.columns:
+                full_data[_c] = (
+                    full_data[_src].astype(str).str.lower().str.strip().fillna("")
+                )
+        data = full_data
+
     if not {"NAME", "SELLER_NAME", "BRAND"}.issubset(data.columns):
         return pd.DataFrame(columns=data.columns)
     d = data.copy()
@@ -3264,7 +3752,13 @@ def check_duplicate_products(
     rdf["Comment_Detail"] = rdf.index.map(flagged_indices)
     base_cols = data.columns.tolist()
     extra_cols = [c for c in ["Comment_Detail"] if c not in base_cols]
-    return rdf[base_cols + extra_cols].drop_duplicates(subset=["PRODUCT_SET_SID"])
+    _out = rdf[base_cols + extra_cols].drop_duplicates(subset=["PRODUCT_SET_SID"])
+    # Grouped over the whole batch above; report only this pass's rows.
+    if _subset_sids is not None and "PRODUCT_SET_SID" in _out.columns:
+        _out = _out[
+            _out["PRODUCT_SET_SID"].astype(str).str.strip().isin(_subset_sids)
+        ]
+    return _out
 
 
 if _reg is not None:
@@ -3308,6 +3802,7 @@ def validate_products(
     common_sids: Optional[set] = None,
     skip_validators: Optional[List[str]] = None,
     on_progress: Optional[callable] = None,
+    full_batch: Optional[pd.DataFrame] = None,
 ):
     data = data.copy()
     # ROW_LEVEL_VALIDATORS map a check's result back onto `data` by index label,
@@ -3361,7 +3856,13 @@ def validate_products(
         (
             "Suspected Fake product",
             check_suspected_fake_products,
-            {"suspected_fake_df": support_files.get("suspected_fake", {}).get(country_validator.code, pd.DataFrame())},
+            {
+                "suspected_fake_df": support_files.get("suspected_fake", {}).get(country_validator.code, pd.DataFrame()),
+                # Scopes the description scan: a sneaker's copy naming Nike is
+                # a claim about the shoe, an accessory's "compatible with
+                # Sony" is not.
+                "sneaker_category_codes": support_files.get("sneaker_category_codes", []),
+            },
         ),
         (
             "Seller Not approved to sell Refurb",
@@ -3425,6 +3926,9 @@ def validate_products(
                 "sneaker_sensitive_brands": support_files.get(
                     "sneaker_sensitive_brands", []
                 ),
+                # brands.txt, so the check can tell a declared brand that
+                # exists from one invented to dodge the filter.
+                "known_brands": support_files.get("known_brands", []),
             },
         ),
         (
@@ -3548,6 +4052,9 @@ def validate_products(
             {
                 "exempt_categories": support_files.get("duplicate_exempt_codes", []),
                 "known_colors": support_files.get("colors", []),
+                # The whole upload, so a duplicate split across the ZIP and the
+                # other file is still seen. None when this is the only pass.
+                "full_data": full_batch,
             },
         ),
         ("Image Stretched", check_image_stretched, {}),
@@ -3764,11 +4271,25 @@ def validate_products(
                         continue
 
                 ckwargs = {"data": working_data, **kwargs}
+                # Empty for the built-in checks, so their cache keys are
+                # unchanged; set by general_rules on the checks it builds.
+                _key_extra = getattr(func, "_rule_id", "")
+                # The duplicate check reads the whole upload, not just the rows
+                # it is handed, so the digest of those rows does not identify
+                # its answer. Without this the cache is actively wrong in the
+                # case the full-batch grouping was added for: upload the CSV
+                # alone, then upload it again with the ZIP, and the non-ZIP
+                # subset is byte-identical — same digest, so the result computed
+                # WITHOUT the ZIP is served and every cross-file duplicate is
+                # missed.
+                if kwargs.get("full_data") is not None:
+                    try:
+                        _key_extra = f"{_key_extra}|fb{df_hash(kwargs['full_data'])}"
+                    except Exception:
+                        # A cache miss is the safe failure here, not a stale hit.
+                        _key_extra = f"{_key_extra}|fb{len(kwargs['full_data'])}r"
                 cache_path = flag_cache_path(
-                    name, digests, country_validator.code, _rules_sig,
-                    # Empty for the built-in checks, so their cache keys are
-                    # unchanged; set by general_rules on the checks it builds.
-                    getattr(func, "_rule_id", ""),
+                    name, digests, country_validator.code, _rules_sig, _key_extra,
                 )
                 future_to_name[executor.submit(run_cached_check, func, cache_path, ckwargs)] = name
 
@@ -3980,6 +4501,7 @@ def cached_validate_products(
     data_has_warranty_cols: bool,
     skip_validators: Optional[List[str]] = None,
     _on_progress: Optional[callable] = None,
+    _full_batch: Optional[pd.DataFrame] = None,
 ):
     country_name = next(
         (
@@ -3997,6 +4519,7 @@ def cached_validate_products(
         data_has_warranty_cols,
         skip_validators=skip_validators,
         on_progress=_on_progress,
+        full_batch=_full_batch,
     )
 
 
@@ -4253,10 +4776,11 @@ with st.sidebar:
     # Kept visibly separate from display settings: these change what gets
     # rejected, not how it looks, and they are meant to be switched off again.
     st.header("Temporary rules")
-    _tv_prev = bool(st.session_state.get("tv_color_exempt", True))
+    # No `value=` here. The key is seeded at module scope, and passing both a
+    # default and a session-state value makes Streamlit warn that one of them
+    # is being ignored — it is, the session state wins.
     _tv_now = st.toggle(
         "Exempt TVs from colour checks",
-        value=_tv_prev,
         key="tv_color_exempt",
         help=(
             "Skips the Missing COLOR check for everything under "
@@ -4267,13 +4791,25 @@ with st.sidebar:
             "receivers, satellite equipment, mounts, remotes or TV furniture."
         ),
     )
-    if _tv_now != _tv_prev:
+    # Compared against the value the last batch was actually processed under,
+    # not against session state.
+    #
+    # This used to read the "previous" value out of st.session_state just above
+    # the widget. For a keyed widget that is already the NEW value by the time
+    # the script reruns — Streamlit applies widget state before running — so
+    # the two were always equal and the reprocess below never fired once. The
+    # exemption could be flipped and the stale report stayed on screen, which
+    # is the exact failure the block was written to prevent.
+    _tv_applied = st.session_state.get("_tv_color_exempt_applied")
+    if _tv_applied is not None and _tv_now != _tv_applied:
         # The exemption changes validation output, so the current report is
         # stale the moment it is flipped. Forcing a reprocess is the honest
         # response — leaving the old verdicts on screen under a new rule is
         # how a "temporary" setting turns into a silently wrong batch.
+        st.session_state["_tv_color_exempt_applied"] = _tv_now
         st.session_state.last_processed_files = None
         st.rerun()
+    st.session_state["_tv_color_exempt_applied"] = _tv_now
     if _tv_now:
         _tv_n = len(tv_exempt_category_codes())
         st.caption(
@@ -4951,7 +5487,7 @@ if st.session_state.get("last_processed_files") != process_signature:
                             # edit that leaves shape and columns unchanged — so a different
                             # file could be served the previous batch's results. Removing a
                             # file and uploading another is exactly when that shows up.
-                            fr_non_zip, res_non_zip = cached_validate_products(sig_hash + "|" + df_hash(data_non_zip) + country_validator.code, data_non_zip, support_files, country_validator.code, data_has_warranty, skip_validators=fast_skip_list, _on_progress=_on_flag_done)
+                            fr_non_zip, res_non_zip = cached_validate_products(sig_hash + "|" + df_hash(data_non_zip) + country_validator.code, data_non_zip, support_files, country_validator.code, data_has_warranty, skip_validators=fast_skip_list, _on_progress=_on_flag_done, _full_batch=data)
                             _prog.empty()
                             final_report_parts.append(fr_non_zip)
                             results_parts.append(res_non_zip)
@@ -4961,7 +5497,7 @@ if st.session_state.get("last_processed_files") != process_signature:
                             skip_list = sorted(set(_derive_prefetched_skip_list(qc_zip)) | set(fast_skip_list))
                             _prog_zip = st.progress(0, text="Preparing ZIP validation...")
                             def _on_flag_done_zip(flag_name: str, i: int, total: int): _prog_zip.progress(int(i / total * 100), text=f"Checking (ZIP): {flag_name}")
-                            fr_zip, res_zip = cached_validate_products(sig_hash + "|" + df_hash(data_zip) + country_validator.code + "_zip_optimized", data_zip, support_files, country_validator.code, data_has_warranty, skip_validators=skip_list, _on_progress=_on_flag_done_zip)
+                            fr_zip, res_zip = cached_validate_products(sig_hash + "|" + df_hash(data_zip) + country_validator.code + "_zip_optimized", data_zip, support_files, country_validator.code, data_has_warranty, skip_validators=skip_list, _on_progress=_on_flag_done_zip, _full_batch=data)
                             _prog_zip.empty()
                             final_report_parts.append(fr_zip)
                             results_parts.append(res_zip)

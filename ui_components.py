@@ -23,6 +23,7 @@ from PIL import Image
 
 from constants import (
     GRID_COLS, JUMIA_COLORS,
+    SNEAKER_BRAND_ALIASES as _SNEAKER_ALIASES,
     # Shared with check_image_stretched: the grid badges the band the server
     # does NOT reject, so the two have to be defined against each other.
     ASPECT_ADVISORY_TALL as _ASPECT_ADVISORY_TALL,
@@ -2116,6 +2117,66 @@ def render_flag_expander(
                     st.rerun()
 
 
+# Lives here, not in streamlit_app: importing the entry script from this
+# module re-executes it, and Streamlit then re-runs every widget in it —
+# duplicate element IDs and fragment errors on every grid render.
+def sneaker_brand_claims(
+    data: pd.DataFrame,
+    sneaker_category_codes: list,
+    sneaker_sensitive_brands: list,
+) -> dict:
+    """SID -> the protected sneaker brand a listing claims, for the review grid.
+
+    Deliberately not a verdict. Most listings that claim Nike are textually
+    identical to a genuine Nike listing — "ADIDAS Campus" with BRAND=ADIDAS is
+    what the real thing looks like — so no rule can separate them and the
+    photograph is the only evidence left. This marks them for a human to
+    decide in the visual grid instead of guessing.
+
+    Sub-brands resolve to the parent, so an Airmax listing reads as Nike.
+    """
+    if data.empty or not sneaker_category_codes or not sneaker_sensitive_brands:
+        return {}
+    _cats = {clean_category_code(c) for c in sneaker_category_codes}
+    if "_cat_clean" in data.columns:
+        _in = data["_cat_clean"].isin(_cats)
+    elif "CATEGORY_CODE" in data.columns:
+        _in = data["CATEGORY_CODE"].map(clean_category_code).isin(_cats)
+    else:
+        return {}
+    d = data[_in]
+    if d.empty or "PRODUCT_SET_SID" not in d.columns:
+        return {}
+
+    _terms = {}
+    for b in sneaker_sensitive_brands:
+        b = str(b).strip().lower()
+        if b:
+            _terms[b] = _SNEAKER_ALIASES.get(b, b)
+    for a, parent in _SNEAKER_ALIASES.items():
+        _terms.setdefault(a, parent)
+
+    _tag_re = re.compile(r"<[^>]+>")
+    _text = (
+        d.get("NAME", pd.Series("", index=d.index)).astype(str) + " "
+        + d.get("BRAND", pd.Series("", index=d.index)).astype(str) + " "
+        + d.get("DESCRIPTION", pd.Series("", index=d.index)).astype(str) + " "
+        + d.get("SHORT_DESCRIPTION", pd.Series("", index=d.index)).astype(str)
+    ).str.replace(_tag_re, " ", regex=True).str.lower()
+
+    out: dict = {}
+    # Longest first so "air jordan" wins over "jordan" and the claim reads as
+    # the most specific thing the listing actually said.
+    for t in sorted(_terms, key=len, reverse=True):
+        rx = re.compile(r"(?<!\w)" + re.escape(t) + r"(?!\w)", re.IGNORECASE)
+        hit = _text.str.contains(rx, na=False)
+        if not hit.any():
+            continue
+        for sid in d.loc[hit, "PRODUCT_SET_SID"].astype(str):
+            out.setdefault(sid, _terms[t].title())
+    return out
+
+
 def build_fast_grid_html(
     page_data,
     flags_mapping,
@@ -2267,6 +2328,42 @@ def build_fast_grid_html(
     _zip_override_map = {}
     if not _fr_ss.empty and "zip_override" in _fr_ss.columns and "ProductSetSid" in _fr_ss.columns:
         _zip_override_map = _fr_ss.set_index("ProductSetSid")["zip_override"].fillna("").to_dict()
+
+    # Products our OWN duplicate check rejected, as opposed to the ones the
+    # ZIP merely observed.
+    #
+    # The two disagree in a way worth seeing: the ZIP marks every member of a
+    # group (4,904 on a KE batch) and rejects none of them; our check rejects
+    # all but one per group (4,606) so the product stays sellable. Showing them
+    # in one colour would hide that, and hide the 37 our check found that the
+    # ZIP missed.
+    _sys_dup_sids = set()
+    if not _fr_ss.empty and {"ProductSetSid", "FLAG"}.issubset(_fr_ss.columns):
+        _sys_dup_sids = set(
+            _fr_ss.loc[
+                _fr_ss["FLAG"].astype(str).str.strip() == "Duplicate product",
+                "ProductSetSid",
+            ].astype(str).str.strip()
+        )
+
+    # Sneakers claiming a protected brand.
+    #
+    # Not a verdict — most are textually identical to the genuine article
+    # ("ADIDAS Campus" with BRAND=ADIDAS is what a real one looks like), so
+    # the photograph is the only evidence that separates them. The badge puts
+    # them in front of a reviewer here instead of guessing in a rule.
+    #
+    # Computed once per page rather than per card: it scans four text columns.
+    _brand_claims = {}
+    try:
+        _sfx = support_files or {}
+        _brand_claims = sneaker_brand_claims(
+            page_data,
+            _sfx.get("sneaker_category_codes", []),
+            _sfx.get("sneaker_sensitive_brands", []),
+        )
+    except Exception:
+        logger.exception("could not resolve sneaker brand claims for the grid")
 
     cards_data = []
     for row in page_data.to_dict("records"):
@@ -2439,6 +2536,7 @@ def build_fast_grid_html(
                 "data_sid": sid,
                 "data_cat": str(row.get("CATEGORY", "")).replace('"', "&quot;"),
                 "is_duplicate": is_duplicate,
+                "sys_duplicate": sid in _sys_dup_sids,
                 "is_manual_review": is_manual_review,
                 "qc_skip_reason": qc_skip,
                 "color_mismatch": color_mismatch,
@@ -2450,6 +2548,7 @@ def build_fast_grid_html(
                 "flag_comment": flag_comment,
                 "is_zip": sid in _zip_sid_set,
                 "zip_override": str(_zip_override_map.get(sid, "")),
+                "brand_claim": _brand_claims.get(sid, ""),
             }
         )
 
@@ -3682,7 +3781,12 @@ function renderCard(card) {{
   var safeImgSrcForHtml = _src ? _src.replace(/'/g, "%27").replace(/"/g, "%22") : PLACEHOLDER;
   var shortName = card.name.length > 38 ? escapeHtml(card.name.slice(0,38)) + '\u2026' : escapeHtml(card.name);
   var warnHtml = (card.warnings || []).map(w => `<span class="warn-badge">${{escapeHtml(w)}}</span>`).join('');
-  if (card.is_duplicate) warnHtml += `<span class="warn-badge" style="background:#7c3aed;color:#fff;font-weight:800;">⧉ DUPLICATE</span>`;
+  // Purple = the ZIP observed it. It never rejects on this, so on its own it
+  // is information, not a verdict.
+  if (card.is_duplicate) warnHtml += `<span class="warn-badge" style="background:#7c3aed;color:#fff;font-weight:800;" title="The ZIP marked this a duplicate (same seller + product name). The ZIP does not reject on it.">⧉ DUPLICATE</span>`;
+  // Blue = our own check rejected it. Different colour on purpose: this is the
+  // one that changed the verdict. Both badges together mean the two agree.
+  if (card.sys_duplicate) warnHtml += `<span class="warn-badge" style="background:#1d4ed8;color:#fff;font-weight:800;" title="${{card.is_duplicate ? 'Rejected by our duplicate check — the ZIP flagged it too.' : 'Rejected by our duplicate check. The ZIP did not flag this one.'}} One listing per group is kept; the rest are rejected.">⧉ DUPLICATE — system</span>`;
   if (card.is_manual_review) {{
     var mrText = card.qc_skip_reason ? `👁 MANUAL REVIEW: ${{escapeHtml(card.qc_skip_reason)}}` : `👁 MANUAL REVIEW`;
     warnHtml += `<span class="warn-badge" style="background:#dc2626;color:#fff;font-weight:800;" title="${{escapeHtml(card.qc_skip_reason || 'Manual Review')}}">${{mrText}}</span>`;
@@ -3691,6 +3795,9 @@ function renderCard(card) {{
   // Several colours on one listing usually means one photo showing several
   // products, which is what the image review is looking for.
   if (card.multi_colour) warnHtml += `<span class="warn-badge" style="background:#7c3aed;color:#fff;" title="Declared colours: ${{escapeHtml(card.multi_colour)}}">⚠ Too many things?</span>`;
+  // A sneaker claiming a protected brand. No rule can tell these from the
+  // genuine article, so the call belongs to whoever is looking at the photo.
+  if (card.brand_claim) warnHtml += `<span class="warn-badge" style="background:#0f766e;color:#fff;" title="Claims ${{escapeHtml(card.brand_claim)}} — check the photo: no text rule can tell a fake from the real thing here">👟 ${{escapeHtml(card.brand_claim)}}?</span>`;
   var priceText = String(card.price || '').trim();
   var priceHtml = priceText ? `<div class="price-badge">${{escapeHtml(priceText)}}</div>` : '';
 
@@ -3922,7 +4029,9 @@ function getBaseFilteredCards() {{
     if (f === 'committed') cards = cards.filter(function(c) {{ return c.sid in COMMITTED; }});
     else if (f === 'brand_ocr') cards = cards.filter(function(c) {{ return c.sid in COMMITTED && (COMMITTED[c.sid]||'').includes('Brand Image Check'); }});
     else if (f === 'no_flags') cards = cards.filter(function(c) {{ return !(c.warnings||[]).length && !(c.sid in COMMITTED) && !(c.sid in staged); }});
-    else if (f === 'duplicates') cards = cards.filter(function(c) {{ return c.is_duplicate; }});
+    // Either source — filtering to the ZIP's observation alone would hide the
+    // ones our own check caught and the ZIP missed.
+    else if (f === 'duplicates') cards = cards.filter(function(c) {{ return c.is_duplicate || c.sys_duplicate; }});
     else if (f === 'manual_review') cards = cards.filter(function(c) {{ return c.is_manual_review; }});
     else if (f === 'color_mismatch') cards = cards.filter(function(c) {{ return !!c.color_mismatch; }});
     else cards = cards.filter(function(c) {{
