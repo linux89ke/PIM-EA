@@ -2419,6 +2419,37 @@ def check_variation_name_consistency_polars(data: pd.DataFrame, **kwargs) -> pd.
     return data[data["PRODUCT_SET_SID"].isin(flagged_sids)].copy()
 
 
+# Words that describe what a fragrance IS, not which one it is.
+#
+# The catalog lists these as model names — "Eau De Parfum" arrives as a Missoni
+# model — and matching one is worth nothing, because nearly every listing in
+# the category contains it. Left in, they produced findings whose entire
+# evidence was the words on the bottle:
+#
+#   Generic | "Sofia the First Eau De Parfum"
+#     -> Suspected fake Missoni perfume — 'eau de parfum' in name
+#
+# Excluded from the model terms only. A real house's name reaching the same
+# listing still matches, which is the signal this check is after.
+_GENERIC_FRAGRANCE_TERMS = {
+    "eau de parfum", "eau de toilette", "eau de cologne", "eau de perfume",
+    "parfum", "perfume", "cologne", "fragrance", "fragrances",
+    "body mist", "body spray", "body lotion", "body oil", "body butter",
+    "deodorant", "antiperspirant", "roll on", "roll-on",
+    "gift set", "travel spray", "travel size", "spray",
+    "for men", "for women", "for unisex", "pour homme", "pour femme",
+    "natural spray", "long lasting", "edp", "edt", "mist",
+    # Ordinary adjectives that happen to be model names. "Original" is a Police
+    # model, so "Arabic Original Rave Now Eau de Parfum" was reported as a fake
+    # Police — on the strength of the word "original". A real house's name in
+    # the same title still matches; this only stops the adjective standing as
+    # the whole case.
+    "original", "intense", "extreme", "classic", "luxury", "premium",
+    "special", "edition", "limited edition", "collection", "set", "travel",
+    "gold", "silver", "noir", "blanc", "sport", "elegance",
+}
+
+
 def check_suspected_fake_perfume(
     data: pd.DataFrame,
     perfume_catalog: Dict,
@@ -2453,7 +2484,8 @@ def check_suspected_fake_perfume(
     color_words = {str(c).strip().lower() for c in kwargs.get("color_words") or []}
     safe_model_terms = {
         t for t in model_terms
-        if " " in t or (len(t) >= 5 and t not in color_words)
+        if (" " in t or (len(t) >= 5 and t not in color_words))
+        and t not in _GENERIC_FRAGRANCE_TERMS
     }
 
     all_terms = legit_brand_terms | safe_model_terms
@@ -2654,8 +2686,19 @@ _LANDMARK_ALT = (
 _LOCATION_RE = re.compile(
     r"(?:"
     r"\bp\.?\s*o\.?\s*box\s*\d+"                                # P.O. Box 123
-    r"|\b(?:shop|stall|suite|kiosk|office)\s*(?:no\.?|number|#)?\s*\d+"
-    r"|\b\d+\s*(?:st|nd|rd|th)?\s*floor\b"
+    # [ \t]* rather than \s*, so the number has to sit on the SAME LINE as the
+    # word. \s* crosses newlines, which made a numbered list read as an
+    # address — the number that opens the next bullet became the shop number
+    # of the word that closed the last one:
+    #
+    #   1. 6 PIECES SET: Complete set for family or office
+    #
+    #   2. AESTHETIC MARBLE DESIGN: ...
+    #
+    # matched "office\n\n2" as "office 2" and rejected a set of mugs for
+    # off-platform contact. A real "Shop No. 12" is written on one line.
+    r"|\b(?:shop|stall|suite|kiosk|office)[ \t]*(?:no\.?|number|#)?[ \t]*\d+"
+    r"|\b\d+[ \t]*(?:st|nd|rd|th)?[ \t]*floor\b"
     r"|\balong\s+[a-z]+\s+(?:road|rd|street|st|avenue|ave)\b"
     # "opposite" and "next to" both need a landmark after them. Without one,
     # "opposite <any word>" flagged "opposite direction", "opposite ends",
@@ -2669,14 +2712,14 @@ _LOCATION_RE = re.compile(
     # French — "BP 1234", "boîte postale", "magasin n° 12", "2ème étage",
     # "en face de", "à côté du marché", "situé à"
     r"|\bb\.?\s*p\.?\s*\d+"
-    r"|\bbo[iî]te\s+postale\s*\d+"
-    r"|\b(?:magasin|boutique|local|bureau)\s*(?:n[o°]\.?|num[ée]ro|#)?\s*\d+"
-    r"|\b\d+\s*(?:er|[eè]me)?\s*[ée]tage\b"
+    r"|\bbo[iî]te\s+postale[ \t]*\d+"
+    r"|\b(?:magasin|boutique|local|bureau)[ \t]*(?:n[o°]\.?|num[ée]ro|#)?[ \t]*\d+"
+    r"|\b\d+[ \t]*(?:er|[eè]me)?[ \t]*[ée]tage\b"
     r"|\ben\s+face\s+d[eu]\b|\b[aà]\s+c[oô]t[ée]\s+d[eu]\b"
     r"|\bsitu[ée]\s+[aà]\b|\bvenez\s+(?:nous\s+voir|[aà])\b"
     # Arabic — "ص.ب ١٢٣" (P.O. Box), "محل رقم", "الطابق", "بجانب", "أمام"
     r"|ص\.?\s*ب\.?\s*\d+"
-    r"|(?:محل|متجر|مكتب)\s*(?:رقم)?\s*\d+"
+    r"|(?:محل|متجر|مكتب)[ \t]*(?:رقم)?[ \t]*\d+"
     r"|الطابق\s*\S+|بجانب\s+\S+|أمام\s+\S+|بالقرب\s+من"
     r")",
     re.IGNORECASE | re.UNICODE,
