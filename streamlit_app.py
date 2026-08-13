@@ -134,6 +134,8 @@ from ui_components import (
     render_exports_section,
     render_flag_expander,
     render_image_grid,
+    render_grid_closing_overlay,
+    end_grid_closing_overlay,
     render_sibling_prompt,
     render_manual_review_buttons,
     render_rejection_donut,
@@ -1307,8 +1309,41 @@ RESTRICTED_BRANDS_NOT_SCANNED_IN_PROSE = {
 }
 
 
+# Parts of the category tree a restricted brand must never fire in.
+#
+# For a rule with no category scope of its own, every match anywhere in the
+# catalogue is a rejection, and the generated typo variations make a stray hit
+# likely. NIVEA carries "niven", which matched the author of "100 Simple
+# Secrets Why Dogs Make Us Happy ... by David Niven, Ph.D." and rejected the
+# book. Nivea is skincare: a match inside a book title, a laptop listing or a
+# lab supply is a false positive by construction.
+#
+# Matched against the full category PATH, not the leaf, because the leaf of a
+# book category is "Philosophy" or "Family & Relationships" and says nothing
+# about being a book. Top-level names come from the category map — the exact
+# strings are "Books, Movies and Music", "Electronics", "Computing" and
+# "Industrial & Scientific".
+#
+# Add a brand here when its rule has no category scope and it is misfiring in
+# a part of the tree it has no business in. This narrows a rule; it never
+# widens one.
+RESTRICTED_BRAND_EXCLUDED_PATHS = {
+    "nivea": ("books, movies and music", "electronics", "computing",
+              "industrial & scientific"),
+    "nivea baby": ("books, movies and music", "electronics", "computing",
+                   "industrial & scientific"),
+    # An Android phone's description names its camera sensor, and that sensor
+    # is very often Sony's — "Sony IMX766", "50MP Sony sensor". The phone is
+    # not a Sony product and the seller is not selling Sony; the word is a
+    # component spec. Scoped to the exact subtree rather than all of Phones &
+    # Tablets, so a genuine Sony handset elsewhere still answers to the rule.
+    "sony": ("phones & tablets / mobile phones / smartphones / android phones",),
+}
+
+
 def check_restricted_brands(
-    data: pd.DataFrame, country_rules: List[Dict]
+    data: pd.DataFrame, country_rules: List[Dict],
+    code_to_path: Optional[Dict] = None,
 ) -> pd.DataFrame:
     if data.empty or not country_rules:
         return pd.DataFrame(columns=data.columns)
@@ -1420,6 +1455,16 @@ def check_restricted_brands(
     where_map = {}
     match_details = {}
     for rule in country_rules:
+        # Reset per rule. This dict was carried across the whole loop, so a
+        # later rule's label overwrote an earlier one on the same row — and the
+        # comment then named a rule that had not flagged the product at all.
+        #
+        # A book, "100 Simple Secrets Why Dogs Make Us Happy ... by David
+        # Niven", was reported as "Restricted Brand: Simple". Simple is scoped
+        # to 561 Health & Beauty categories and never matched it; NIVEA did,
+        # through its generated variation "niven" hitting the author's
+        # surname. The wrong label sent the investigation to the wrong rule.
+        match_details = {}
         brand_name = rule["brand"]
         brand_raw = rule["brand_raw"]
         # Exact match: brand column exactly equals the normalised brand
@@ -1528,6 +1573,32 @@ def check_restricted_brands(
             except Exception:
                 pass
                 
+        # Parts of the tree this brand must never fire in. Applied by PATH, so
+        # a book category whose leaf reads "Philosophy" is still recognised as
+        # a book. Needs code_to_path; without it the rule is left as-is rather
+        # than silently doing nothing different.
+        # Looked up under both spellings. rule["brand"] is normalised with the
+        # spaces stripped — "NIVEA BABY" arrives as "niveababy" — so keying on
+        # that alone silently missed it, and the book stayed rejected while the
+        # exclusion appeared to be in place.
+        _excl = (
+            RESTRICTED_BRAND_EXCLUDED_PATHS.get(brand_name.lower())
+            or RESTRICTED_BRAND_EXCLUDED_PATHS.get(str(brand_raw).strip().lower())
+        )
+        if _excl and code_to_path and not current_match.empty:
+            _paths = (
+                current_match["_cat_clean"].map(code_to_path).fillna("").astype(str).str.lower()
+            )
+            _blocked = pd.Series(False, index=current_match.index)
+            for _frag in _excl:
+                _blocked = _blocked | _paths.str.startswith(_frag)
+            if _blocked.any():
+                logger.info(
+                    "[Restricted] %s: %s match(es) dropped, outside its part of "
+                    "the catalogue", rule["brand_raw"], int(_blocked.sum()),
+                )
+            current_match = current_match[~_blocked]
+
         # Hardcoded rule: 'Sony' is allowed for video games/playstation
         if brand_name.lower() == "sony" and "CATEGORY" in current_match.columns:
             cat_str = current_match["CATEGORY"].astype(str).str.lower()
@@ -2447,6 +2518,38 @@ _GENERIC_FRAGRANCE_TERMS = {
     "original", "intense", "extreme", "classic", "luxury", "premium",
     "special", "edition", "limited edition", "collection", "set", "travel",
     "gold", "silver", "noir", "blanc", "sport", "elegance",
+    # Scent notes. A note names what a fragrance smells of, not which fragrance
+    # it is, and it appears in a large share of the category's titles. "Vanilla"
+    # is a The Body Shop model, so a Shalimar "Amber Vanilla Eau de Parfum" was
+    # reported as a fake Body Shop on the strength of the word vanilla.
+    #
+    # Same rule as the rest: a real house's name in the same title still
+    # matches. This only stops a note standing as the whole case.
+    # Listed properly rather than one name at a time. A title that spells out
+    # its pyramid — "Ginger, Davana, Osmanthus, Vetiver, Tonka & Tobacco" —
+    # collides with whichever house happens to have a model of that name;
+    # "osmanthus" is an Acqua di Parma model, and it rejected a Falcon Wazeer.
+    "vanilla", "amber", "oud", "musk", "rose", "jasmine", "sandalwood",
+    "vetiver", "patchouli", "bergamot", "citrus", "lavender", "coconut",
+    "cherry", "caramel", "chocolate", "coffee", "honey", "leather", "tobacco",
+    "saffron", "cedar", "lemon", "mint", "peach", "berry", "floral", "woody",
+    "osmanthus", "davana", "ginger", "tonka", "tonka bean", "iris", "orris",
+    "neroli", "ylang", "ylang ylang", "tuberose", "gardenia", "peony",
+    "magnolia", "lily", "violet", "freesia", "orchid", "lotus", "mimosa",
+    "geranium", "clary sage", "sage", "thyme", "basil", "cardamom",
+    "cinnamon", "clove", "nutmeg", "pepper", "pink pepper", "black pepper",
+    "coriander", "cumin", "anise", "fennel", "juniper", "cypress", "pine",
+    "fir", "birch", "oakmoss", "moss", "labdanum", "benzoin", "myrrh",
+    "frankincense", "incense", "styrax", "tolu", "opoponax", "elemi",
+    "vanille", "praline", "hazelnut", "almond", "pistachio", "coconut milk",
+    "mandarin", "tangerine", "orange", "blood orange", "grapefruit", "lime",
+    "yuzu", "petitgrain", "verbena", "lemongrass", "apple", "pear", "plum",
+    "fig", "raspberry", "strawberry", "blackcurrant", "cassis", "pineapple",
+    "mango", "melon", "watermelon", "lychee", "papaya", "guava",
+    "sea salt", "marine", "aquatic", "ozonic", "aldehydes", "amberwood",
+    "ambroxan", "cashmeran", "iso e super", "white musk", "leathery",
+    "suede", "vinyl", "metallic", "smoky", "spicy", "powdery", "creamy",
+    "gourmand", "oriental", "chypre", "fougere", "aromatic", "fresh",
 }
 
 
@@ -2514,20 +2617,54 @@ def check_suspected_fake_perfume(
 
     d["_pfume_match"] = d["_name_lower"].apply(_find_match)
     flagged = d[d["_pfume_match"].notna()].copy()
+    if flagged.empty:
+        return pd.DataFrame(columns=data.columns)
 
-    if not flagged.empty:
+    def build_comment(row):
+        term = row["_pfume_match"]
+        brand = term_to_brand.get(term, term.title())
+        return f"Suspected fake {brand} perfume — '{term}' in name"
 
-        def build_comment(row):
-            term = row["_pfume_match"]
-            brand = term_to_brand.get(term, term.title())
-            return f"Suspected fake {brand} perfume — '{term}' in name"
+    flagged["Comment_Detail"] = flagged.apply(build_comment, axis=1)
 
-        flagged["Comment_Detail"] = flagged.apply(build_comment, axis=1)
+    # A house's NAME is proof; one of its MODEL names is a question.
+    #
+    # "Lancome" or "Versace" in a title under a first-copy brand is
+    # unambiguous. A model name is not: many are ordinary words — legend,
+    # paris, brown, gold edition, blossom — and the brands that trip this are
+    # houses that sell their own catalogue, so their own products collide with
+    # somebody's model by chance. Victory Legend and Blossom Paris are
+    # Fragrance Deluxe's own; Brown Orchid is Fragrance World's own.
+    #
+    # There is no text rule separating those from a real copy: "Scandal Pink
+    # Perfume" (a genuine Jean Paul Gaultier dupe) has exactly the same shape.
+    # Frequency, brand-terms-only and "a fake leads with the copied name" were
+    # each measured against the corpus and each failed — the last scored 11/11
+    # on hand-picked cases and then discarded real copies carrying a prefix
+    # ("Arabic Club de Nuit", "Google Boss").
+    #
+    # So the model matches stop being rejections and become a badge in the
+    # visual grid, where a person decides. No genuine catch is lost; the
+    # guesses stop costing rejections.
+    _is_brand_term = flagged["_pfume_match"].isin(legit_brand_terms)
+    _review = flagged[~_is_brand_term]
+    # Handed to the grid through session state rather than an import: the grid
+    # lives in ui_components, and importing this module from there re-executes
+    # the entry script. Cleared with the rest of the batch in
+    # _reset_report_state, or a previous upload's claims would badge this one.
+    try:
+        st.session_state["_perfume_model_claims"] = {
+            str(r["PRODUCT_SET_SID"]).strip(): str(r["Comment_Detail"])
+            for _, r in _review.iterrows()
+            if str(r.get("PRODUCT_SET_SID", "")).strip()
+        }
+    except Exception:
+        logger.exception("could not record perfume model claims for the grid")
 
     # Every matching row is returned (no per-SID dedup): "Suspected Fake
     # Perfume" is a ROW_LEVEL_VALIDATOR, so the runner keeps precisely these
     # rows instead of re-expanding one representative row to its whole SID.
-    return flagged.drop(columns=["_pfume_match"])
+    return flagged[_is_brand_term].drop(columns=["_pfume_match"])
 
 
 def check_brand_image_mismatch(
@@ -2705,8 +2842,18 @@ _LOCATION_RE = re.compile(
     # "opposite side" and "opposite pattern" — ordinary product wording, and a
     # fan or a reversible jacket got reported for off-platform contact. The
     # "next to" rule beside it was always anchored this way; this one was not.
-    r"|\bopposite\s+(?:the\s+)?(?:[a-z]+\s+){0,2}" + _LANDMARK_ALT +
-    r"|\bnext\s+to\s+(?:the\s+)?(?:[a-z]+\s+){0,2}" + _LANDMARK_ALT +
+    # Same-line only, for the same reason as the shop-number rules above. With
+    # \s+ these reached across a paragraph break to a landmark word opening the
+    # next bullet:
+    #
+    #   1. Mount opposite
+    #
+    #   Market leading warranty
+    #
+    # matched "opposite\n\nmarket". A real direction — "opposite the market",
+    # "next to Kimathi House" — is written on one line.
+    r"|\bopposite[ \t]+(?:the[ \t]+)?(?:[a-z]+[ \t]+){0,2}" + _LANDMARK_ALT +
+    r"|\bnext[ \t]+to[ \t]+(?:the[ \t]+)?(?:[a-z]+[ \t]+){0,2}" + _LANDMARK_ALT +
     r"|\b(?:visit|come\s+to|located\s+at|find\s+us\s+at)\s+(?:our\s+)?"
     r"(?:shop|store|office|showroom)\b"
     # French — "BP 1234", "boîte postale", "magasin n° 12", "2ème étage",
@@ -3894,7 +4041,12 @@ def validate_products(
         (
             "Restricted brands",
             check_restricted_brands,
-            {"country_rules": support_files.get("restricted_brands_all", {}).get(country_validator.country, [])},
+            {
+                "country_rules": support_files.get("restricted_brands_all", {}).get(country_validator.country, []),
+                # Resolves a category code to its full path, so a rule can be
+                # kept out of parts of the tree it has no business in.
+                "code_to_path": support_files.get("code_to_path", {}),
+            },
         ),
         (
             "Suspected Fake product",
@@ -4140,7 +4292,7 @@ def validate_products(
     if country_validator.code == "MA":
         _ma = load_morocco_qc_rules()
         validations = [v for v in validations if v[0] != "Restricted brands"]
-        validations.insert(1, ("Restricted brands", check_restricted_brands, {"country_rules": _ma.get("restricted", [])}))
+        validations.insert(1, ("Restricted brands", check_restricted_brands, {"country_rules": _ma.get("restricted", []), "code_to_path": support_files.get("code_to_path", {})}))
         ma_prohibited_rules = [{"keyword": kw, "categories": set()} for kw in _ma.get("prohibited_keywords", [])]
         validations = [v for v in validations if v[0] != "Prohibited products"]
         validations.append(("Prohibited products", check_prohibited_products,
@@ -5053,6 +5205,10 @@ def _reset_report_state(*, clear_uploaded_files: bool = False, clear_zip_cache: 
         # into the next, unrelated batch — a 2,085-product CSV was reporting
         # 9,793 products, 7,708 of them from a ZIP no longer loaded.
         "zip_pim_verdicts", "zip_rejection_reasons", "_platform_verdict",
+        # Model-name perfume claims for the grid badge. Per batch, and written
+        # by the check rather than the uploader, so it survives a new upload
+        # unless it is cleared here.
+        "_perfume_model_claims",
         # Waivers and the carry-forward offer are both per batch too.
         "_flag_overrides", "_predecessor_offer", "_predecessor_handled",
     ):
@@ -5151,6 +5307,13 @@ _large_file_threshold = 5_000
 _large_file_skip_validations = [
     "Image Stretched", "Image Blurry", "Image Mismatch", "Image Infringing", "Image Too Many things displayed",
 ]
+
+# The visual review was just closed, so this run is rebuilding the whole page.
+# Cover it before that starts — emitted here because it is the earliest point
+# after the page chrome exists, and the overlay must paint before the flag
+# expanders and exports begin redrawing.
+if st.session_state.get("_grid_closing"):
+    render_grid_closing_overlay()
 
 _files_for_processing = st.session_state.get("cached_uploaded_files", [])
 
@@ -6615,3 +6778,8 @@ if _lang_bridge_val:
         logger.error(f"Lang bridge error: {e}")
 
 handle_jtbridge()
+
+# Page is rendered; drop the closing overlay. A later stylesheet wins, so this
+# needs no rerun — see end_grid_closing_overlay().
+if st.session_state.pop("_grid_closing", False):
+    end_grid_closing_overlay()
