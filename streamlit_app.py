@@ -70,7 +70,6 @@ from api_client import (
 
 # ── NEW MODULAR IMPORTS ───────────────────────────────────────────────────────
 from constants import (
-    TV_COLOR_EXEMPT_NODE, TV_COLOR_EXEMPT_PREFIX,
     ASPECT_ADVISORY_TALL, ASPECT_ADVISORY_WIDE,
     ASPECT_REJECT_TALL, ASPECT_REJECT_WIDE,
     COUNTRY_VALIDATOR_CONFIG,
@@ -80,6 +79,7 @@ from constants import (
     PARQUET_CACHE_DIR,
     REASON_MAP,
     SNEAKER_BRAND_ALIASES,
+    PRICE_CEILING_MODEL_ALIASES,
 )
 from data_utils import (
     _detect_and_read_csv,
@@ -915,18 +915,6 @@ if "zip_image_index" not in st.session_state:
 if "zip_image_source_bytes" not in st.session_state:
     st.session_state.zip_image_source_bytes = None
 
-# TV colour exemption — ON by default, temporarily, until the seven television
-# categories are set to "No Need" in QC Check Validaton.xlsx. That sheet is
-# what actually asserts televisions need a colour; this is an override sitting
-# on top of it, which is why it is meant to be removed rather than kept.
-#
-# Seeded here rather than left to the sidebar toggle's default. Three of the
-# four places that read this use a bare .get(), which returns None when the key
-# is absent — so on the first run of a session, before the sidebar has
-# rendered, the exemption would silently be off for the batch being processed.
-if "tv_color_exempt" not in st.session_state:
-    st.session_state.tv_color_exempt = True
-
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 SID_COLUMN_CANDIDATES = ["PRODUCT_SET_SID", "ProductSetSid", "Product Set SID", "cod_productset_sid", "SID"]
 
@@ -1327,10 +1315,53 @@ RESTRICTED_BRANDS_NOT_SCANNED_IN_PROSE = {
 # Add a brand here when its rule has no category scope and it is misfiring in
 # a part of the tree it has no business in. This narrows a rule; it never
 # widens one.
-# Shared by every Sony rule, so they cannot drift apart.
-_SONY_EXCLUDED_PATHS = (
-    "phones & tablets",
-    "computing / computers & accessories / laptop accessories",
+# Where the Sony rules are allowed to fire at all. Everywhere else, "Sony" is
+# a component spec ("Sony sensor", "Sony VAIO-compatible sleeve") or unrelated
+# prose, not a claim to be selling a Sony product — reported case: a Tecno
+# phone rejected for "Sony's Lytia 600 main camera" in the description.
+#
+# Shared by every Sony rule, so they cannot drift apart. Scope agreed with the
+# user: TVs, all audio, cameras & accessories, projectors, PlayStation
+# consoles/games/accessories. Deliberately narrower than "all of Gaming" —
+# Xbox, Nintendo, PC gaming and generic toys never legitimately mention Sony,
+# and PlayStation controllers sold loose under Computing/Phones & Tablets
+# accessory trees were dropped from scope on request.
+_SONY_INCLUDED_PATHS = (
+    # TVs
+    "electronics / television & video",
+    "electronics / televisions & recorders",
+    # Audio (all types)
+    "electronics / audio",
+    "electronics / home audio",
+    "electronics / portable audio & video",
+    "electronics / headphones",
+    "electronics / accessories & supplies / audio & video accessories",
+    "electronics / accessories & supplies / home audio accessories",
+    "electronics / accessories & supplies / poratable audio accessories",
+    "electronics / accessories & supplies / microphones",
+    "phones & tablets / accessories / portable speakers & audio docks",
+    "phones & tablets / accessories / speakers",
+    "phones & tablets / accessories / speakerphones",
+    # Car audio (radios, speakers, amplifiers, subwoofers) — not the rest of
+    # the Car Electronics tree (alarms, GPS, dash cams, radar detectors),
+    # which is out of scope
+    "automobile / car electronics & accessories / car electronics / car audio",
+    "electronics / car & vehicle electronics / car electronics / car audio",
+    "electronics / car navigations & car av / car av",
+    "electronics / car navigations & car av / portable audio car acccesories",
+    # Cameras & accessories
+    "electronics / camera & photo",
+    "electronics / cameras",
+    "electronics / accessories & supplies / camera & photo accessories",
+    "electronics / accessories & supplies / camera accessories",
+    "electronics / office electronic equipment / document cameras",
+    # Projectors
+    "electronics / office electronic equipment / presentation products",
+    "computing / computer accessories / video projector accessories",
+    # Playstations (consoles, games, accessories) — not controllers/hardware
+    # sold loose elsewhere in the catalogue
+    "gaming / playstation",
+    "gaming / sony psp",
 )
 
 RESTRICTED_BRAND_EXCLUDED_PATHS = {
@@ -1338,28 +1369,31 @@ RESTRICTED_BRAND_EXCLUDED_PATHS = {
               "industrial & scientific"),
     "nivea baby": ("books, movies and music", "electronics", "computing",
                    "industrial & scientific"),
-    # Across phones, tablets and computing accessories, "Sony" is a component
-    # spec or a compatibility list, not a claim to be selling Sony:
-    #
-    #   "50MP SONY'S LYTIA 600 MAIN CAMERA"        — the sensor in a Tecno Spark
-    #   "... for MacBook HP Dell Lenovo Acer ASUS
-    #      Toshiba Samsung Microsoft Surface
-    #      Huawei Xiaomi MSI Sony VAIO Chromebook"  — a sleeve that fits them all
-    #
-    # The whole Phones & Tablets tree, because the same listing turns up under
-    # Android Phones, Tablets and Tablet Accessories depending on the seller.
-    # In Computing only the accessory subtree: a sleeve is not a Sony product,
-    # but an actual Sony VAIO laptop still answers to the rule.
-    #
-    # All THREE Sony rules, not just the plain one. The KE list also carries
-    # "Sony Computer Entertainment" and "Sony Entertainment", and both include
-    # "sony" among their variations — so either fires on any Sony mention. The
-    # Tecno Spark was rejected by "Sony Computer Entertainment (as 'sony')"
-    # while the plain Sony rule was correctly excluded, which is easy to miss:
-    # the exclusion looked like it was working.
-    "sony": _SONY_EXCLUDED_PATHS,
-    "sony computer entertainment": _SONY_EXCLUDED_PATHS,
-    "sony entertainment": _SONY_EXCLUDED_PATHS,
+}
+
+# Parts of the category tree a restricted brand is ALLOWED to fire in —
+# the inverse of RESTRICTED_BRAND_EXCLUDED_PATHS above: everything outside
+# these path prefixes is dropped, rather than everything inside them.
+#
+# Sony is the only brand scoped this way today. "Sony" turns up constantly as
+# a component spec ("50MP SONY'S LYTIA 600 MAIN CAMERA" on a Tecno phone) or
+# a compatibility list ("... fits MacBook HP Dell Lenovo ... Sony VAIO ...
+# Chromebook"), nowhere near an actual Sony product, so an exclude-list kept
+# needing another category added every time a false positive turned up
+# elsewhere. Restricting to where Sony genuinely sells narrows it once.
+#
+# All FOUR Sony rules share it — the KE list also carries "Sony Computer
+# Entertainment" and "Sony Entertainment", and both include "sony" among
+# their variations, so any of the three fires on a plain Sony mention; a
+# Tecno Spark was once rejected by "Sony Computer Entertainment (as 'sony')"
+# while only the plain Sony rule had been excluded, which was easy to miss.
+# "Playstation" is its own rule and fires on any "playstation" mention, same
+# subtree.
+RESTRICTED_BRAND_INCLUDED_PATHS = {
+    "sony": _SONY_INCLUDED_PATHS,
+    "sony computer entertainment": _SONY_INCLUDED_PATHS,
+    "sony entertainment": _SONY_INCLUDED_PATHS,
+    "playstation": _SONY_INCLUDED_PATHS,
 }
 
 
@@ -1621,11 +1655,32 @@ def check_restricted_brands(
                 )
             current_match = current_match[~_blocked]
 
-        # Hardcoded rule: 'Sony' is allowed for video games/playstation
-        if brand_name.lower() == "sony" and "CATEGORY" in current_match.columns:
-            cat_str = current_match["CATEGORY"].astype(str).str.lower()
-            exclude_mask = cat_str.str.contains("gaming|playstation|ps 5|ps5|ps 4|ps4|video game|console|psp|ps vita", regex=True, na=False)
-            current_match = current_match[~exclude_mask]
+        # Inverse of the block above: brands scoped to only PART of the tree
+        # (Sony) rather than excluded from part of it. Superseded the old
+        # hardcoded "Sony is allowed for gaming/playstation" text match, which
+        # blanket-exempted anything with "gaming" or "console" in CATEGORY
+        # regardless of path — that contradicted this scope once PlayStation
+        # consoles/games became an included path in their own right, so an
+        # unapproved seller listing a genuine PS5 is meant to be flagged.
+        _incl = (
+            RESTRICTED_BRAND_INCLUDED_PATHS.get(brand_name.lower())
+            or RESTRICTED_BRAND_INCLUDED_PATHS.get(str(brand_raw).strip().lower())
+        )
+        if _incl and code_to_path and not current_match.empty:
+            _paths = (
+                current_match["_cat_clean"].map(code_to_path).fillna("").astype(str).str.lower()
+            )
+            _allowed = pd.Series(False, index=current_match.index)
+            for _frag in _incl:
+                _allowed = _allowed | _paths.str.startswith(_frag)
+            if (~_allowed).any():
+                logger.info(
+                    "[Restricted] %s: %s match(es) dropped, outside its "
+                    "allowed part of the catalogue", rule["brand_raw"],
+                    int((~_allowed).sum()),
+                )
+            current_match = current_match[_allowed]
+
         if current_match.empty:
             continue
         rejected = current_match[~current_match["_seller_norm"].isin(rule["sellers"])]
@@ -1924,12 +1979,18 @@ def check_suspected_fake_products(
         _sheet_brands = sorted(
             {b for (b, _c) in brand_cat_price}, key=len, reverse=True
         )
-        # A sub-brand is a claim on its parent's ceiling. "Airmax 97" and
-        # "Air Jordan 4" are Nike, so they answer to Nike's $45 — without this
-        # they answered to nothing, because neither is a column in the sheet.
-        # Only aliases whose parent actually has a ceiling are worth matching.
+        # A sub-brand or a model is a claim on its parent's ceiling. Without
+        # this, "Airmax 97", "AirPods Pro 3" and "Daytona" each answered to no
+        # ceiling because none is a column in the sheet — while their parents
+        # (Nike, Apple, Rolex) sit right there. Sellers evade the check by
+        # writing BRAND=Generic/Fashion/Watch/Audio and putting the model in
+        # the title, and the model IS the claim to a shopper.
+        #
+        # PRICE_CEILING_MODEL_ALIASES combines sneaker aliases with the audio
+        # and luxury-watch model families. Only aliases whose parent has a
+        # ceiling are worth compiling.
         _alias_terms = {}
-        for _alias, _parent in SNEAKER_BRAND_ALIASES.items():
+        for _alias, _parent in PRICE_CEILING_MODEL_ALIASES.items():
             if _parent in _sheet_brands and _alias not in _sheet_brands:
                 _alias_terms[_alias] = _parent
         _brand_res = {
@@ -1943,32 +2004,52 @@ def check_suspected_fake_products(
         _tag_re = re.compile(r"<[^>]+>")
         _name = d.get("NAME", pd.Series("", index=d.index)).astype(str).str.lower()
 
+        # Brands scanned in BRAND and NAME but never in DESCRIPTION. "Beats"
+        # turns up constantly in genuine marketing copy as a comparison
+        # ("Beats-level bass", "sounds better than Beats"), not a claim to be
+        # selling Beats — a $23 oraimo headset with real oraimo NAME/BRAND
+        # was flagged over exactly this. NAME/BRAND still count: an actual
+        # counterfeit still has to say "Beats" somewhere a shopper reads it.
+        _NO_DESCRIPTION_SCAN_BRANDS = {"beats"}
+
+        # Description scanning is scoped to categories the sheet already
+        # audits — the sneaker codes plus every category that has a ceiling.
+        # Widened from sneaker-only because sellers hide "WH-1000XM5" or "Flip
+        # 6" in the description of a Bluetooth-headphones listing exactly the
+        # way sneaker sellers hid brand names before. A category with no
+        # ceiling is not one we care about here anyway, so scanning it costs
+        # false positives ("compatible with Sony" on a phone cable) for no
+        # gain.
         _sneaker_cats = {
             clean_category_code(c) for c in (sneaker_category_codes or [])
         }
-        _in_sneakers = d["_cat_clean"].isin(_sneaker_cats) if _sneaker_cats else pd.Series(False, index=d.index)
-        if _in_sneakers.any():
+        _in_scope_cats = _sneaker_cats | {c for (_b, c) in brand_cat_price}
+        _in_scope = d["_cat_clean"].isin(_in_scope_cats) if _in_scope_cats else pd.Series(False, index=d.index)
+        if _in_scope.any():
             _blob = (
                 d.get("DESCRIPTION", pd.Series("", index=d.index)).astype(str)
                 + " "
                 + d.get("SHORT_DESCRIPTION", pd.Series("", index=d.index)).astype(str)
-            ).where(_in_sneakers, "").str.replace(_tag_re, " ", regex=True).str.lower()
+            ).where(_in_scope, "").str.replace(_tag_re, " ", regex=True).str.lower()
         else:
             _blob = pd.Series("", index=d.index)
 
+        _no_blob = pd.Series(False, index=d.index)
         _claims = {}   # brand -> boolean Series
         for b, rx in _brand_res.items():
+            _blob_hit = _no_blob if b in _NO_DESCRIPTION_SCAN_BRANDS else _blob.str.contains(rx, na=False)
             _claims[b] = (
                 (d["_brand_lower"] == b)
                 | _name.str.contains(rx, na=False)
-                | _blob.str.contains(rx, na=False)
+                | _blob_hit
             )
         for a, parent in _alias_terms.items():
             rx = _alias_res[a]
+            _blob_hit = _no_blob if parent in _NO_DESCRIPTION_SCAN_BRANDS else _blob.str.contains(rx, na=False)
             _claims[parent] = _claims.get(parent, pd.Series(False, index=d.index)) | (
                 (d["_brand_lower"] == a)
                 | _name.str.contains(rx, na=False)
-                | _blob.str.contains(rx, na=False)
+                | _blob_hit
             )
 
         prices = d["price_to_use"].values
@@ -1981,7 +2062,12 @@ def check_suspected_fake_products(
             _ceil = pd.Series(
                 [brand_cat_price.get((b, c), -1) for c in cats], index=d.index
             )
-            _under = claimed & (d["price_to_use"] < _ceil) & (_ceil > 0)
+            # <= not <. The ceilings in suspected_fake.xlsx are the LOWEST
+            # plausible price for a genuine listing, so a price sitting on the
+            # floor is on the wrong side of "genuinely selling for at least
+            # this much". A Sony WH-1000XM5 at $40 (Sony's floor) reads as a
+            # fake to a reviewer, not as a legitimate deal.
+            _under = claimed & (d["price_to_use"] <= _ceil) & (_ceil > 0)
             if not _under.any():
                 continue
             # Where the claim came from, so a reviewer can see whether the
@@ -2856,7 +2942,15 @@ _LOCATION_RE = re.compile(
     #
     # matched "office\n\n2" as "office 2" and rejected a set of mugs for
     # off-platform contact. A real "Shop No. 12" is written on one line.
-    r"|\b(?:shop|stall|suite|kiosk|office)[ \t]*(?:no\.?|number|#)?[ \t]*\d+"
+    # "Microsoft Office 2021", "Office 365", "Office 19 Pro Plus", "Office
+    # 2016" are software listings, not shop-number addresses. Same for the
+    # Windows and Server number-suffixed names. The shop-number rule below
+    # requires an explicit no./number/# token so a product name with a bare
+    # version number does not fire it; the ambiguous case is "office" alone,
+    # which is handled by removing it from the alternation entirely — a real
+    # office address has "no." or "#" beside it, or gives a floor.
+    r"|\b(?:shop|stall|suite|kiosk)[ \t]*(?:no\.?|number|#)?[ \t]*\d+"
+    r"|\boffice[ \t]*(?:no\.?|number|#)[ \t]*\d+"
     r"|\b\d+[ \t]*(?:st|nd|rd|th)?[ \t]*floor\b"
     r"|\balong\s+[a-z]+\s+(?:road|rd|street|st|avenue|ave)\b"
     # "opposite" and "next to" both need a landmark after them. Without one,
@@ -3259,25 +3353,6 @@ def load_valid_colors() -> set:
     return valid_set
 
 
-def tv_exempt_category_codes(support_files: Dict = None) -> set:
-    """Category codes under the TV path prefix, resolved from the category map.
-
-    Empty when the map is unavailable, which makes the exemption a no-op rather
-    than something that silently exempts everything or nothing in particular.
-    """
-    if support_files is None:
-        support_files = st.session_state.get("support_files", {}) or {}
-    code_to_path = support_files.get("code_to_path") or {}
-    if not code_to_path:
-        return set()
-    return {
-        clean_category_code(str(code))
-        for code, path in code_to_path.items()
-        if str(path).strip() == TV_COLOR_EXEMPT_NODE
-        or str(path).startswith(TV_COLOR_EXEMPT_PREFIX)
-    }
-
-
 def check_missing_color(
     data: pd.DataFrame,
     pattern: re.Pattern,
@@ -3287,10 +3362,6 @@ def check_missing_color(
     if not {"CATEGORY_CODE", "NAME"}.issubset(data.columns) or pattern is None:
         return pd.DataFrame(columns=data.columns)
     _cats = set(clean_category_code(c) for c in color_categories)
-    # Temporary exemption, off by default. A television has no meaningful
-    # colour to declare, so the check produces rejections nobody acts on.
-    if st.session_state.get("tv_color_exempt"):
-        _cats -= tv_exempt_category_codes()
     target = data[data["_cat_clean"].isin(_cats)].copy()
     if target.empty:
         return pd.DataFrame(columns=data.columns)
@@ -3642,6 +3713,24 @@ def check_specs_inconsistency(
                 continue
             f_ram, f_storage = _extract_ram_storage(text, allow_combo=False)
             f_os = _extract_os(text)
+            # No consumer laptop or phone stores its files in 6GB — but
+            # 6GB of RAM is normal, and "6GB" in a description was being
+            # compared to a 256GB storage title as if it were storage.
+            # Same reasoning as _SPEC_MEMORY_RE: below a threshold it can
+            # only be RAM. Applied to the description-side numbers so a
+            # bare "6GB" or "8GB" cannot masquerade as storage.
+            _ram_threshold = _MEMORY_IS_RAM_MAX_GB
+            _f_storage_plausible = {v for v in f_storage if v > _ram_threshold}
+            _demoted = f_storage - _f_storage_plausible
+            if _demoted:
+                # Move to RAM only if RAM was not itself already stated for
+                # the field. Kept out of the ram comparison otherwise, so a
+                # description saying "8GB RAM, 6GB storage" still reads
+                # RAM=8 and simply drops the impossible storage figure.
+                if not f_ram:
+                    f_ram = f_ram | _demoted
+                f_storage = _f_storage_plausible
+
             if name_ram and f_ram and not (name_ram & f_ram):
                 mismatches.append(f"RAM: title says {_fmt(name_ram)}, {c} says {_fmt(f_ram)}")
             if name_storage and f_storage and not (name_storage & f_storage):
@@ -4989,51 +5078,6 @@ with st.sidebar:
                 icon=":material/error:",
             )
     st.markdown("---")
-    # ── Temporary rule overrides ──────────────────────────────────────────
-    # Kept visibly separate from display settings: these change what gets
-    # rejected, not how it looks, and they are meant to be switched off again.
-    st.header("Temporary rules")
-    # No `value=` here. The key is seeded at module scope, and passing both a
-    # default and a session-state value makes Streamlit warn that one of them
-    # is being ignored — it is, the session state wins.
-    _tv_now = st.toggle(
-        "Exempt TVs from colour checks",
-        key="tv_color_exempt",
-        help=(
-            "Skips the Missing COLOR check for everything under "
-            "Electronics / Television & Video / Televisions / …, and approves "
-            "anything the ZIP rejected for colour in those categories, and "
-            "reports those as false rejections in the audit. ON by default, "
-            "temporarily. Televisions only — not DVD players, VCRs, AV "
-            "receivers, satellite equipment, mounts, remotes or TV furniture."
-        ),
-    )
-    # Compared against the value the last batch was actually processed under,
-    # not against session state.
-    #
-    # This used to read the "previous" value out of st.session_state just above
-    # the widget. For a keyed widget that is already the NEW value by the time
-    # the script reruns — Streamlit applies widget state before running — so
-    # the two were always equal and the reprocess below never fired once. The
-    # exemption could be flipped and the stale report stayed on screen, which
-    # is the exact failure the block was written to prevent.
-    _tv_applied = st.session_state.get("_tv_color_exempt_applied")
-    if _tv_applied is not None and _tv_now != _tv_applied:
-        # The exemption changes validation output, so the current report is
-        # stale the moment it is flipped. Forcing a reprocess is the honest
-        # response — leaving the old verdicts on screen under a new rule is
-        # how a "temporary" setting turns into a silently wrong batch.
-        st.session_state["_tv_color_exempt_applied"] = _tv_now
-        st.session_state.last_processed_files = None
-        st.rerun()
-    st.session_state["_tv_color_exempt_applied"] = _tv_now
-    if _tv_now:
-        _tv_n = len(tv_exempt_category_codes())
-        st.caption(
-            f":orange[TV colour exemption is ON]"
-            + (f" — {_tv_n} categories" if _tv_n else " — category map unavailable, no effect")
-        )
-    st.markdown("---")
     st.header(_t("display_settings"))
     new_mode = ("wide" if "Wide" in st.radio("Layout Mode", ["Centered", "Wide"], index=1 if st.session_state.get("layout_mode", "wide") == "wide" else 0) else "centered")
     if new_mode != st.session_state.get("layout_mode", "wide"):
@@ -5855,13 +5899,6 @@ if st.session_state.get("last_processed_files") != process_signature:
                                 final_report.at[_fidx, "Reason"] = ""
                                 final_report.at[_fidx, "Is_Zip"] = True
                                 final_report.at[_fidx, "zip_override"] = _tag
-                            # Resolved once per batch, not per row: this walks
-                            # the whole category map. Empty set when the toggle
-                            # is off, which makes the branch below a no-op.
-                            _tv_exempt_codes = (
-                                tv_exempt_category_codes(support_files)
-                                if st.session_state.get("tv_color_exempt") else set()
-                            )
                             _data_by_sid = {sid: grp for sid, grp in data.groupby(data["PRODUCT_SET_SID"].astype(str).str.strip(), sort=False)}
                             _zip_result_rows: dict = {}
                             _rej_in_zip = 0
@@ -5957,24 +5994,6 @@ if st.session_state.get("last_processed_files") != process_signature:
                                             continue
 
                                     if "color" in _base_key.lower():
-                                        # TV exemption, when enabled: the ZIP's
-                                        # colour verdict is overridden outright
-                                        # for these categories, without the
-                                        # usual requirement that a recognised
-                                        # COLOR value be present — the whole
-                                        # point is that these products do not
-                                        # carry one.
-                                        if _tv_exempt_codes:
-                                            _tv_grp = _data_by_sid.get(_sid)
-                                            _tv_code = ""
-                                            if _tv_grp is not None and not _tv_grp.empty and "CATEGORY_CODE" in _tv_grp.columns:
-                                                _tv_code = clean_category_code(str(_tv_grp["CATEGORY_CODE"].iloc[0]))
-                                            if _tv_code and _tv_code in _tv_exempt_codes:
-                                                _clear_zip_complaint(
-                                                    _fidx, _sid, "Colour check exempt (TV category)", "color_tv_exempt",
-                                                )
-                                                continue
-
                                         missing_col_df = res_zip.get("Missing COLOR") if res_zip else None
                                         # To override a color rejection, the product must pass the main
                                         # validation AND have a COLOR value that is recognised in colors.txt.
